@@ -1,0 +1,113 @@
+---
+title: Pause / resume
+description: Suspend a run, persist it, continue later. Across processes.
+---
+
+drover supports durable pause and resume. The harness checkpoints the
+pi-agent-core message list at every turn boundary; calling `pause()`
+flips the run's status to `paused` and `resumeAgent` picks up from the
+saved messages.
+
+## Prerequisites
+
+Storage must be wired. Without it, `pause()` degrades to plain `abort()`
+and the run is marked `cancelled` — there's no checkpoint to resume
+from.
+
+```ts
+import { createLibsqlStorage } from "@drover/storage";
+
+const storage = await createLibsqlStorage({ url: "file:./var/runs.db" });
+```
+
+## Pause
+
+```ts
+const handle = runAgent(spec, input, { storage });
+
+(async () => {
+  for await (const e of handle.events) {
+    if (e.kind === "usage" && /* some condition */ true) {
+      handle.pause();  // flips pauseFlag, aborts the inner loop
+    }
+  }
+})();
+
+const result = await handle.result;
+console.log(result.status);  // "paused"
+console.log(result.runId);    // record this for the resume call
+```
+
+## Resume
+
+```ts
+import { resumeAgent } from "@drover/facade";
+
+const handle = resumeAgent(spec, runId, { storage });
+const result = await handle.result;
+console.log(result.status);  // "success" / "error" / re-paused
+```
+
+`resumeAgent` checks four things before replaying:
+
+1. **Run exists** in storage.
+2. **Status is `paused`** — running success/error/cancelled runs would
+   duplicate tool side effects.
+3. **Agent id matches** `spec.id`.
+4. **Spec hash matches** `runRow.specHash`.
+
+Any failure returns `RunResult.error.tag === "ResumeError"`. The Promise
+never rejects.
+
+## Spec drift
+
+`hashSpec(spec)` covers everything that affects replay:
+
+- `id`, `tools`, `skills`, `mcpServers`
+- `model`, `systemPrompt` (function-valued prompts hash via `.toString()`)
+- `inputSchema`, `outputSchema`
+- `subagents`, `outputRetries`, `maxTurns`, `timeoutMs`
+- `plugins` (by id — bump the plugin id when its behaviour changes)
+
+If you edit the system prompt and resume, drover rejects with:
+
+```
+spec drift on agent "<id>": recorded hash <a>, current hash <b>.
+The agent definition changed since the run was paused — resuming
+would replay old messages under a different policy.
+```
+
+Migration: write a new run row explicitly rather than mutating the spec.
+
+## Cross-process resume
+
+The run row + checkpoint live in libsql. Any process pointed at the same
+DB can resume — the eval runner pauses, a long-running daemon resumes.
+
+```ts
+// process A
+const storage = await createLibsqlStorage({ url: "libsql://..." });
+const handle = runAgent(spec, input, { storage });
+// ... pause ...
+
+// process B (different machine even)
+const storage = await createLibsqlStorage({ url: "libsql://..." });
+const handle = resumeAgent(spec, runId, { storage });
+```
+
+## Pause / resume with the runtime layer
+
+When you're using `@drover/runtime`:
+
+```ts
+const api = createRunApi({ queue, storage, registry, sandboxFor });
+
+// Worker pool pauses a job by signalling cancel + the agent calling pause().
+// The queue row stays "done" (it completed once); the run row stays "paused".
+
+// Later, drive the resume:
+const result = await api.resume(jobId);
+```
+
+`api.resume` does the validation, calls `resumeAgent` inline, and
+reflects the final status back into the queue.

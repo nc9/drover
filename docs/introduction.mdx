@@ -1,0 +1,81 @@
+---
+title: drover
+description: A high-taste agent harness library — Effect-native, TypeBox-schemaed, pi-agent-core powered.
+---
+
+drover is a small library that hosts LLM agents. You give it an agent spec
+(prompt, schemas, tools, model), and it runs the loop: validate input, call
+the model, dispatch tools, decode the output against your schema, retry on
+schema failures, persist everything if you wire storage, pause / resume
+durably if you ask it to.
+
+## What it ships
+
+<CardGroup cols={2}>
+  <Card title="Agent loop" icon="cpu">
+    Schemaed input + output, pi-agent-core driving the model, output retry
+    budget for schema failures.
+  </Card>
+  <Card title="Plugin hooks" icon="plug">
+    `beforeToolCall` / `afterToolCall` / `onEvent` / `wrapTool` bundles. Ship
+    your safety + observability as plugins.
+  </Card>
+  <Card title="Subagents" icon="git-fork">
+    `taskTool` factory. Parent agent spawns scoped children with depth and
+    fan-out caps. Lifecycle events surface on the parent stream.
+  </Card>
+  <Card title="Storage" icon="database">
+    Runs / events / checkpoints in libsql. Memory adapter for tests; libsql
+    for durability. Pluggable interface — bring your own.
+  </Card>
+  <Card title="Pause / resume" icon="pause">
+    `handle.pause()` checkpoints + suspends. `resumeAgent` continues from
+    the saved messages via pi's `runAgentLoopContinue`.
+  </Card>
+  <Card title="Skills + MCP" icon="puzzle">
+    `SKILL.md` allowlists, progressive disclosure. MCP stdio + HTTP via
+    `@modelcontextprotocol/sdk`, tool-name prefixing, per-agent allowlist.
+  </Card>
+  <Card title="Runtime" icon="server">
+    Worker pool + lease queue + crash recovery. Programmatic `RunApi`. Point
+    multiple processes at the same libsql queue for horizontal scaling.
+  </Card>
+  <Card title="Observability" icon="activity">
+    Normalised `HarnessEvent` stream. Step tracer plugin projects it into a
+    flat list. Eval-viewer renders the timeline.
+  </Card>
+</CardGroup>
+
+## Design principles
+
+- **Effect-native internals, Promise/AsyncIterable facade.** Internals
+  speak `Effect<RunResult, HarnessError, R>`. The facade gives you a
+  Promise that never rejects and an `AsyncIterable<HarnessEvent>` — so
+  existing Promise-based consumers can adopt without rewriting.
+- **Capability flags over docstrings.** Sandbox capabilities are typed.
+  Want `bash`? Pass `allowShell: true`. Documenting an escape in prose is
+  not a safety boundary.
+- **Resume validates everything before replaying.** Run id, status, agent
+  id, spec hash. Drift = `ResumeError`, not a silent replay under a
+  changed policy.
+- **Plugins ship only what's wired.** `ToolDecision` is `allow | deny` for
+  v0. `rewrite` and `require_confirm` come back when storage-backed
+  confirmation lands.
+
+## Where it sits
+
+drover wraps [`@mariozechner/pi-agent-core`](https://github.com/mariozechner/pi-ai)
+for the model loop, adds TypeBox-schemaed agent specs + tools, and layers
+storage / pause-resume / plugin / MCP / skills primitives on top. Effect
+provides the error channel and composition.
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" href="/guides/quickstart" icon="play">
+    Run your first agent in 10 lines.
+  </Card>
+  <Card title="Concepts" href="/guides/concepts" icon="book">
+    The mental model: AgentSpec, RunContext, HarnessEvent, plugins.
+  </Card>
+</CardGroup>

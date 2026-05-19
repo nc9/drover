@@ -1,0 +1,26 @@
+{
+  "name": "@drover/runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./queue/memory": "./src/queue/memory.ts",
+    "./queue/libsql": "./src/queue/libsql.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@drover/core": "workspace:*",
+    "@drover/facade": "workspace:*",
+    "@drover/harness": "workspace:*",
+    "@drover/sandbox": "workspace:*",
+    "@drover/storage": "workspace:*",
+    "@libsql/client": "^0.17.3",
+    "@sinclair/typebox": "^0.34.0",
+    "effect": "^3.10.0"
+  }
+}

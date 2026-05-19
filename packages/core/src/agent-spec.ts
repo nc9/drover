@@ -1,0 +1,95 @@
+import type { TSchema, Static } from "@sinclair/typebox";
+
+import type { RunContext } from "./context.ts";
+import type { HarnessPlugin } from "./plugin.ts";
+
+/**
+ * Reasoning level for models that expose extended thinking.
+ * Maps 1:1 onto pi-ai's reasoning gates.
+ */
+export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
+
+/**
+ * Model spec. Three accepted forms:
+ *   - "sonnet"            — bare name (alias or pi-ai builtin)
+ *   - "sonnet:high"       — name with reasoning suffix
+ *   - { name, reasoning?, temperature?, maxTokens? }
+ *
+ * Resolution lookup: aliases ∪ pi-ai builtin names. Aliases shadow builtins.
+ */
+export type ModelSpec =
+  | string
+  | {
+      name: string;
+      reasoning?: ReasoningLevel;
+      temperature?: number;
+      maxTokens?: number;
+    };
+
+/** Subagent capacity limits enforced by the `taskTool` factory. */
+export interface SubagentConfig {
+  /** Maximum nesting depth from the root run. Default 2. */
+  depth?: number;
+  /** Max concurrent child agents per parent. Default 3. */
+  fanOut?: number;
+  /** Allowlist of agent ids the parent may spawn. Empty = none. */
+  allowed: readonly string[];
+}
+
+/**
+ * System prompt may be a string or a function of the run context — agents
+ * that need to interpolate run-scoped values resolve at run-start.
+ */
+export type SystemPromptFn = (ctx: RunContext) => string | Promise<string>;
+
+/**
+ * The data substrate. JSON-serialisable when `systemPrompt` is a string.
+ * Dynamic agents (LLM-composed at runtime) build the same shape.
+ *
+ * Generic params `I`/`O` carry static input/output types inferred from
+ * TypeBox schemas — use `defineAgent` to get inference automatically.
+ */
+export interface AgentSpec<
+  ISchema extends TSchema = TSchema,
+  OSchema extends TSchema = TSchema,
+> {
+  id: string;
+  systemPrompt: string | SystemPromptFn;
+  inputSchema: ISchema;
+  outputSchema: OSchema;
+  model: ModelSpec;
+  /** Built-in `ToolDef` ids and MCP-prefixed tool ids the agent may invoke. */
+  tools: readonly string[];
+  /** SKILL.md ids reachable via the `skill_load` tool. */
+  skills?: readonly string[];
+  /** MCP server ids whose tools are merged into the toolset. */
+  mcpServers?: readonly string[];
+  /** Subagent configuration; omit to forbid spawning entirely. */
+  subagents?: SubagentConfig;
+  /** Output-schema self-correction retry budget. Default 2. */
+  outputRetries?: number;
+  /** Plugin bundles (hooks + tools + observers) attached to this agent. */
+  plugins?: readonly HarnessPlugin[];
+  /** Hard turn budget. Default 100. */
+  maxTurns?: number;
+  /** Wall-clock budget (ms) for the whole run. */
+  timeoutMs?: number;
+}
+
+/** Static input type derived from an `AgentSpec`'s `inputSchema`. */
+export type AgentInput<S extends AgentSpec> = Static<S["inputSchema"]>;
+/** Static output type derived from an `AgentSpec`'s `outputSchema`. */
+export type AgentOutput<S extends AgentSpec> = Static<S["outputSchema"]>;
+
+/**
+ * Identity builder. Exists so consumers get TypeScript inference on
+ * `Static<S["inputSchema"]>` / `Static<S["outputSchema"]>` without
+ * having to thread generics through call sites.
+ *
+ * No runtime work — the harness consumes the returned spec directly.
+ */
+export function defineAgent<ISchema extends TSchema, OSchema extends TSchema>(
+  spec: AgentSpec<ISchema, OSchema>,
+): AgentSpec<ISchema, OSchema> {
+  return spec;
+}

@@ -1,0 +1,103 @@
+---
+title: Evals
+description: How drover's eval suite is structured and how to add scenarios.
+---
+
+drover ships an eval suite at the repo root (`evals/`) plus a Vite-based
+viewer (`apps/eval-viewer/`). The suite is intentionally simple — a flat
+list of `Scenario` records plus a runner — so you can read and copy it.
+
+## Run the suite
+
+```bash
+cd evals && bun run.ts
+```
+
+Runs every scenario against OpenRouter using the model aliases in
+`@drover/model`. Results land in `evals/eval-results/<timestamp>/`.
+
+Filter:
+
+```bash
+bun run.ts write-article fix-code-bug
+```
+
+## Scenario shape
+
+```ts
+import type { Scenario } from "./scenarios/types.ts";
+import { defineAgent } from "@drover/core";
+import { Type } from "@sinclair/typebox";
+
+const spec = defineAgent({
+  id: "summariser",
+  systemPrompt: "...",
+  inputSchema: Type.Object({ file: Type.String() }),
+  outputSchema: Type.Object({ summary: Type.String() }),
+  model: "cheap",
+  tools: ["read"],
+  maxTurns: 4,
+});
+
+export const scenario: Scenario<typeof spec> = {
+  id: "summarize-doc",
+  name: "Summarise an incident report",
+  inspiredBy: "generic",
+  description: "Read a doc and produce a 3-bullet summary.",
+  fixtureDir: "summarize-doc",   // optional: evals/fixtures/<name>/
+  spec,
+  input: { file: "incident.md" },
+};
+```
+
+Add to `scenarios/index.ts` exports. The runner picks it up.
+
+## Fixtures
+
+If `fixtureDir` is set, the runner snapshots `evals/fixtures/<name>/`
+into `eval-results/<timestamp>/<scenario>/workdir/` before the run. The
+agent's `cwd` is the workdir copy — runs don't mutate the canonical
+fixture.
+
+## Plugin observability per scenario
+
+The runner attaches `stepTracerPlugin()` to every scenario via
+`options.plugins`. After the run, the recorded steps land in
+`result.json.trace`.
+
+If your scenario needs additional plugins (e.g. `phaseRecorderPlugin`),
+attach via `spec.plugins`. The runner's tracer is additive.
+
+## Skills
+
+If the spec declares `skills` and the fixture has a `skills/` dir, the
+runner auto-scans + builds a registry per run. See
+[Skills](/guides/skills) for the layout.
+
+## MCP
+
+When any scenario in the run set declares `mcpServers`, the runner lazy-
+boots an MCP runtime with the configured fixtures (currently the in-repo
+stdio server at `evals/fixtures/mcp-stdio/server.ts`). See [MCP](/guides/mcp).
+
+## Runtime-queue scenario
+
+`runtime-queue` exercises `@drover/runtime` end-to-end: enqueue 5 echo
+jobs with `concurrency: 3`, wait for terminal status on each, assert
+`done`. Uses an in-memory queue + in-memory storage so it's hermetic.
+
+## Viewer
+
+```bash
+cd apps/eval-viewer && bun run dev
+```
+
+Hash-routed pages:
+- `/` — every runset with chip-grid jumpoffs to scenarios
+- `#/r/<runset>` — runset table
+- `#/r/<runset>/<scenario>` — full scenario detail with timeline
+- `#/storage` (if `DROVER_STORAGE_URL` set) — runs from libsql storage
+
+The timeline component renders the full event stream: assistant text in
+markdown, thinking blocks collapsed by default, tool cards expanding to
+show input + result.

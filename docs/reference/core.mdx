@@ -1,0 +1,106 @@
+---
+title: "@drover/core"
+description: Public types and identity builders. No runtime.
+---
+
+The substrate every other drover package depends on. Pure types and a
+couple of identity builders.
+
+## Exports
+
+```ts
+import {
+  defineAgent,
+  defineTool,
+  // types
+  type AgentSpec, type AgentInput, type AgentOutput,
+  type ModelSpec, type ReasoningLevel, type SubagentConfig,
+  type SystemPromptFn,
+  type RunContext,
+  type RunResult, type RunStatus,
+  type HarnessEvent, type EventOfKind,
+  type ToolResult, type Usage,
+  type HarnessPlugin, type ToolDecision, type ErrorRecovery,
+  type HistoryMessage,
+  type ToolDef, type AnyToolDef, type ToolExecutionContext,
+  // errors
+  type HarnessError,
+  InputValidationError, OutputValidationError,
+  SubagentLimitError, MaxTurnsError, TimeoutError,
+  CancelledError, PausedForConfirmationError,
+  ModelError, SandboxError, StorageError, PluginError,
+} from "@drover/core";
+```
+
+## `defineAgent`
+
+```ts
+function defineAgent<I extends TSchema, O extends TSchema>(
+  spec: AgentSpec<I, O>
+): AgentSpec<I, O>;
+```
+
+Identity builder. Returns the spec unchanged; exists so TypeScript
+infers `Static<I>` and `Static<O>` at call sites without manual
+generics. See [AgentSpec](/concepts/agent-spec).
+
+## `defineTool`
+
+```ts
+function defineTool<S extends TSchema>(tool: ToolDef<S>): ToolDef<S>;
+```
+
+Identity builder for `ToolDef`. Captures the TypeBox schema once so
+`execute` sees a statically-typed `input`.
+
+## Errors
+
+Every drover error is a `Data.TaggedError` from Effect, so consumers
+can match by `_tag`:
+
+```ts
+import { OutputValidationError } from "@drover/core";
+
+if (err._tag === "OutputValidationError") {
+  // err.attempts, err.lastIssues, err.lastText all typed
+}
+```
+
+The aggregate union is `HarnessError`. Use that as the Effect error
+channel when composing.
+
+## `RunResult`
+
+```ts
+interface RunResult<TOutput = unknown> {
+  runId: string;
+  status: "success" | "max_turns" | "cancelled" | "error" | "paused";
+  output?: TOutput;
+  finalText: string;
+  turns: number;
+  durationMs: number;
+  usage: { inputTokens: number; outputTokens: number; costUsd?: number; ... };
+  toolCalls: readonly string[];
+  error?: { tag: string; message: string };
+}
+```
+
+`status: "paused"` only when storage was wired and `handle.pause()` was
+called. The Promise resolution NEVER rejects — typed errors fold into
+`error`.
+
+## Tagged errors quick reference
+
+| `_tag` | when |
+| --- | --- |
+| `InputValidationError` | input failed `inputSchema` |
+| `OutputValidationError` | output failed `outputSchema` after retry budget |
+| `SubagentLimitError` | depth/fan-out/allowed limit hit |
+| `MaxTurnsError` | no output at turn cap |
+| `TimeoutError` | wall-clock budget exhausted |
+| `CancelledError` | caller aborted |
+| `PausedForConfirmationError` | confirm-gate triggered (reserved for runtime) |
+| `ModelError` | routing miss / circuit open / provider error / auth |
+| `SandboxError` | sandbox refused or failed an exec/read/write |
+| `StorageError` | storage adapter failure |
+| `PluginError` | plugin hook threw |

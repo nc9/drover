@@ -1,0 +1,130 @@
+---
+title: "@drover/plugins"
+description: Eight built-in plugin bundles.
+---
+
+## `loopDetectPlugin`
+
+```ts
+loopDetectPlugin({ window?: number; ignoreInput?: boolean }): HarnessPlugin;
+```
+
+Denies after `window` (default 3) consecutive identical tool calls.
+`ignoreInput: true` compares by tool name only (useful for "stop
+calling this tool, period" semantics).
+
+## `stepTracerPlugin`
+
+```ts
+stepTracerPlugin(): { steps: readonly TraceStep[]; plugin: HarnessPlugin };
+```
+
+Returns a tracer object. The `plugin` field attaches to the agent;
+`steps` accumulates as events fire.
+
+```ts
+interface TraceStep {
+  ts: number;
+  turn: number;
+  kind: "run_start" | "input_validated" | "turn_start" | "llm_call"
+      | "tool" | "tool_error" | "usage" | "compaction" | "subagent"
+      | "output_retry" | "run_end" | "error";
+  name?: string;
+  durationMs?: number;
+  meta?: Readonly<Record<string, unknown>>;
+}
+```
+
+## `bashBlocklistPlugin`
+
+```ts
+bashBlocklistPlugin({
+  extraPatterns?: readonly RegExp[];
+  toolIds?: readonly string[];      // default ["bash"]
+  warnOnly?: boolean;                // observe-only
+}): HarnessPlugin;
+```
+
+Denies dangerous shell commands. Default blocklist catches: `rm -rf /`,
+`sudo`, fork bombs, `curl ... | sh`, `mkfs`, `dd if=/dev/{zero,urandom,random}`,
+`>/dev/sd[a-z]`. Extend via `extraPatterns`.
+
+## `circuitBreakerPlugin`
+
+```ts
+circuitBreakerPlugin({
+  failureThreshold?: number;   // default 5
+  cooldownMs?: number;          // default 30_000
+  toolIds?: readonly string[];  // default: all tools
+}): HarnessPlugin;
+```
+
+Per-tool breaker. Opens after N consecutive `isError: true` results;
+cooldown then half-open. Success resets.
+
+## `writePolicyPlugin`
+
+```ts
+writePolicyPlugin({
+  scopedWritePaths: readonly string[];
+  toolIds?: readonly string[];   // default ["write", "edit"]
+}): HarnessPlugin;
+```
+
+Narrower than the sandbox's `allowedRoots`. Useful when reads are
+broad but writes should be tight (e.g. "agent can read the repo but
+only write to /var/sites/example").
+
+## `phaseRecorderPlugin`
+
+```ts
+phaseRecorderPlugin(): { phases: readonly PhaseRecord[]; plugin: HarnessPlugin };
+```
+
+Injects a `record_phase` tool. Agent calls it to mark pipeline
+transitions. Captured for storage + UI.
+
+```ts
+interface PhaseRecord {
+  ts: number;
+  name: string;
+  status?: "pending" | "running" | "done" | "failed" | "skipped";
+  detail?: string;
+}
+```
+
+## `confirmGatePlugin`
+
+```ts
+confirmGatePlugin({
+  tools: readonly string[];   // "*" for every tool
+  resolve: (request: ConfirmRequest) => Promise<ConfirmDecision> | ConfirmDecision;
+  timeoutMs?: number;          // default 5min
+}): HarnessPlugin;
+
+interface ConfirmRequest { runId: string; toolName: string; input: unknown }
+type ConfirmDecision = { kind: "approve" } | { kind: "reject"; reason?: string };
+```
+
+Inline confirmation gate. Calls `resolve` per watched tool call; only
+approved calls proceed. Timeouts reject.
+
+For durable async confirmations (suspend the run, persist a pending
+confirmation, resume from an external endpoint), use this plugin
+alongside the [runtime](/guides/runtime).
+
+## `outputValidatePlugin`
+
+```ts
+outputValidatePlugin(): { trace: OutputValidateTrace; plugin: HarnessPlugin };
+```
+
+Observation-only mirror of the harness's output-validation lifecycle
+into a flat trace. Useful for eval reporters.
+
+```ts
+interface OutputValidateTrace {
+  retries: readonly { attempt: number; reason: string; ts: number }[];
+  validated: boolean;
+}
+```

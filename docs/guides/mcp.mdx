@@ -1,0 +1,100 @@
+---
+title: MCP
+description: Connect Model Context Protocol servers and expose their tools to agents.
+---
+
+`@drover/mcp` wraps `@modelcontextprotocol/sdk` with drover's tool
+contract. Configure servers, build a runtime, drover prefixes every
+tool so cross-server collisions are impossible.
+
+## Config
+
+```ts
+import type { McpServerConfig } from "@drover/mcp";
+
+const configs: McpServerConfig[] = [
+  {
+    id: "fixture",
+    transport: "stdio",
+    command: "bun",
+    args: ["./mcp-servers/fixture/server.ts"],
+  },
+  {
+    id: "linear",
+    transport: "http",
+    url: "https://mcp.linear.app",
+    headers: { Authorization: `Bearer ${process.env.LINEAR_TOKEN}` },
+  },
+];
+```
+
+The discriminated union: `stdio` spawns a child process; `http` connects
+via streamable HTTP (also handles SSE).
+
+## Boot the runtime
+
+```ts
+import { createMcpRuntime } from "@drover/mcp";
+
+const mcpRuntime = await createMcpRuntime(configs);
+console.log(mcpRuntime.servers());
+// [{ id: "fixture", transport: "stdio", toolCount: 2 }, ...]
+```
+
+Each server connects in parallel and lists its tools. Failed connects
+are isolated — one bad server doesn't block the others, it just
+contributes 0 tools.
+
+## Declare in a spec
+
+```ts
+const spec = defineAgent({
+  /* ... */
+  mcpServers: ["fixture", "linear"],
+});
+```
+
+`spec.mcpServers` is the allowlist for this agent — tools only show up
+from servers on the list.
+
+## Wire on the run
+
+```ts
+runAgent(spec, input, { mcpRuntime });
+```
+
+Tools come through prefixed: a server named `fixture` exposing a tool
+named `compute` shows up to the model as `fixture__compute`. Prefixing
+is opaque to the model — it sees the description and decides — but
+guarantees no collision when two servers both ship a `query` tool.
+
+## Tool schemas
+
+MCP tools advertise JSON Schema. drover wraps via `Type.Unsafe(jsonSchema)`
+— the schema is preserved verbatim so the model sees the right arg
+shape; validation is the MCP server's responsibility.
+
+## OAuth (planned)
+
+For OAuth-protected servers, drover's MCP runtime accepts headers up
+front but doesn't yet auto-refresh expired tokens. Workaround: handle
+token refresh in your `headers` factory (re-create the runtime on
+expiry, or use a header-emitting closure once `McpServerConfig` accepts
+one).
+
+Full OAuth refresh will migrate into `@drover/mcp` once the runtime
+layer gets HTTP control-plane support.
+
+## Lifetime
+
+Connect once at app start, reuse across runs. Shutdown when the process
+exits:
+
+```ts
+process.on("SIGTERM", async () => {
+  await mcpRuntime.close();
+});
+```
+
+`close()` is best-effort — it tears down transports and clients but
+doesn't fail if some are already gone.

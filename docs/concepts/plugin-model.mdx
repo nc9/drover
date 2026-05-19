@@ -1,0 +1,125 @@
+---
+title: Plugin model
+description: How drover composes tools, intercepts calls, and observes runs.
+---
+
+A plugin bundles capabilities. drover ships eight; custom ones are
+ergonomic to write.
+
+## The interface
+
+```ts
+interface HarnessPlugin {
+  id: string;
+  tools?: ToolDef[];
+  wrapTool?: (tool: AnyToolDef) => AnyToolDef;
+  beforeToolCall?: (name, input, ctx) => Effect<ToolDecision, HarnessError>;
+  afterToolCall?:  (name, input, result, ctx) => Effect<ToolResult, HarnessError>;
+  beforeCompaction?: (history, ctx) => Effect<History, HarnessError>;
+  onEvent?: (event, ctx) => Effect<void, never>;
+  onError?: (error, ctx) => Effect<ErrorRecovery, never>;
+}
+```
+
+Every field except `id` is optional. Pick the ones you need.
+
+## `ToolDecision`
+
+```ts
+type ToolDecision = { kind: "allow" } | { kind: "deny"; reason: string };
+```
+
+v0 supports two outcomes. Rewriting tool input and confirmation-gated
+suspension are planned — for rewrites today, use `wrapTool` instead.
+
+## Decision chain
+
+`beforeToolCall` walks plugins in registration order. First `deny`
+short-circuits — the chain stops, the tool returns an error result with
+the deny reason as content.
+
+If a plugin's `beforeToolCall` throws or rejects, the harness **fails
+closed** — treats it as a deny with a synthesised reason. Observability
+shouldn't be able to bypass policy.
+
+## Result chain
+
+`afterToolCall` runs after the tool executes. Each plugin receives the
+prior plugin's transformed result. Apply outermost-last for the visible
+final transform.
+
+```ts
+const redact = {
+  id: "redact",
+  afterToolCall: (_n, _i, result) =>
+    Effect.sync(() => ({ ...result, content: result.content.replace(/sk-[a-z0-9]+/g, "[REDACTED]") })),
+};
+```
+
+## `wrapTool`
+
+Replaces the `execute` function on a tool. Use this when you need to
+mutate the input before the underlying tool sees it (rewrite),
+short-circuit based on input shape, or wrap with timing / retry / cache
+logic.
+
+`wrapTool` composes in registration order — earlier plugins wrap closer
+to the underlying execute. The outermost wrap is the one the model
+calls through.
+
+## Observation
+
+`onEvent` is fire-and-forget. Errors thrown inside are caught and
+logged at debug. Use it for tracers, metrics emitters, log shippers —
+anything that shouldn't break the run.
+
+The `stepTracerPlugin()` is the canonical example: returns
+`{ steps, plugin }` and pushes to `steps` on every event.
+
+## Auto-injected tools
+
+Some plugins contribute tools. The harness merges them into the
+toolset alongside built-ins. Examples:
+
+- `phaseRecorderPlugin` injects `record_phase`.
+- A custom plugin can inject anything by setting `tools: [yourTool]`.
+
+The harness's `task` tool (subagents) and `skill_load` tool (skills)
+are NOT plugin-contributed — they're directly auto-injected based on
+`spec.subagents` / `spec.skills` so the agent-author doesn't need to
+remember to wire a separate plugin.
+
+## Plugin attachment
+
+Two places:
+
+```ts
+defineAgent({
+  /* ... */
+  plugins: [...],   // permanent for the agent (stateless plugins only)
+});
+
+runAgent(spec, input, {
+  plugins: [...],   // per-run (use for stateful plugins)
+});
+```
+
+The harness merges both. **State in plugin closures leaks across runs**
+if the same plugin instance is reused. Concretely:
+
+- **Stateless** (bash-blocklist with a fixed pattern set, write-policy
+  with fixed scoped paths) → safe on `spec.plugins`.
+- **Stateful** (loop-detect's call counter, circuit-breaker's breaker
+  map, phase-recorder, step-tracer, output-validate) → construct per
+  run via `options.plugins`.
+
+This is a v0 contract — drover doesn't currently support
+factory-pattern plugins. Bug surface to be aware of: if you put a
+stateful built-in on `spec.plugins` and reuse the spec for many runs,
+state accumulates.
+
+## Hash sensitivity
+
+`hashSpec` includes plugin **ids** — change a plugin's id when you change
+its behaviour, otherwise a paused run resumed after a plugin update
+won't detect the drift.

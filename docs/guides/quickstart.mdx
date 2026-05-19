@@ -1,0 +1,119 @@
+---
+title: Quickstart
+description: Define an agent, run it, read the result. 10 minutes.
+---
+
+This tutorial runs a tiny agent end-to-end against OpenRouter. By the end
+you'll have a working agent that fetches a question, replies with valid
+JSON, and reports its tokens + cost.
+
+## Prerequisites
+
+<Steps>
+  <Step title="Bun runtime">
+    drover runs on [Bun](https://bun.sh) 1.3+. No Node-only deps assumed.
+  </Step>
+  <Step title="OpenRouter API key">
+    Default model aliases route through OpenRouter. Set it once:
+
+    ```bash
+    export OPENROUTER_API_KEY=sk-or-v1-...
+    ```
+
+    See `@drover/model` for using a different provider.
+  </Step>
+</Steps>
+
+## Install
+
+<CodeGroup>
+
+```bash bun
+bun add @drover/core @drover/facade @drover/sandbox
+```
+
+</CodeGroup>
+
+## Define + run an agent
+
+```ts title="quickstart.ts"
+import { Type } from "@sinclair/typebox";
+import { defineAgent } from "@drover/core";
+import { runAgent } from "@drover/facade";
+
+const echo = defineAgent({
+  id: "echo",
+  systemPrompt:
+    "Reply with a JSON object matching the outputSchema. No prose.",
+  inputSchema: Type.Object({ word: Type.String() }),
+  outputSchema: Type.Object({
+    upper: Type.String(),
+    length: Type.Integer(),
+  }),
+  model: "cheap",       // alias for gemini-3.1-flash-lite-preview
+  tools: [],
+  maxTurns: 2,
+});
+
+const handle = runAgent(echo, { word: "drover" });
+for await (const e of handle.events) {
+  if (e.kind === "assistant_text") console.log("[text]", e.text);
+}
+const result = await handle.result;
+console.log("status:", result.status);
+console.log("output:", result.output);
+console.log("tokens:", result.usage.inputTokens + "/" + result.usage.outputTokens);
+```
+
+Run it:
+
+```bash
+bun quickstart.ts
+```
+
+Expected output:
+
+```
+[text] {"upper":"DROVER","length":6}
+status: success
+output: { upper: "DROVER", length: 6 }
+tokens: 179/24
+```
+
+## What happened
+
+<Steps>
+  <Step title="Input validation">
+    drover decoded `{ word: "drover" }` against your `inputSchema` before
+    calling the model. Validation failure short-circuits with an
+    `InputValidationError` — the model never sees malformed input.
+  </Step>
+  <Step title="Model dispatch">
+    `"cheap"` resolved through the alias map to
+    `google/gemini-3.1-flash-lite-preview` on OpenRouter. The harness
+    wrapped pi-agent-core's `runAgentLoop` and streamed events as they
+    fired.
+  </Step>
+  <Step title="Output validation">
+    The model's final text was decoded against `outputSchema`. If it had
+    failed, drover would have fed back a corrective message and
+    retried up to `outputRetries` times (default 2).
+  </Step>
+  <Step title="Terminal status">
+    `result.status` is one of `success`, `max_turns`, `cancelled`,
+    `paused`, or `error`. `result.error` populates on the error path —
+    the Promise never rejects.
+  </Step>
+</Steps>
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Add tools" href="/guides/writing-an-agent" icon="wrench">
+    Compose `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls` — or
+    write your own.
+  </Card>
+  <Card title="Concepts" href="/guides/concepts" icon="book">
+    AgentSpec, RunContext, HarnessEvent, plugins — the mental model.
+  </Card>
+</CardGroup>

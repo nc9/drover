@@ -1,0 +1,168 @@
+---
+title: Writing an agent
+description: Compose tools + plugins + skills into a working agent.
+---
+
+A drover agent is a `AgentSpec` plus the deps the harness needs to run it.
+
+## Minimum viable spec
+
+```ts
+import { Type } from "@sinclair/typebox";
+import { defineAgent } from "@drover/core";
+
+const summariser = defineAgent({
+  id: "summariser",
+  systemPrompt: "Summarise the file into 3 bullets and a severity tag.",
+  inputSchema: Type.Object({ file: Type.String() }),
+  outputSchema: Type.Object({
+    bullets: Type.Array(Type.String(), { minItems: 3, maxItems: 3 }),
+    severity: Type.Union([
+      Type.Literal("SEV1"),
+      Type.Literal("SEV2"),
+      Type.Literal("SEV3"),
+      Type.Literal("SEV4"),
+    ]),
+  }),
+  model: "cheap",
+  tools: ["read"],
+  maxTurns: 4,
+});
+```
+
+## Run it
+
+```ts
+import { runAgent } from "@drover/facade";
+
+const handle = runAgent(summariser, { file: "incident.md" });
+const result = await handle.result;
+```
+
+The facade builds a default `none` sandbox rooted at `cwd` and resolves
+the model via the alias map. Override either via `RunOptions`:
+
+```ts
+import { createNoneSandbox } from "@drover/sandbox";
+
+runAgent(summariser, input, {
+  sandbox: createNoneSandbox({ allowedRoots: ["/tmp/safe"] }),
+  modelAliases: { cheap: { provider: "openrouter", modelId: "openai/gpt-5-mini" } },
+  cwd: "/tmp/safe",
+});
+```
+
+## Tools
+
+drover ships seven built-in tools. List them in `spec.tools` to opt in:
+
+| id | what | sandbox capability |
+| --- | --- | --- |
+| `read` | read file | path under allowed roots |
+| `write` | write file | path under allowed roots |
+| `edit` | string replace in file | exact + unique `old_string` |
+| `grep` | recursive regex | target under allowed roots |
+| `find` | filename search | target under allowed roots |
+| `ls` | list directory | target under allowed roots |
+| `bash` | `/bin/sh -c` | **requires `allowShell: true`** |
+
+`bash` is gated by the sandbox's `capabilities.shell` flag. Default `none`
+sandbox has it off — declaring `tools: ["bash"]` silently drops it.
+Opt in:
+
+```ts
+createNoneSandbox({ allowedRoots: [cwd], allowShell: true });
+```
+
+The shell escapes `allowedRoots` (the kernel doesn't honour them when
+executing argv). Only flip this for trusted agents. See [Sandboxes](/guides/sandboxes).
+
+## Custom tools
+
+```ts
+import { defineTool } from "@drover/core";
+import { Effect } from "effect";
+
+const compute = defineTool({
+  id: "compute",
+  description: "Add two numbers.",
+  inputSchema: Type.Object({ a: Type.Number(), b: Type.Number() }),
+  execute: (input) => Effect.succeed({ content: String(input.a + input.b) }),
+});
+```
+
+Contribute via a plugin (see [Plugins](/guides/plugins)) or pass directly
+in a registry — there isn't a global tool registry, tools live with the
+plugin that ships them.
+
+## Output schema retry budget
+
+If the model returns text that doesn't decode against `outputSchema`,
+drover injects a corrective user message and retries:
+
+```
+turn 1 → assistant: "the response is great"  ← fails decode
+turn 2 → user: "Your previous output didn't validate: ..."
+turn 2 → assistant: { ... valid JSON ... }     ← passes
+```
+
+Budget: `spec.outputRetries` (default 2). After exhaustion the run ends
+with `status: "error"` and `error.tag: "OutputValidationError"`.
+
+## Subagents
+
+Declare in the spec:
+
+```ts
+const planner = defineAgent({
+  // ...
+  subagents: { allowed: ["researcher"], depth: 2, fanOut: 3 },
+});
+```
+
+Provide a registry:
+
+```ts
+import { staticRegistry } from "@drover/facade";
+
+runAgent(planner, input, {
+  agentRegistry: staticRegistry({ researcher: researcherSpec }),
+});
+```
+
+The harness auto-injects a `task` tool the planner can call. Child runs
+emit `subagent_start` / `subagent_end` on the parent stream. See
+[Subagents](/guides/subagents).
+
+## Skills
+
+For long-form instructions the agent loads on demand. Build a registry
+from `SKILL.md` files:
+
+```ts
+import { createSkillRegistry, scanSkillDirs } from "@drover/skills";
+
+const skills = createSkillRegistry(await scanSkillDirs(["./skills"]));
+
+const spec = defineAgent({
+  // ...
+  skills: ["grumpy-editor", "factcheck"],
+});
+
+runAgent(spec, input, { skills });
+```
+
+See [Skills](/guides/skills).
+
+## Storage + pause/resume
+
+Wire storage to persist runs + enable pause/resume:
+
+```ts
+import { createLibsqlStorage } from "@drover/storage";
+
+const storage = await createLibsqlStorage({ url: "file:./var/runs.db" });
+runAgent(spec, input, { storage });
+```
+
+See [Pause / resume](/guides/pause-resume).

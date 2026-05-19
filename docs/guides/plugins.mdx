@@ -1,0 +1,168 @@
+---
+title: Plugins
+description: Tools + before/after intercepts + observers + onError, bundled.
+---
+
+A `HarnessPlugin` is a bundle of capabilities applied to one run. drover
+ships eight built-ins. Custom plugins are a few lines.
+
+## Anatomy
+
+```ts
+interface HarnessPlugin {
+  id: string;
+  tools?: ToolDef[];
+  wrapTool?: (tool) => tool;
+  beforeToolCall?: (name, input, ctx) => Effect<ToolDecision, ...>;
+  afterToolCall?:  (name, input, result, ctx) => Effect<ToolResult, ...>;
+  beforeCompaction?: (history, ctx) => Effect<history, ...>;
+  onEvent?: (event, ctx) => Effect<void, never>;
+  onError?: (error, ctx) => Effect<ErrorRecovery, never>;
+}
+```
+
+A plugin needs only an `id`. Every other field is optional — pick the
+ones that match what your plugin actually does.
+
+## Built-ins
+
+<CardGroup cols={2}>
+  <Card title="loop-detect">
+    Denies after N consecutive identical tool calls.
+    `loopDetectPlugin({ window: 3 })`.
+  </Card>
+  <Card title="step-tracer">
+    Projects events into a flat trace list for observability.
+    `stepTracerPlugin()` returns `{ steps, plugin }`.
+  </Card>
+  <Card title="bash-blocklist">
+    Denies dangerous shell commands (rm -rf /, sudo, curl|sh, fork bombs).
+    `bashBlocklistPlugin({ extraPatterns, warnOnly })`.
+  </Card>
+  <Card title="circuit-breaker">
+    Opens after N consecutive tool errors; cooldown then half-open.
+    `circuitBreakerPlugin({ failureThreshold: 5, cooldownMs: 30_000 })`.
+  </Card>
+  <Card title="write-policy">
+    Narrows writes to scoped paths beyond the sandbox's roots.
+    `writePolicyPlugin({ scopedWritePaths: ["/var/sites/example"] })`.
+  </Card>
+  <Card title="phase-recorder">
+    Adds a `record_phase` tool the agent calls to mark pipeline progress.
+    `phaseRecorderPlugin()` returns `{ phases, plugin }`.
+  </Card>
+  <Card title="confirm-gate">
+    Inline confirmation gate. Resolver decides approve/reject per call.
+    `confirmGatePlugin({ tools, resolve, timeoutMs })`.
+  </Card>
+  <Card title="output-validate">
+    Observes harness's output validation lifecycle — retries + final state.
+    `outputValidatePlugin()` returns `{ trace, plugin }`.
+  </Card>
+</CardGroup>
+
+## Wire a plugin
+
+Either declare in the spec (permanent for the agent):
+
+```ts
+defineAgent({
+  /* ... */
+  plugins: [
+    loopDetectPlugin(),
+    bashBlocklistPlugin(),
+    circuitBreakerPlugin({ failureThreshold: 3 }),
+  ],
+});
+```
+
+Or pass via `RunOptions.plugins` (additive — useful for observability
+injected by the runner, not the agent's policy):
+
+```ts
+const tracer = stepTracerPlugin();
+runAgent(spec, input, {
+  plugins: [tracer.plugin],
+});
+console.log(tracer.steps);
+```
+
+## Author a custom plugin
+
+```ts
+import type { HarnessPlugin } from "@drover/core";
+import { Effect } from "effect";
+
+export function redactSecretsPlugin(): HarnessPlugin {
+  return {
+    id: "redact-secrets",
+    afterToolCall: (toolName, _input, result) =>
+      Effect.sync(() => ({
+        ...result,
+        content: result.content.replace(/sk-[a-z0-9-]+/gi, "[REDACTED]"),
+      })),
+  };
+}
+```
+
+Apply on every tool result, no matter which tool produced it. Add to
+`spec.plugins` or `options.plugins`.
+
+## Decision contract
+
+`beforeToolCall` returns a `ToolDecision`:
+
+| variant | what happens |
+| --- | --- |
+| `{ kind: "allow" }` | proceed to the next plugin in the chain, then execute |
+| `{ kind: "deny", reason }` | tool returns an error result; model sees `reason` |
+
+If a plugin's `beforeToolCall` throws or rejects, drover **fails closed**
+— treats it as a deny. Don't rely on errors in observation hooks; that's
+what `onEvent` is for.
+
+## Ordering
+
+- `beforeToolCall`: first non-allow wins. Order plugins by specificity
+  (`bash-blocklist` before `loop-detect` is reasonable; both pre-empt
+  execution but the blocklist's reason is more useful to the model).
+- `afterToolCall`: each plugin sees the prior plugin's transformed
+  result. Apply outermost-last for the visible final transform.
+- `wrapTool`: composition order matches registration — earlier plugins
+  wrap closer to the underlying execute.
+- `onEvent`: fanout, order doesn't matter; observers don't compose.
+
+## Lifecycle and state
+
+<Warning>
+drover does NOT construct plugins per run. Whatever `HarnessPlugin`
+objects you put on `spec.plugins` or `options.plugins` are passed
+through to every run by reference. **State in plugin closures leaks
+across runs** unless the caller reconstructs the plugin each time.
+</Warning>
+
+For stateful plugins (loop-detect's call counter, circuit-breaker's
+breaker map, phase-recorder's phases array, step-tracer's steps,
+output-validate's trace) the right pattern is to construct per run
+via `options.plugins`:
+
+```ts
+import { runAgent } from "@drover/facade";
+import { circuitBreakerPlugin, stepTracerPlugin } from "@drover/plugins";
+
+// Per-run construction → fresh state
+for (const input of inputs) {
+  const tracer = stepTracerPlugin();
+  const result = await runAgent(spec, input, {
+    plugins: [circuitBreakerPlugin(), tracer.plugin],
+  }).result;
+  console.log(tracer.steps);   // this run's events only
+}
+```
+
+`spec.plugins` is fine for **stateless** plugins (bash-blocklist and
+write-policy — their state is config-only, no per-run accumulators).
+Anything with mutable closure state should be wired per run.
+
+For state that needs to survive pause/resume, persist it through
+[storage](/guides/storage) — `runs.meta` JSON is the easiest hook.

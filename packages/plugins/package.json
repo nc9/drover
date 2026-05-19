@@ -1,0 +1,27 @@
+{
+  "name": "@drover/plugins",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./loop-detect": "./src/loop-detect.ts",
+    "./step-tracer": "./src/step-tracer.ts",
+    "./bash-blocklist": "./src/bash-blocklist.ts",
+    "./circuit-breaker": "./src/circuit-breaker.ts",
+    "./write-policy": "./src/write-policy.ts",
+    "./phase-recorder": "./src/phase-recorder.ts",
+    "./confirm-gate": "./src/confirm-gate.ts",
+    "./output-validate": "./src/output-validate.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@drover/core": "workspace:*",
+    "@sinclair/typebox": "^0.34.0",
+    "effect": "^3.10.0"
+  }
+}

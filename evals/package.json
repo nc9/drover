@@ -1,0 +1,24 @@
+{
+  "name": "@drover/evals",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "run": "bun run.ts"
+  },
+  "dependencies": {
+    "@drover/core": "workspace:*",
+    "@drover/facade": "workspace:*",
+    "@drover/mcp": "workspace:*",
+    "@drover/plugins": "workspace:*",
+    "@drover/runtime": "workspace:*",
+    "@drover/sandbox": "workspace:*",
+    "@drover/skills": "workspace:*",
+    "@drover/storage": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@sinclair/typebox": "^0.34.0",
+    "effect": "^3.10.0",
+    "zod": "^3.25.0"
+  }
+}

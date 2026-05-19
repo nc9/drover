@@ -1,0 +1,117 @@
+---
+title: "@drover/harness"
+description: runAgentEffect — the Effect-native run loop. Use facade unless you need this.
+---
+
+The Effect-typed harness most callers don't touch directly. The
+facade wraps this; use it when you need fine control (custom Effect
+layers, embedding in a larger Effect program).
+
+## `runAgentEffect`
+
+```ts
+function runAgentEffect<S extends AgentSpec>(
+  args: RunArgs<S>,
+): Effect<RunResult<AgentOutput<S>>, HarnessError, never>;
+```
+
+```ts
+interface RunArgs<S> {
+  spec: S;
+  input: AgentInput<S>;
+  ctx: RunContext;
+  emit: (event: HarnessEvent) => void;
+  deps: HarnessDeps;
+  resumeFrom?: CheckpointRow;
+  pauseFlag?: { requested: boolean };
+}
+```
+
+`emit` receives every event the harness produces. The facade's
+`runAgent` wraps this with an internal async-iterable queue.
+
+`resumeFrom` switches to `runAgentLoopContinue` and skips fresh-run
+setup (input validation, run-row create, initial user message).
+
+`pauseFlag` is a mutable holder. When `requested` is true and the
+loop ends, the terminal status is `paused` (otherwise `cancelled`).
+
+## `HarnessDeps`
+
+```ts
+interface HarnessDeps {
+  sandbox: SandboxAdapter;                  // required
+  modelAliases?: Record<string, AliasEntry>;
+  env?: Record<string, string | undefined>;
+  agentRegistry?: AgentRegistry;
+  storage?: StorageAdapter;
+  skills?: SkillRegistry;
+  mcpRuntime?: McpRuntime;
+}
+```
+
+The harness reads `deps.sandbox.capabilities.shell` to decide whether
+to compose `bash`. Other auto-injection follows the same pattern —
+present + spec-declared = composed.
+
+## `taskTool`
+
+```ts
+function taskTool(opts: TaskToolOptions): AnyToolDef;
+
+interface TaskToolOptions {
+  registry: AgentRegistry;
+  allowedAgents: readonly string[];
+  maxDepth?: number;
+  fanOut?: number;
+  deps: HarnessDeps;
+  parentEmit?: (event: HarnessEvent) => void;
+}
+```
+
+Returns a ready-to-compose `task` tool. The harness invokes this
+internally when `spec.subagents` is declared; callers can also use it
+directly to wire a fixed-set subagent setup.
+
+## `hashSpec`
+
+```ts
+function hashSpec(spec: AgentSpec): string;
+```
+
+Stable hex hash of every execution-affecting field. See
+[Spec hash & drift](/concepts/hash-spec).
+
+## `createTranslator`
+
+```ts
+function createTranslator(
+  runId: string,
+  initialTurn?: number,
+): { translate: (e: PiEvent) => HarnessEvent[]; currentTurn: () => number };
+```
+
+Internal — exported for consumers that want to integrate pi-agent-core
+directly without going through `runAgentEffect`.
+
+## `toPiTool`
+
+```ts
+function toPiTool(
+  tool: AnyToolDef,
+  buildCtx: (toolCallId, signal?) => ToolExecutionContext,
+): AgentTool<TSchema>;
+```
+
+Wraps a drover `ToolDef` as a pi-agent-core `AgentTool`. Reverse of
+`createTranslator`'s direction.
+
+## `AgentRegistry`
+
+```ts
+interface AgentRegistry {
+  resolve(id: string): AgentSpec | undefined;
+}
+```
+
+Sub-100-line interface. Implement directly or use `staticRegistry`.

@@ -1,0 +1,87 @@
+---
+title: "@drover/facade"
+description: runAgent + resumeAgent. Promise / AsyncIterable surface over the Effect harness.
+---
+
+## `runAgent`
+
+```ts
+function runAgent<S extends AgentSpec>(
+  spec: S,
+  input: AgentInput<S>,
+  options?: RunOptions,
+): RunHandle<S>;
+```
+
+Returns a handle immediately. Iterate `events`, await `result`, call
+`abort()` or `pause()` mid-flight.
+
+## `resumeAgent`
+
+```ts
+function resumeAgent<S extends AgentSpec>(
+  spec: S,
+  runId: string,
+  options: ResumeOptions,   // storage required
+): RunHandle<S>;
+```
+
+Loads the run + checkpoint, validates, replays via pi's
+`runAgentLoopContinue`. Fails with `error.tag === "ResumeError"` if
+the run doesn't exist, isn't paused, has a different agent id, or
+the spec hash drifted.
+
+## `RunOptions`
+
+```ts
+interface RunOptions {
+  runId?: string;                          // auto-generated when absent
+  cwd?: string;                            // default process.cwd()
+  env?: Record<string, string>;
+  signal?: AbortSignal;
+  meta?: Record<string, unknown>;
+  sandbox?: SandboxAdapter;                // default: none rooted at cwd
+  modelAliases?: Record<string, AliasEntry>;
+  agentRegistry?: AgentRegistry;           // required when spec.subagents declared
+  storage?: StorageAdapter;
+  skills?: SkillRegistry;                  // required when spec.skills declared
+  mcpRuntime?: McpRuntime;                 // required when spec.mcpServers declared
+  plugins?: HarnessPlugin[];                // additive on top of spec.plugins
+}
+```
+
+## `ResumeOptions`
+
+```ts
+interface ResumeOptions extends Omit<RunOptions, "runId"> {
+  storage: StorageAdapter;   // required, not optional
+}
+```
+
+## `RunHandle`
+
+```ts
+interface RunHandle<S> {
+  runId: string;
+  events: AsyncIterable<HarnessEvent>;
+  result: Promise<RunResult<AgentOutput<S>>>;
+  abort: () => void;        // terminal: status="cancelled"
+  pause: () => void;        // terminal: status="paused" (requires storage)
+}
+```
+
+`abort` and `pause` are idempotent. Without storage, `pause` degrades
+to `abort`.
+
+`result` never rejects.
+
+## `staticRegistry`
+
+```ts
+function staticRegistry(
+  agents: Readonly<Record<string, AgentSpec>>,
+): AgentRegistry;
+```
+
+Helper for the common case where you have a fixed set of agents.
+Implement `AgentRegistry` directly if you need dynamic resolution.

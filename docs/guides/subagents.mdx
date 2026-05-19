@@ -1,0 +1,104 @@
+---
+title: Subagents
+description: Subagent-as-tool. Parent spawns scoped children via the `task` tool.
+---
+
+drover's subagent model is "subagent-as-tool." The parent agent gets a
+`task` tool the harness auto-injects when `spec.subagents` is declared.
+Calling it spawns a child run inline. The child returns its validated
+output as the tool result; the parent reads + composes.
+
+## Declare
+
+```ts
+const planner = defineAgent({
+  id: "planner",
+  /* ... */
+  subagents: {
+    allowed: ["researcher", "summariser"],
+    depth: 2,    // child max depth
+    fanOut: 3,   // max concurrent children
+  },
+});
+
+const researcher = defineAgent({
+  id: "researcher",
+  systemPrompt: "Research the topic and return 3 talking points.",
+  /* ... */
+});
+
+import { staticRegistry } from "@drover/facade";
+
+runAgent(planner, input, {
+  agentRegistry: staticRegistry({ researcher, summariser }),
+});
+```
+
+## `task` tool shape
+
+```ts
+task({
+  agent_type: "researcher",
+  prompt: "Research the convergence of agent harnesses",
+  input?: { /* full inputSchema match */ },
+  model?: "haiku",
+  max_turns?: 5,
+})
+```
+
+If `input` is omitted, the child receives `{ prompt }` — works for child
+specs with `inputSchema: { prompt: string }`. For richer inputs, pass
+`input` explicitly.
+
+## Enforcement
+
+- `allowed`: child's `agent_type` must be on the list. Otherwise
+  `SubagentLimitError` with `reason: "not_allowed"`.
+- `depth`: `parent.depth + 1 > maxDepth` → `SubagentLimitError`,
+  `reason: "depth"`. Default 2.
+- `fanOut`: `inFlight >= fanOut` → `SubagentLimitError`,
+  `reason: "fan_out"`. Default 3.
+
+Limit errors surface as tool errors to the parent (not run crashes) —
+the parent's model can adapt.
+
+## Child lifecycle
+
+```
+parent  ┐
+        ├─ tool_call_start (task)
+        ├─ subagent_start { childRunId, agentId }
+        │  (child runs internally; events not mirrored)
+        ├─ subagent_end { childRunId, status }
+        └─ tool_call_end (task)  ← child's validated output as content
+```
+
+`subagent_start` and `subagent_end` fire on the parent stream — visible
+to `stepTracerPlugin` and the [eval viewer](/guides/evals).
+
+Internal events from the child are NOT mirrored to the parent (too
+noisy). If you want the full child timeline, attach an observer to
+`spec.plugins` on the child spec directly — those events still flow
+through the harness, just not to the parent's emit callback.
+
+## Child run ids
+
+`parent:1`, `parent:2`, etc. — suffix counter per parent. Grandchildren
+get `parent:2:1`, `parent:2:2`, etc. Trace ancestry walks the suffix
+chain.
+
+## Sharing context
+
+Child inherits parent's:
+- `cwd` and `env`
+- `signal` (abort propagates parent → children)
+- `meta` (free-form tags)
+
+Child gets fresh:
+- `runId` (suffixed)
+- `depth` (parent + 1)
+- `parentRunId`
+
+The sandbox is the parent's sandbox by default. If you want children to
+have a different sandbox, override at the harness level (advanced — usually
+you want the same boundary).

@@ -1,0 +1,55 @@
+---
+title: Echo agent
+description: Smallest meaningful drover program. Define, run, read.
+---
+
+The five-line agent. Demonstrates the schema-validated input + output
+flow without any tools or extras.
+
+```ts title="echo.ts"
+import { Type } from "@sinclair/typebox";
+import { defineAgent } from "@drover/core";
+import { runAgent } from "@drover/facade";
+
+const spec = defineAgent({
+  id: "echo",
+  systemPrompt:
+    "Reply with a JSON object matching the outputSchema. No prose.",
+  inputSchema: Type.Object({ word: Type.String() }),
+  outputSchema: Type.Object({
+    upper: Type.String(),
+    length: Type.Integer(),
+  }),
+  model: "cheap",
+  tools: [],
+  maxTurns: 2,
+});
+
+const handle = runAgent(spec, { word: "drover" });
+for await (const e of handle.events) {
+  if (e.kind === "usage") console.log("tokens:", e.usage.inputTokens + "/" + e.usage.outputTokens);
+}
+const r = await handle.result;
+console.log(r.output);  // { upper: "DROVER", length: 6 }
+```
+
+Run:
+
+```bash
+export OPENROUTER_API_KEY=sk-or-v1-...
+bun echo.ts
+```
+
+Behaviour:
+- `defineAgent` types the spec so `r.output` is inferred as `{ upper: string; length: number }`.
+- Input is validated before the model call. Garbage input = immediate
+  `InputValidationError`.
+- Output is decoded against `outputSchema`. Failures get retried with a
+  corrective user message; budget = `outputRetries` (default 2).
+- Promise never rejects — `r.error` populates on the error path.
+
+What this skips that real agents need:
+- Tools — see [the multi-agent example](/examples/multi-agent-research)
+  or [Writing an agent](/guides/writing-an-agent).
+- Storage / pause-resume — see [Pause / resume](/guides/pause-resume).
+- Plugins — see [Plugins](/guides/plugins).

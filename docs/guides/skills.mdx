@@ -1,0 +1,92 @@
+---
+title: Skills
+description: SKILL.md files agents load on demand via skill_load.
+---
+
+A skill is a markdown file with frontmatter. The agent's system prompt
+advertises the name + description; the body loads on demand via the
+auto-injected `skill_load` tool. Progressive disclosure keeps the system
+prompt small.
+
+## Format
+
+```mdx
+---
+name: grumpy-editor
+description: |
+  Strict editorial pass. Cut AI tells, hedges, tricolons, passive voice.
+---
+
+# grumpy-editor
+
+When applying this skill, you MUST:
+1. Strip AI hedge words.
+2. No tricolons. ...
+```
+
+Frontmatter requires `name` + `description`. Extra fields are preserved
+in `metadata` for project-specific use.
+
+## Build a registry
+
+```ts
+import { createSkillRegistry, scanSkillDirs } from "@drover/skills";
+
+const specs = await scanSkillDirs(["./skills", "./node_modules/@my-org/shared-skills"]);
+const skills = createSkillRegistry(specs);
+```
+
+`scanSkillDirs` walks each root recursively (max depth 3 by default),
+finds `SKILL.md` files, dedups by `name` with first-wins. Pass agent-
+local dirs ahead of shared library dirs so local skills shadow.
+
+## Declare in a spec
+
+```ts
+const spec = defineAgent({
+  /* ... */
+  skills: ["grumpy-editor", "factcheck"],
+});
+```
+
+`spec.skills` is the allowlist. Skills outside it are unreachable for
+this agent even if they're in the registry — progressive disclosure
+shouldn't bypass least-privilege intent.
+
+## Wire on the run
+
+```ts
+runAgent(spec, input, { skills });
+```
+
+The harness:
+1. Auto-injects a `skill_load` tool gated by `spec.skills`.
+2. Appends an "Available skills" section to the system prompt listing
+   only allowlisted name + one-line description.
+
+The model decides which skill to load. The body returns as the tool
+result — usually a few hundred to a few thousand tokens of instructions
+the model applies inline.
+
+## Inspect a registry
+
+```ts
+skills.has("grumpy-editor");  // boolean
+skills.get("grumpy-editor");  // SkillSpec | undefined
+skills.list();                  // SkillSpec[]
+```
+
+## Mintlify-flavoured skills
+
+drover doesn't ship a renderer for `SKILL.md` bodies — they're injected
+raw to the model. If you want richer authoring (e.g. you author skills
+as MDX with shared snippets), preprocess into plain markdown before
+calling `parseSkillFile` or `scanSkillDirs`.
+
+## Alternative layouts
+
+drover supports the `skills/<name>/SKILL.md` layout (one dir per skill)
+out of the box. For flat layouts (`skills/<name>.md`) or any other
+on-disk shape, write a small custom loader that produces `SkillSpec[]`
+and pass to `createSkillRegistry` — the registry is decoupled from the
+on-disk layout.

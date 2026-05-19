@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  body {
+    font-family:
+      ui-sans-serif,
+      system-ui,
+      -apple-system,
+      "SF Pro Text",
+      sans-serif;
+  }
+  pre,
+  code,
+  .mono {
+    font-family:
+      ui-monospace,
+      SFMono-Regular,
+      "JetBrains Mono",
+      "Fira Code",
+      Menlo,
+      Consolas,
+      monospace;
+  }
+}
+
+/* Markdown-rendered prose inside assistant bubbles. */
+.prose-agent {
+  line-height: 1.55;
+}
+.prose-agent p {
+  margin: 0 0 0.5em;
+}
+.prose-agent p:last-child {
+  margin-bottom: 0;
+}
+.prose-agent h1,
+.prose-agent h2,
+.prose-agent h3 {
+  font-weight: 600;
+  margin: 0.6em 0 0.3em;
+  letter-spacing: -0.005em;
+}
+.prose-agent h1 {
+  font-size: 1.05rem;
+}
+.prose-agent h2 {
+  font-size: 1rem;
+}
+.prose-agent h3 {
+  font-size: 0.95rem;
+}
+.prose-agent ul,
+.prose-agent ol {
+  padding-left: 1.5em;
+  margin: 0.25em 0 0.5em;
+}
+.prose-agent li {
+  margin: 0.15em 0;
+}
+.prose-agent code {
+  background: #27272a;
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-size: 0.85em;
+}
+.prose-agent pre {
+  background: #18181b;
+  padding: 0.5em 0.75em;
+  border-radius: 4px;
+  overflow-x: auto;
+  margin: 0.5em 0;
+  font-size: 0.8em;
+}
+.prose-agent pre code {
+  background: transparent;
+  padding: 0;
+}
+.prose-agent blockquote {
+  border-left: 2px solid #3f3f46;
+  padding-left: 0.75em;
+  color: #a1a1aa;
+  margin: 0.5em 0;
+}
+.prose-agent a {
+  color: #60a5fa;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}

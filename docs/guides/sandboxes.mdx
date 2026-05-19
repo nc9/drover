@@ -1,0 +1,111 @@
+---
+title: Sandboxes
+description: How drover constrains filesystem and shell access — and what it doesn't.
+---
+
+A `SandboxAdapter` is the boundary between drover tools and the host
+filesystem / processes. drover ships one impl (`none`) and an interface
+for projects that need stronger isolation.
+
+<Warning>
+The `none` sandbox is NOT a security boundary. It's an in-process
+adapter that enforces a path allowlist for file I/O. The shell escapes
+it. Read on.
+</Warning>
+
+## What `none` enforces
+
+```ts
+import { createNoneSandbox } from "@drover/sandbox";
+
+const sandbox = createNoneSandbox({
+  allowedRoots: ["/tmp/safe"],
+  allowShell: false,  // default
+});
+```
+
+| Operation | Constraint |
+| --- | --- |
+| `readFile(path)` | resolved + realpath → must be inside `allowedRoots` |
+| `writeFile(path)` | resolved + realpath → must be inside `allowedRoots` (parent ancestor checked when path doesn't exist) |
+| `assertPathAllowed(path)` | same realpath + allowedRoots check, surfaced for tools that pass argv to spawned processes (`grep`, `find`, `ls`) |
+| `run(cmd, args)` | only spawn `cwd` is checked. **argv is opaque.** |
+
+Allowed roots are canonicalised at construction via `realpathSync`. On
+macOS `/var` is a symlink to `/private/var`, etc. — without
+canonicalisation, every tmp-rooted path would fail the check.
+
+## What `bash` does to the boundary
+
+`bash` runs `/bin/sh -c <command>`. Once the shell has the command, it
+can `cat /etc/passwd`, `ls /`, write anywhere your user can write. The
+sandbox checks `cwd` — that's all it can check.
+
+So drover refuses to compose `bash` into a run unless the sandbox
+advertises shell capability:
+
+```ts
+// bash is silently dropped from the toolset
+createNoneSandbox({ allowedRoots: [cwd] });
+
+// bash is composed, with the documented escape
+createNoneSandbox({ allowedRoots: [cwd], allowShell: true });
+```
+
+`tools: ["bash"]` in a spec passed to the first sandbox is a no-op. The
+agent doesn't see the tool. This is intentional — silently dropping is
+safer than silently exposing.
+
+## Wiring a stronger sandbox
+
+The interface:
+
+```ts
+interface SandboxAdapter {
+  readonly id: string;
+  readonly capabilities: SandboxCapabilities;
+  run(cmd, args, opts?): Effect<ExecResult, SandboxError>;
+  readFile(path): Effect<string, SandboxError>;
+  writeFile(path, contents): Effect<void, SandboxError>;
+  resolvePath(path, cwd): string;
+  assertPathAllowed(path): Effect<void, SandboxError>;
+}
+```
+
+Drop-in adapter shapes drover doesn't ship; common production picks:
+
+| adapter | provides |
+| --- | --- |
+| `sandbox-exec` (macOS SBPL) | per-call seatbelt profile that constrains read+exec at the kernel level |
+| `firejail` (Linux) | namespaced filesystem + network isolation |
+| `docker` | full container per run, network gated |
+| `daytona` / Cloudflare container | remote VM, attach via API |
+
+When you implement one, advertise `capabilities.shell: true` only when
+the spawned process actually can't escape the sandbox.
+
+## Path / sandbox boundary checklist
+
+When auditing a new tool:
+
+1. Does it call `sandbox.run` with a user-supplied path as argv? If yes,
+   gate the path with `sandbox.assertPathAllowed(target)` before
+   spawning. `grep`, `find`, `ls` do this.
+2. Does it shell out? If yes, the tool inherits the sandbox's shell
+   limitations — only inject under capability-checked sandboxes.
+3. Does it read or write a user-supplied path? Use `readFile`/`writeFile`
+   directly; they realpath-check.
+
+The sandbox's `assertPathAllowed` is the canonical place for non-builtin
+custom tools to plug in.
+
+## Empty `allowedRoots`
+
+```ts
+createNoneSandbox();  // allowedRoots: []
+```
+
+Empty means **no boundary**. drover treats this as "trusted runtime."
+Useful in CLIs, eval runners, and similar contexts where the agent's
+filesystem reach matches the runtime's. **Don't ship this to untrusted
+prompts.**

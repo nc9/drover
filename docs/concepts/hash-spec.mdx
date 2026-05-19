@@ -1,0 +1,96 @@
+---
+title: Spec hash & drift
+description: Why resume validates a spec hash, what it covers, and where the boundary is.
+---
+
+`hashSpec(spec)` computes a 32-bit hex hash of every `AgentSpec` field
+that affects execution. The hash is recorded on the `runs` row at start
+and re-checked on `resumeAgent` — drift = reject, not silent replay.
+
+## Why
+
+Imagine pausing a run mid-flight, deploying a code change that edits
+the agent's system prompt, then resuming. The saved messages reflect
+the old prompt; the live run uses the new one. The model sees an
+inconsistent transcript and produces unpredictable output.
+
+drover refuses this:
+
+```
+spec drift on agent "writer": recorded hash 6d831a81, current hash 6bf0edfb.
+The agent definition changed since the run was paused — resuming would
+replay old messages under a different policy.
+```
+
+## What's covered
+
+```ts
+JSON.stringify({
+  id, tools, skills, mcpServers, model,
+  systemPrompt,            // fn → Function.toString()
+  inputSchema, outputSchema,
+  subagents, outputRetries, maxTurns, timeoutMs,
+  pluginIds,                // spec.plugins.map(p => p.id)
+});
+```
+
+A change to any of these flips the hash. Resume rejects.
+
+## What's NOT covered
+
+- **Plugin function bodies.** Plugins identify by `id`. Bump the id
+  when behaviour changes.
+- **Function-prompt closures.** `Function.toString()` captures the
+  source but not closed-over values. `() => greeting` and
+  `() => greeting` with a different outer `greeting` hash equal.
+  Prefer string prompts for resumable agents.
+- **External resources.** A skill body changing on disk doesn't bump
+  the hash — only the skill name does. Same for MCP server tool sets.
+
+The boundary is "source-level intent in the spec." Anything outside
+the spec literal slips through.
+
+## Recovery from intentional drift
+
+You want to edit the spec and resume? The mechanism is "write a new
+run row":
+
+```ts
+// 1. Load the paused run's checkpoint.
+const cp = await Effect.runPromise(storage.loadLatestCheckpoint(oldRunId));
+
+// 2. Create a new run row under the new spec.
+const newRunId = `run_${crypto.randomUUID()}`;
+await Effect.runPromise(storage.createRun({
+  id: newRunId,
+  agentId: newSpec.id,
+  specHash: hashSpec(newSpec),
+  status: "paused",
+  input: oldRun.input,
+  startedAt: Date.now(),
+  tokensIn: oldRun.tokensIn,
+  tokensOut: oldRun.tokensOut,
+  costUsd: oldRun.costUsd,
+}));
+
+// 3. Save the checkpoint under the new run id.
+await Effect.runPromise(storage.saveCheckpoint({
+  ...cp,
+  runId: newRunId,
+}));
+
+// 4. Resume the new run.
+const result = await resumeAgent(newSpec, newRunId, { storage }).result;
+```
+
+drover doesn't ship a helper for this — it's a deliberate, code-level
+decision. If you find yourself doing it often, your specs are
+churning more than they should.
+
+## Hash format
+
+Currently a fast non-cryptographic hash (32-bit, hex-formatted).
+Collision probability is real but bounded — for the "same agent id,
+modified prompt" detection use case it's fine. If you need stronger
+guarantees (e.g. cross-tenant validation), wrap `hashSpec` with a
+SHA-256 of `JSON.stringify(spec)`.

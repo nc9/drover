@@ -1,0 +1,19 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.local
+.env.*.local
+*.log
+.turbo/
+.cache/
+coverage/
+.tmp/
+CLAUDE.md
+
+# local run artifacts
+var/
+evals/eval-results/
+evals/results/
+plans/

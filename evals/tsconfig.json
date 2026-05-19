@@ -1,0 +1,6 @@
+{
+  "extends": "../tsconfig.base.json",
+  "include": ["**/*.ts"],
+  "exclude": ["eval-results", "node_modules", "fixtures/mcp-stdio/server.ts"]
+}
+

@@ -1,0 +1,66 @@
+---
+title: "@drover/sandbox"
+description: SandboxAdapter interface + none impl.
+---
+
+## `SandboxAdapter`
+
+```ts
+interface SandboxAdapter {
+  readonly id: string;
+  readonly capabilities: { shell: boolean };
+  run(cmd, args, opts?): Effect<ExecResult, SandboxError>;
+  readFile(path): Effect<string, SandboxError>;
+  writeFile(path, contents): Effect<void, SandboxError>;
+  resolvePath(path, cwd): string;
+  assertPathAllowed(path): Effect<void, SandboxError>;
+}
+```
+
+`capabilities.shell` gates bash composition in the harness. Custom
+adapters must set this honestly — `true` only if the spawned process
+genuinely can't escape your sandbox.
+
+`assertPathAllowed` is the gate for tools that pass user paths as
+argv to spawned processes (`grep`, `find`, `ls`). Built-in `readFile`
+and `writeFile` already check internally.
+
+## `createNoneSandbox`
+
+```ts
+function createNoneSandbox(opts?: NoneSandboxOptions): SandboxAdapter;
+
+interface NoneSandboxOptions {
+  allowedRoots?: readonly string[];
+  id?: string;
+  allowShell?: boolean;   // default false
+}
+```
+
+In-process. `readFile` / `writeFile` realpath-check against
+canonicalised allowed roots. `run` only checks the spawn cwd.
+
+**Not a security boundary.** The shell escapes. See
+[Sandboxes](/guides/sandboxes).
+
+## `ExecOptions`
+
+```ts
+interface ExecOptions {
+  cwd?: string;
+  env?: Readonly<Record<string, string>>;
+  timeoutMs?: number;        // default 30_000
+  signal?: AbortSignal;
+}
+```
+
+## `ExecResult`
+
+```ts
+interface ExecResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  killed?: boolean;          // true on timeout or signal
+}
+```

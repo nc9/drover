@@ -1,0 +1,82 @@
+---
+title: "@drover/model"
+description: pi-ai wrapper. Alias resolution, reasoning gates, per-provider env keys.
+---
+
+## `resolveModel`
+
+```ts
+function resolveModel(
+  spec: ModelSpec,
+  opts: { runId: string; aliases?: AliasMap; env?: Env },
+): Effect<ResolvedModel, ModelError>;
+
+interface ResolvedModel {
+  model: Model<KnownApi>;        // pi-ai's typed model record
+  apiKey: string;
+  reasoning?: ReasoningLevel;
+  temperature?: number;
+  maxTokens?: number;
+}
+```
+
+Lookup order:
+1. Alias map (custom ∪ `DEFAULT_ALIASES`).
+2. Provider-prefixed slug `provider:modelId`.
+3. Search every pi-ai provider for a model whose id equals `name`.
+
+Failure modes (all `ModelError`):
+- `routing_miss`: name not found.
+- `auth`: provider's env vars unset.
+- `provider_error`: pi-ai threw.
+
+## Reasoning slug
+
+`"name:reasoning"` parses cleanly. Valid reasoning levels:
+`minimal | low | medium | high | xhigh`.
+
+For models that declare `reasoning: true` in pi-ai's registry,
+omitting a level defaults to `"medium"` (verified necessary for
+gpt-5-mini and similar — without it the model returns no final text).
+
+## `DEFAULT_ALIASES`
+
+| alias | resolves to | $/Mtok in/out |
+| --- | --- | --- |
+| `default` / `cheap` / `flash` | `openrouter/google/gemini-3.1-flash-lite-preview` | 0.25 / 1.50 |
+| `grok` | `openrouter/x-ai/grok-4-fast` | 0.20 / 0.50 |
+| `mini` | `openrouter/openai/gpt-5-mini` | 0.25 / 2.00 |
+| `nano` | `openrouter/openai/gpt-5-nano` | 0.05 / 0.40 |
+| `haiku` | `openrouter/anthropic/claude-haiku-4.5` | 1.00 / 5.00 |
+| `sonnet` | `openrouter/anthropic/claude-sonnet-4.6` | (frontier) |
+| `deepseek` | `openrouter/deepseek/deepseek-v3.2` | 0.25 / 0.38 |
+| `glm` | `openrouter/z-ai/glm-4.7` | 0.38 / 1.74 |
+
+All routed through OpenRouter. Override the map per project via
+`withAliases({...})` or replace entirely.
+
+## `withAliases`
+
+```ts
+function withAliases(
+  ...layers: ReadonlyArray<AliasMap>
+): AliasMap;
+```
+
+Merge user overrides on top of `DEFAULT_ALIASES`. Later layers win.
+
+## Provider env keys
+
+| provider | env var(s) |
+| --- | --- |
+| `openrouter` | `OPENROUTER_API_KEY` |
+| `openai` | `OPENAI_API_KEY` |
+| `anthropic` | `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` |
+| `google` | `GOOGLE_API_KEY`, `GEMINI_API_KEY` |
+| `groq` | `GROQ_API_KEY` |
+| `deepseek` | `DEEPSEEK_API_KEY` |
+| `mistral` | `MISTRAL_API_KEY` |
+| `cerebras` | `CEREBRAS_API_KEY` |
+
+First match wins. To add a provider, set the env var and reference it
+in your spec / alias.

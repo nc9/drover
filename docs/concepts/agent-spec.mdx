@@ -1,0 +1,79 @@
+---
+title: AgentSpec
+description: The serialisable substrate every agent reduces to.
+---
+
+```ts
+interface AgentSpec<ISchema = TSchema, OSchema = TSchema> {
+  id: string;
+  systemPrompt: string | (ctx: RunContext) => string | Promise<string>;
+  inputSchema: ISchema;
+  outputSchema: OSchema;
+  model: ModelSpec;
+  tools: readonly string[];
+  skills?: readonly string[];
+  mcpServers?: readonly string[];
+  subagents?: SubagentConfig;
+  outputRetries?: number;     // default 2
+  plugins?: readonly HarnessPlugin[];
+  maxTurns?: number;          // default 30
+  timeoutMs?: number;
+}
+```
+
+JSON-serialisable except for `systemPrompt` (when fn) and `plugins`
+(functions). Dynamic agents (LLM-composed at runtime) build the same
+shape — drover doesn't distinguish.
+
+## `ModelSpec`
+
+```ts
+type ModelSpec =
+  | string                          // "cheap" | "google/gemini-2.5-flash-lite" | "sonnet:high"
+  | { name: string; reasoning?: ReasoningLevel; temperature?: number; maxTokens?: number };
+```
+
+Lookup order: alias map (`@drover/model`'s `DEFAULT_ALIASES` plus per-
+call overrides) → provider-prefixed slug `provider:modelId` → pi-ai
+builtin model id (searched across every registered provider).
+
+Slug form: `"<name>:<reasoning>"` parses cleanly. Reasoning levels:
+`minimal | low | medium | high | xhigh`. Models with `reasoning: true`
+in pi-ai's registry default to `"medium"` if you don't pick.
+
+## `SubagentConfig`
+
+```ts
+interface SubagentConfig {
+  allowed: readonly string[];   // required
+  depth?: number;                // default 2
+  fanOut?: number;               // default 3
+}
+```
+
+See [Subagents](/guides/subagents).
+
+## Identity builder
+
+`defineAgent(spec) → spec` returns the input unchanged. The builder
+exists for type inference: `AgentInput<S>` and `AgentOutput<S>` derive
+their static types from the spec's TypeBox schemas.
+
+```ts
+const spec = defineAgent({ /* ... */ });
+type In = AgentInput<typeof spec>;
+type Out = AgentOutput<typeof spec>;
+```
+
+## Spec hash
+
+`hashSpec(spec)` covers every field that affects execution:
+id / tools / skills / mcpServers / model / systemPrompt /
+inputSchema / outputSchema / subagents / outputRetries / maxTurns /
+timeoutMs / plugins (by id).
+
+Plugin function bodies aren't included — bump the plugin's `id` when
+its behaviour changes. Function-valued `systemPrompt` uses
+`Function.toString()` so source edits produce different hashes (but
+closure-over-variables drift is invisible — prefer string prompts on
+resumable agents).

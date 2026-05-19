@@ -1,0 +1,27 @@
+{
+  "name": "@drover/harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@drover/core": "workspace:*",
+    "@drover/mcp": "workspace:*",
+    "@drover/model": "workspace:*",
+    "@drover/sandbox": "workspace:*",
+    "@drover/skills": "workspace:*",
+    "@drover/storage": "workspace:*",
+    "@drover/tools": "workspace:*",
+    "@mariozechner/pi-ai": "^0.70",
+    "@mariozechner/pi-agent-core": "^0.70",
+    "@sinclair/typebox": "^0.34.0",
+    "effect": "^3.10.0"
+  }
+}

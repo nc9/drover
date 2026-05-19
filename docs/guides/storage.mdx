@@ -1,0 +1,97 @@
+---
+title: Storage
+description: Persist runs + events + checkpoints. Plug in libsql or your own.
+---
+
+`@drover/storage` defines a `StorageAdapter` interface and ships two
+implementations: in-memory (for tests) and libsql (for durability).
+
+## Interface
+
+```ts
+interface StorageAdapter {
+  readonly id: string;
+  createRun(row): Effect<void, StorageError>;
+  updateRun(id, patch): Effect<void, StorageError>;
+  appendEvent(event): Effect<void, StorageError>;
+  saveCheckpoint(cp): Effect<void, StorageError>;
+  loadRun(id): Effect<RunRow | null, StorageError>;
+  loadLatestCheckpoint(runId): Effect<CheckpointRow | null, StorageError>;
+  listEvents(runId): Effect<readonly EventRow[], StorageError>;
+  listRuns(filter?): Effect<readonly RunRow[], StorageError>;
+  createPendingConfirmation(row): Effect<void, StorageError>;
+  resolvePendingConfirmation(runId, toolUseId, result, ts): Effect<void, StorageError>;
+  close(): Effect<void, StorageError>;
+}
+```
+
+When `storage` is wired into a run, the harness:
+- `createRun` on start
+- `appendEvent` for every `HarnessEvent`
+- `saveCheckpoint` at every turn boundary (snapshot of pi message list)
+- `updateRun` with terminal state when the run ends
+
+All storage failures are swallowed — observability shouldn't break
+execution. They surface in logs but the run continues.
+
+## In-memory
+
+```ts
+import { createMemoryStorage } from "@drover/storage";
+
+const storage = createMemoryStorage();
+```
+
+Map-backed, zero-dep, single-process. Crash = data gone. Good for tests
+and the eval suite.
+
+## libsql
+
+```ts
+import { createLibsqlStorage } from "@drover/storage";
+
+// local file
+const storage = await createLibsqlStorage({ url: "file:./var/runs.db" });
+
+// in-memory libsql (different from createMemoryStorage — real SQL, just no disk)
+const storage = await createLibsqlStorage({ url: ":memory:" });
+
+// Turso
+const storage = await createLibsqlStorage({
+  url: "libsql://your-org.turso.io",
+  authToken: process.env.TURSO_TOKEN,
+});
+```
+
+Migrations run on the first call to any read/write method. Tables:
+
+| table | purpose |
+| --- | --- |
+| `runs` | one row per run, terminal state |
+| `run_events` | append-only event log, replayable |
+| `run_checkpoints` | post-turn snapshots, for resume |
+| `pending_confirmations` | confirm-gate state (forward-compat) |
+| `drover_migrations` | applied migrations bookkeeping |
+
+## Use the eval viewer with your DB
+
+```bash
+DROVER_STORAGE_URL=file:./var/runs.db bun run dev
+```
+
+inside `apps/eval-viewer`. The viewer's storage page lists every run row
+and lets you drill into the timeline.
+
+## Custom adapter
+
+Implement the interface against whatever store fits your stack — Drizzle,
+D1, Postgres, etc. A common adoption path is to keep your existing ORM
+schema and implement `StorageAdapter` against it.
+
+Contract reminders:
+- `appendEvent` MUST persist in `seq` order; concurrent runs are
+  isolated by `runId`.
+- `loadLatestCheckpoint(runId)` returns the highest `seq` for that run.
+- `createPendingConfirmation` + `resolvePendingConfirmation` are present
+  in the interface for forward-compat with confirm-gate-as-control-plane.
+  v0 implementations can no-op them.

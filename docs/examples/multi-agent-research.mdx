@@ -1,0 +1,119 @@
+---
+title: Multi-agent research
+description: A planner agent that spawns researcher subagents via taskTool.
+---
+
+Demonstrates subagents + skills + the event timeline. The planner gets
+a question, decomposes it into two sub-topics, spawns a child
+`researcher` per sub-topic via the auto-injected `task` tool, then
+synthesises the findings.
+
+## Define both specs
+
+```ts title="research.ts"
+import { Type } from "@sinclair/typebox";
+import { defineAgent } from "@drover/core";
+
+// Child
+const researcher = defineAgent({
+  id: "researcher",
+  systemPrompt:
+    "Given a narrow topic, return EXACTLY 3 concise talking points " +
+    "(one sentence each). No preamble.",
+  inputSchema: Type.Object({ prompt: Type.String() }),
+  outputSchema: Type.Object({
+    topic: Type.String(),
+    points: Type.Array(Type.String(), { minItems: 3, maxItems: 3 }),
+  }),
+  model: "cheap",
+  tools: [],
+  maxTurns: 2,
+});
+
+// Parent
+const planner = defineAgent({
+  id: "planner",
+  systemPrompt: [
+    "You break down a complex question into 2 focused sub-topics, then",
+    "call the `task` tool to spawn a `researcher` subagent for each.",
+    "After both return, synthesise their findings.",
+  ].join(" "),
+  inputSchema: Type.Object({ question: Type.String() }),
+  outputSchema: Type.Object({
+    question: Type.String(),
+    sub_topics_explored: Type.Array(Type.String(), { minItems: 2, maxItems: 4 }),
+    synthesis: Type.String({ minLength: 100, maxLength: 1500 }),
+    children_used: Type.Integer({ minimum: 1 }),
+  }),
+  model: "cheap",
+  tools: [],
+  subagents: { allowed: ["researcher"], depth: 2, fanOut: 2 },
+  maxTurns: 6,
+});
+```
+
+## Wire the registry and run
+
+```ts
+import { runAgent, staticRegistry } from "@drover/facade";
+
+const registry = staticRegistry({ researcher });
+
+const handle = runAgent(
+  planner,
+  { question: "How are agent harnesses evolving — what's converging, what's diverging?" },
+  { agentRegistry: registry },
+);
+
+for await (const e of handle.events) {
+  if (e.kind === "subagent_start") {
+    console.log("→ spawned", e.childRunId, "as", e.agentId);
+  } else if (e.kind === "subagent_end") {
+    console.log("← done", e.childRunId, "status:", e.status);
+  }
+}
+
+const r = await handle.result;
+console.log(r.output);
+```
+
+## What you see in the event stream
+
+```
+run_start  planner
+input_validated
+turn_start  1
+tool_call_start  task   (researcher for "convergence")
+subagent_start   run_xxx:1 → researcher
+subagent_end     run_xxx:1 status: success
+tool_call_end    task
+tool_call_start  task   (researcher for "divergence")
+subagent_start   run_xxx:2 → researcher
+subagent_end     run_xxx:2 status: success
+tool_call_end    task
+turn_start  2
+assistant_text   { final synthesis JSON ... }
+output_validated
+run_end          success
+```
+
+## Enforcement
+
+`subagents.allowed` is an allowlist. If the planner tries to spawn a
+non-allowed agent type, the `task` tool returns an error result — the
+parent's model can adapt.
+
+`depth: 2` lets the child spawn grandchildren (depth 3 would be
+rejected). `fanOut: 2` caps concurrent children to 2.
+
+## Inspect the child run
+
+When you wire `storage`, each child gets its own `runs` row with
+`parent_run_id` set. The eval-viewer's storage page surfaces lineage.
+
+```ts
+import { createLibsqlStorage } from "@drover/storage";
+
+const storage = await createLibsqlStorage({ url: "file:./var/runs.db" });
+runAgent(planner, input, { agentRegistry: registry, storage });
+```

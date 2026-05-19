@@ -1,0 +1,98 @@
+---
+title: "@drover/tools"
+description: Built-in tool library.
+---
+
+Seven tools. All TypeBox-schemaed, all delegate through `SandboxAdapter`.
+
+## Composing
+
+The harness composes tools from `spec.tools` plus auto-injected ones
+(`task`, `skill_load`, MCP). Declare the ids you want:
+
+```ts
+defineAgent({
+  /* ... */
+  tools: ["read", "write", "edit", "grep"],
+});
+```
+
+## Tools
+
+### `bash`
+
+```ts
+bashTool(sandbox): ToolDef<{ command: string; cwd?: string; timeout_ms?: number }>
+```
+
+Runs `/bin/sh -c <command>`. Requires `sandbox.capabilities.shell === true`
+or the harness silently skips it. Output truncated to 16KB.
+
+### `read`
+
+```ts
+readTool(sandbox): ToolDef<{ path: string; offset?: number; limit?: number }>
+```
+
+`offset` is 1-based start line; `limit` caps lines returned. Read
+through the sandbox's realpath check — symlinks resolved, allowed-roots
+enforced.
+
+### `write`
+
+```ts
+writeTool(sandbox): ToolDef<{ path: string; contents: string }>
+```
+
+Creates parent dirs. Overwrites. Same sandbox checks as `read`.
+
+### `edit`
+
+```ts
+editTool(sandbox): ToolDef<{ path: string; old_string: string; new_string: string }>
+```
+
+Errors if `old_string` not found OR not unique in the file. Forces the
+model to narrow `old_string` when there's ambiguity — avoids accidental
+multi-site edits.
+
+### `grep`
+
+```ts
+grepTool(sandbox): ToolDef<{ pattern: string; path?: string; glob?: string; max_results?: number }>
+```
+
+`grep -RInE`. Calls `assertPathAllowed(target)` before spawning — can't
+escape allowed roots via path argv.
+
+### `find`
+
+```ts
+findTool(sandbox): ToolDef<{ path?: string; name?: string; type?: "f" | "d"; max_depth?: number }>
+```
+
+Wraps `find`. Same path gate as `grep`.
+
+### `ls`
+
+```ts
+lsTool(sandbox): ToolDef<{ path?: string; all?: boolean }>
+```
+
+Wraps `ls -l` (or `-la` with `all`). Same path gate.
+
+## `buildBuiltins` / `builtinsById`
+
+```ts
+function buildBuiltins(sandbox: SandboxAdapter): readonly AnyToolDef[];
+function builtinsById(sandbox: SandboxAdapter): Readonly<Record<BuiltinToolId, AnyToolDef>>;
+```
+
+The harness uses `builtinsById` to look up tools by `spec.tools[i]`.
+Use `buildBuiltins` if you want every built-in as an array.
+
+## `BuiltinToolId`
+
+```ts
+type BuiltinToolId = "bash" | "read" | "write" | "edit" | "grep" | "ls" | "find";
+```

@@ -1,0 +1,81 @@
+---
+title: "@drover/skills"
+description: SKILL.md loader + registry + skill_load tool.
+---
+
+## `parseSkillFile`
+
+```ts
+function parseSkillFile(contents: string, filepath: string): SkillSpec;
+
+interface SkillSpec {
+  name: string;
+  description: string;
+  body: string;
+  path: string;
+  metadata: Readonly<Record<string, unknown>>;
+}
+```
+
+Parses YAML frontmatter + body. Requires `name` + `description`.
+Extra frontmatter fields preserved in `metadata`. Throws
+`SkillLoadError` on malformed input.
+
+## `scanSkillDirs`
+
+```ts
+function scanSkillDirs(
+  roots: readonly string[],
+  opts?: {
+    filename?: string;          // default "SKILL.md"
+    maxDepth?: number;          // default 3
+    skipPrefixes?: readonly string[];  // default [".", "_", "node_modules"]
+  },
+): Promise<readonly SkillSpec[]>;
+```
+
+Recursively scans for skill files. Each leaf dir holds at most one
+skill — descent stops once found. Dedups by `name` (first wins).
+Absent roots are silently skipped.
+
+## `createSkillRegistry`
+
+```ts
+function createSkillRegistry(skills: readonly SkillSpec[]): SkillRegistry;
+
+interface SkillRegistry {
+  get(name: string): SkillSpec | undefined;
+  has(name: string): boolean;
+  list(): readonly SkillSpec[];
+}
+```
+
+In-process directory. First-wins dedup matches `scanSkillDirs`.
+
+## `skillLoadTool`
+
+```ts
+function skillLoadTool(opts: {
+  registry: SkillRegistry;
+  allowed: readonly string[];
+}): ToolDef<{ name: string }>;
+```
+
+The tool the harness auto-injects when `spec.skills` is declared.
+`allowed` is the spec's skill list — names outside it return a deny
+result (the model can recover; the run continues).
+
+You won't usually construct this directly; the harness wires it.
+
+## `renderSkillsBlock`
+
+```ts
+function renderSkillsBlock(
+  registry: SkillRegistry,
+  allowed: readonly string[],
+): string;
+```
+
+Builds the "Available skills" block appended to the system prompt.
+Lists name + one-line description for each allowlisted skill the
+registry knows about. Empty string when nothing matches.

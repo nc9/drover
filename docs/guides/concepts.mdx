@@ -1,0 +1,128 @@
+---
+title: Concepts
+description: The mental model behind drover — what each piece does and how they fit.
+---
+
+drover keeps its public surface small. Five things to know.
+
+## 1. `AgentSpec` — the data substrate
+
+```ts
+const spec = defineAgent({
+  id: "writer",
+  systemPrompt: "...",
+  inputSchema: Type.Object({ topic: Type.String() }),
+  outputSchema: Type.Object({ body: Type.String() }),
+  model: "cheap",
+  tools: ["read", "write"],
+  skills: ["editor"],
+  mcpServers: ["fixture"],
+  subagents: { allowed: ["researcher"], depth: 2, fanOut: 3 },
+  plugins: [loopDetectPlugin(), bashBlocklistPlugin()],
+  maxTurns: 10,
+  outputRetries: 2,
+  timeoutMs: 60_000,
+});
+```
+
+An `AgentSpec` is JSON-serialisable data (plus a couple of function-valued
+slots). Static agents are spec literals; dynamic agents (LLM-composed at
+runtime) materialise the same shape. The harness consumes one substrate
+either way.
+
+`defineAgent` is an identity builder — it just types the result. No
+runtime work.
+
+## 2. `RunContext` — what a single run carries
+
+```ts
+interface RunContext {
+  runId: string;
+  parentRunId?: string;
+  depth: number;
+  cwd: string;
+  env: Readonly<Record<string, string>>;
+  signal: AbortSignal;
+  meta?: Readonly<Record<string, unknown>>;
+}
+```
+
+Threaded through the harness, plugins, and tools. Subagents get a derived
+context with `depth + 1` and a `:N` suffix on `runId`.
+
+## 3. `HarnessEvent` — the firehose
+
+drover normalises pi-agent-core's events into one discriminated union:
+
+```
+run_start → input_validated → turn_start → llm_call →
+  (thinking | assistant_text | tool_call_start / tool_call_end | usage)* →
+output_validated | output_retry → run_end
+```
+
+Plus `subagent_start`/`subagent_end` when a `task` tool spawns a child,
+and `error` for any failure.
+
+Observers attach via `HarnessPlugin.onEvent`. Built-in `stepTracerPlugin`
+projects the stream into a flat list ready for storage / UI.
+
+## 4. `HarnessPlugin` — extension surface
+
+```ts
+interface HarnessPlugin {
+  id: string;
+  tools?: ToolDef[];
+  wrapTool?: (tool) => tool;
+  beforeToolCall?: (name, input, ctx) => Effect<ToolDecision, ...>;
+  afterToolCall?:  (name, input, result, ctx) => Effect<ToolResult, ...>;
+  beforeCompaction?: (history, ctx) => Effect<history, ...>;
+  onEvent?: (event, ctx) => Effect<void, never>;
+  onError?: (error, ctx) => Effect<ErrorRecovery, never>;
+}
+```
+
+A plugin bundles capabilities — contribute tools AND intercept calls AND
+observe events. Order matters: `beforeToolCall` chains stop at the first
+`deny`; `wrapTool` composes outer-last; observers fan out.
+
+drover ships eight built-ins: loop-detect, step-tracer, bash-blocklist,
+circuit-breaker, write-policy, phase-recorder, confirm-gate,
+output-validate. See [/reference/plugins](/reference/plugins).
+
+## 5. Storage + pause/resume
+
+```ts
+const storage = await createLibsqlStorage({ url: "file:./var/runs.db" });
+const handle = runAgent(spec, input, { storage });
+// ... mid-run ...
+handle.pause();  // persists checkpoint, status="paused"
+
+// later, maybe in another process:
+const resumed = resumeAgent(spec, runId, { storage });
+const result = await resumed.result;
+```
+
+`resumeAgent` validates everything before replaying: run exists, status
+is `paused`, agent id matches, **spec hash matches**. Edit the prompt and
+resume — drover refuses with a `ResumeError`. See
+[/concepts/hash-spec](/concepts/hash-spec) for what the hash covers.
+
+## How they fit
+
+```
+                    ┌─ defineAgent → AgentSpec ─┐
+                    │                            │
+   runAgent(spec) ──┼─ pi-agent-core loop ──────┤
+   resumeAgent     │  + plugins                 │
+                    │  + storage hooks           │
+                    │  + tool dispatch           │
+                    │                            │
+                    └─→ HarnessEvent stream      │
+                       RunResult                 │
+                                                 │
+                       Optional: runtime layer ──┘
+                       (queue + worker pool + RunApi)
+```
+
+Read [the AgentSpec reference](/concepts/agent-spec) for the full shape,
+or jump to [Writing an agent](/guides/writing-an-agent) for the recipe.

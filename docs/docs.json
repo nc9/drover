@@ -1,0 +1,80 @@
+{
+  "$schema": "https://tangly.dev/schema/docs.json",
+  "name": "drover",
+  "theme": "tang",
+  "colors": {
+    "primary": "#38bdf8",
+    "light": "#7dd3fc",
+    "dark": "#0284c7"
+  },
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get Started",
+        "pages": [
+          "introduction",
+          "guides/quickstart",
+          "guides/concepts"
+        ]
+      },
+      {
+        "group": "Guides",
+        "pages": [
+          "guides/writing-an-agent",
+          "guides/plugins",
+          "guides/skills",
+          "guides/mcp",
+          "guides/subagents",
+          "guides/pause-resume",
+          "guides/runtime",
+          "guides/sandboxes",
+          "guides/storage",
+          "guides/evals"
+        ]
+      },
+      {
+        "group": "Concepts",
+        "pages": [
+          "concepts/agent-spec",
+          "concepts/events-and-streams",
+          "concepts/plugin-model",
+          "concepts/hash-spec"
+        ]
+      },
+      {
+        "group": "Examples",
+        "pages": [
+          "examples/echo-agent",
+          "examples/multi-agent-research",
+          "examples/queue-worker"
+        ]
+      },
+      {
+        "group": "API Reference",
+        "pages": [
+          "reference/core",
+          "reference/facade",
+          "reference/harness",
+          "reference/model",
+          "reference/sandbox",
+          "reference/tools",
+          "reference/plugins",
+          "reference/skills",
+          "reference/mcp",
+          "reference/storage",
+          "reference/runtime"
+        ]
+      }
+    ]
+  },
+  "navbar": {
+    "links": [
+      { "label": "GitHub", "href": "https://github.com/nc9/drover" }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/nc9/drover"
+    }
+  }
+}

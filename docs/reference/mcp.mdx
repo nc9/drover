@@ -1,0 +1,73 @@
+---
+title: "@drover/mcp"
+description: MCP runtime — stdio + http transports, tool prefixing, allowlist.
+---
+
+## `createMcpRuntime`
+
+```ts
+function createMcpRuntime(
+  configs: readonly McpServerConfig[],
+): Promise<McpRuntime>;
+```
+
+Connects every server in parallel, lists tools, wraps each as a
+prefixed drover `ToolDef`. Failed connects don't block siblings —
+they just contribute 0 tools.
+
+## `McpServerConfig`
+
+```ts
+type McpServerConfig = McpStdioConfig | McpHttpConfig;
+
+interface McpStdioConfig {
+  id: string;
+  transport: "stdio";
+  command: string;
+  args?: readonly string[];
+  env?: Readonly<Record<string, string | null>>;
+  cwd?: string;
+}
+
+interface McpHttpConfig {
+  id: string;
+  transport: "http";          // Streamable HTTP + SSE auto-negotiated
+  url: string;
+  headers?: Readonly<Record<string, string>>;
+}
+```
+
+## `McpRuntime`
+
+```ts
+interface McpRuntime {
+  tools(allowed?: readonly string[]): readonly AnyToolDef[];
+  servers(): readonly McpServerInfo[];
+  close(): Promise<void>;
+}
+
+interface McpServerInfo {
+  id: string;
+  transport: "stdio" | "http";
+  toolCount: number;
+}
+```
+
+`tools(allowed)` filters by server allowlist for harness composition.
+`servers()` exposes connection state for diagnostics.
+
+## `prefixedToolName` / `parsePrefixedToolName`
+
+```ts
+function prefixedToolName(serverId: string, toolName: string): string;
+function parsePrefixedToolName(name: string): { serverId, toolName } | null;
+```
+
+Prefix format: `<server>__<tool>`. Tool names containing `__` are
+split at the first occurrence; everything after stays in `toolName`.
+
+## Tool schemas
+
+MCP tool input schemas are preserved via `Type.Unsafe(jsonSchema)` so
+the model sees the right arg shape. Validation is the MCP server's
+responsibility — drover doesn't re-validate.
