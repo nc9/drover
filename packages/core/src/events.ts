@@ -94,6 +94,25 @@ export type HarnessEvent =
       status: "success" | "max_turns" | "cancelled" | "error" | "paused";
       ts: number;
     }
+  | {
+      kind: "memory_written";
+      runId: string;
+      entry: {
+        id: string;
+        scope: "global" | "agent" | "run";
+        kind: "user" | "feedback" | "project" | "reference";
+        summary: string;
+      };
+      ts: number;
+    }
+  | {
+      kind: "memory_recalled";
+      runId: string;
+      query: string | null;
+      scopes: ReadonlyArray<"global" | "agent" | "run">;
+      hits: ReadonlyArray<{ id: string; scope: "global" | "agent" | "run"; score: number }>;
+      ts: number;
+    }
   | { kind: "error"; runId: string; tag: string; message: string; ts: number };
 
 /** Narrow on `kind`. */

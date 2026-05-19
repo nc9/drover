@@ -26,6 +26,20 @@ export type ModelSpec =
       maxTokens?: number;
     };
 
+/** Memory configuration — gates `remember`/`recall`/`forget` and the index block. */
+export interface MemorySpec {
+  /** Master switch — wire memory tools and index block when true. */
+  enabled: boolean;
+  /** Auto-inject the scoped summary index in the system prompt. Default true. */
+  includeIndex?: boolean;
+  /** Max entries surfaced in the auto-injected index. Default 30. */
+  maxIndexEntries?: number;
+  /** Expose `forget` to the agent. Off by default (irreversible). */
+  allowForget?: boolean;
+  /** Cap on `remember` calls per turn. Default 1. Set 0 to disable rate-limit. */
+  writesPerTurn?: number;
+}
+
 /** Subagent capacity limits enforced by the `taskTool` factory. */
 export interface SubagentConfig {
   /** Maximum nesting depth from the root run. Default 2. */
@@ -74,6 +88,8 @@ export interface AgentSpec<
   maxTurns?: number;
   /** Wall-clock budget (ms) for the whole run. */
   timeoutMs?: number;
+  /** Self-curated knowledge across runs. Wires `remember`/`recall` tools. */
+  memory?: MemorySpec;
 }
 
 /** Static input type derived from an `AgentSpec`'s `inputSchema`. */

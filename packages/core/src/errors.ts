@@ -86,6 +86,14 @@ export class PluginError extends Data.TaggedError("PluginError")<{
   readonly message: string;
 }> {}
 
+/** Memory adapter failure — read/write/search against the memory store. */
+export class MemoryError extends Data.TaggedError("MemoryError")<{
+  readonly op: "put" | "get" | "search" | "list" | "forget" | "close" | "init";
+  readonly reason: "not_found" | "invalid_scope" | "path_escape" | "io" | "invalid_id";
+  readonly message: string;
+  readonly id?: string;
+}> {}
+
 /**
  * Discriminated union of every error a run can fail with.
  * Effect surface uses this as the error channel: `Effect<RunResult, HarnessError, R>`.
@@ -101,4 +109,5 @@ export type HarnessError =
   | ModelError
   | SandboxError
   | StorageError
-  | PluginError;
+  | PluginError
+  | MemoryError;
