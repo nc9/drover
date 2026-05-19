@@ -19,6 +19,8 @@ import type { HarnessEvent, RunResult, AgentSpec } from "@drover/core";
 
 import { ALL_SCENARIOS, SUBAGENT_REGISTRY, type Scenario } from "./scenarios/index.ts";
 import { RUNTIME_QUEUE_SCENARIO, runtimeAgent } from "./scenarios/runtime-queue.ts";
+import { MEMORY_SELF_LEARN_SCENARIO, memoryAgent } from "./scenarios/memory-self-learn.ts";
+import { createInMemoryMemory } from "@drover/memory";
 
 const ROOT = path.dirname(new URL(import.meta.url).pathname);
 const RESULTS_ROOT = path.join(ROOT, "eval-results");
@@ -168,6 +170,71 @@ async function runScenario(
   return out;
 }
 
+async function runMemorySelfLearnScenario(runsetDir: string): Promise<ScenarioRun> {
+  const s = MEMORY_SELF_LEARN_SCENARIO;
+  console.log(`▶ ${s.id}  (${s.name})`);
+  const startedAt = new Date();
+  const scenarioDir = path.join(runsetDir, s.id);
+  await fs.mkdir(scenarioDir, { recursive: true });
+
+  // Pre-seed the adapter with one global fact the agent should surface.
+  const memory = createInMemoryMemory();
+  await (
+    await import("effect")
+  ).Effect.runPromise(memory.put(s.seed));
+
+  const tracer = stepTracerPlugin();
+  const handle = runAgent(
+    s.agent,
+    { question: s.question },
+    {
+      memory,
+      plugins: [tracer.plugin],
+    },
+  );
+
+  const events: HarnessEvent[] = [];
+  for await (const e of handle.events) {
+    events.push(e);
+    if (e.kind === "tool_call_start") {
+      console.log(`    🔧 ${e.toolName} ${JSON.stringify(e.input).slice(0, 140)}`);
+    } else if (e.kind === "memory_written") {
+      console.log(`    📝 memory_written ${e.entry.scope}/${e.entry.kind} "${e.entry.summary}"`);
+    } else if (e.kind === "memory_recalled") {
+      console.log(`    🔎 memory_recalled q="${e.query ?? ""}" hits=${e.hits.length}`);
+    }
+  }
+
+  const result = await handle.result;
+  const durationMs = Date.now() - startedAt.getTime();
+  const tokens = { input: result.usage.inputTokens, output: result.usage.outputTokens };
+  const symbol = result.status === "success" ? "✓" : "✗";
+  console.log(
+    `  ${symbol} ${result.status}  turns=${result.turns}  ${(durationMs / 1000).toFixed(1)}s  ${tokens.input}/${tokens.output}tok  $${(result.usage.costUsd ?? 0).toFixed(5)}`,
+  );
+
+  const out: ScenarioRun = {
+    id: s.id,
+    name: s.name,
+    category: s.category,
+    description: s.description,
+    startedAt: startedAt.toISOString(),
+    durationMs,
+    status: result.status,
+    output: result.output,
+    finalText: result.finalText,
+    turns: result.turns,
+    tokens,
+    costUsd: result.usage.costUsd ?? 0,
+    toolCalls: [...result.toolCalls],
+    events,
+    trace: [...tracer.steps],
+    ...(result.error ? { error: result.error } : {}),
+  };
+  await fs.writeFile(path.join(scenarioDir, "result.json"), JSON.stringify(out, null, 2));
+  return out;
+}
+
 async function runRuntimeQueueScenario(runsetDir: string): Promise<ScenarioRun> {
   const s = RUNTIME_QUEUE_SCENARIO;
   console.log(`▶ ${s.id}  (${s.name})`);
@@ -284,7 +351,8 @@ async function main(): Promise<void> {
   const filter = new Set(argv);
   const scenarios = ALL_SCENARIOS.filter((s) => filter.size === 0 || filter.has(s.id));
   const wantsRuntime = filter.size === 0 || filter.has(RUNTIME_QUEUE_SCENARIO.id);
-  if (scenarios.length === 0 && !wantsRuntime) {
+  const wantsMemory = filter.size === 0 || filter.has(MEMORY_SELF_LEARN_SCENARIO.id);
+  if (scenarios.length === 0 && !wantsRuntime && !wantsMemory) {
     console.error(`no scenarios match: ${argv.join(", ")}`);
     process.exit(1);
   }
@@ -315,6 +383,14 @@ async function main(): Promise<void> {
   if (wantsRuntime) {
     try {
       runs.push(await runRuntimeQueueScenario(runsetDir));
+    } catch (err) {
+      console.error(`  fatal: ${(err as Error).message}`);
+    }
+  }
+
+  if (wantsMemory) {
+    try {
+      runs.push(await runMemorySelfLearnScenario(runsetDir));
     } catch (err) {
       console.error(`  fatal: ${(err as Error).message}`);
     }

@@ -11,6 +11,7 @@
     "@drover/core": "workspace:*",
     "@drover/facade": "workspace:*",
     "@drover/mcp": "workspace:*",
+    "@drover/memory": "workspace:*",
     "@drover/plugins": "workspace:*",
     "@drover/runtime": "workspace:*",
     "@drover/sandbox": "workspace:*",

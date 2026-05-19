@@ -29,6 +29,21 @@ type ParsedRow =
   | { kind: "output-retry"; ts: number; attempt: number; reason: string }
   | { kind: "output-validated"; ts: number }
   | { kind: "subagent"; ts: number; childRunId: string; agentId?: string; phase: "start" | "end"; status?: string }
+  | {
+      kind: "memory-written";
+      ts: number;
+      id: string;
+      scope: string;
+      memKind: string;
+      summary: string;
+    }
+  | {
+      kind: "memory-recalled";
+      ts: number;
+      query: string | null;
+      scopes: ReadonlyArray<string>;
+      hits: ReadonlyArray<{ id: string; scope: string; score: number }>;
+    }
   | { kind: "run-end"; ts: number; status: string }
   | { kind: "error"; ts: number; tag: string; message: string };
 
@@ -108,6 +123,25 @@ function parseEvents(events: ReadonlyArray<HarnessEvent>): ParsedRow[] {
         break;
       case "subagent_end":
         rows.push({ kind: "subagent", ts: e.ts, childRunId: e.childRunId, phase: "end", status: e.status });
+        break;
+      case "memory_written":
+        rows.push({
+          kind: "memory-written",
+          ts: e.ts,
+          id: e.entry.id,
+          scope: e.entry.scope,
+          memKind: e.entry.kind,
+          summary: e.entry.summary,
+        });
+        break;
+      case "memory_recalled":
+        rows.push({
+          kind: "memory-recalled",
+          ts: e.ts,
+          query: e.query,
+          scopes: e.scopes,
+          hits: e.hits,
+        });
         break;
       case "run_end":
         rows.push({ kind: "run-end", ts: e.ts, status: e.status });
@@ -216,6 +250,23 @@ function Row({ row, t0 }: { row: ParsedRow; t0: number }): React.ReactElement | 
               : `subagent ${row.childRunId} ${row.status ?? "done"}`
           }
           relMs={row.ts - t0}
+        />
+      );
+    case "memory-written":
+      return (
+        <StatusChip
+          icon={<Brain size={11} />}
+          text={`memory · ${row.scope}/${row.memKind} · ${row.summary.slice(0, 80)}`}
+          relMs={row.ts - t0}
+        />
+      );
+    case "memory-recalled":
+      return (
+        <StatusChip
+          icon={<Brain size={11} />}
+          text={`recall · ${row.query ? `"${row.query.slice(0, 40)}" · ` : ""}${row.hits.length} hit(s)`}
+          relMs={row.ts - t0}
+          muted
         />
       );
     case "run-end":
