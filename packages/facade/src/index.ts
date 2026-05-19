@@ -48,6 +48,14 @@ export interface RunOptions {
    * agent's toolset (prefixed `<serverId>__<toolName>`).
    */
   mcpRuntime?: HarnessDeps["mcpRuntime"];
+  /**
+   * Memory adapter. When supplied AND `spec.memory?.enabled === true`,
+   * the harness auto-injects `remember` / `recall` (and `forget` if
+   * `spec.memory.allowForget`), appends a scoped index to the system
+   * prompt (unless `includeIndex: false`), and applies a rate-limit
+   * plugin matching `writesPerTurn`.
+   */
+  memory?: HarnessDeps["memory"];
 }
 
 export interface RunHandle<S extends AgentSpec> {
@@ -111,6 +119,7 @@ export function runAgent<S extends AgentSpec<TSchema, TSchema>>(
     ...(options?.storage ? { storage: options.storage } : {}),
     ...(options?.skills ? { skills: options.skills } : {}),
     ...(options?.mcpRuntime ? { mcpRuntime: options.mcpRuntime } : {}),
+    ...(options?.memory ? { memory: options.memory } : {}),
   };
 
   const effectiveSpec: S =
@@ -223,6 +232,7 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
     ...(options.agentRegistry ? { agentRegistry: options.agentRegistry } : {}),
     ...(options.skills ? { skills: options.skills } : {}),
     ...(options.mcpRuntime ? { mcpRuntime: options.mcpRuntime } : {}),
+    ...(options.memory ? { memory: options.memory } : {}),
   };
 
   const effectiveSpec: S =

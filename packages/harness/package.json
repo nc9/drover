@@ -14,6 +14,7 @@
   "dependencies": {
     "@drover/core": "workspace:*",
     "@drover/mcp": "workspace:*",
+    "@drover/memory": "workspace:*",
     "@drover/model": "workspace:*",
     "@drover/sandbox": "workspace:*",
     "@drover/skills": "workspace:*",

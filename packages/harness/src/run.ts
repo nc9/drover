@@ -19,6 +19,14 @@ import type { McpRuntime } from "@drover/mcp";
 import { resolveModel, type ResolveOptions } from "@drover/model";
 import type { SandboxAdapter } from "@drover/sandbox";
 import {
+  forgetTool,
+  memoryRateLimitPlugin,
+  recallTool,
+  rememberTool,
+  renderMemoryIndex,
+  type MemoryAdapter,
+} from "@drover/memory";
+import {
   renderSkillsBlock,
   skillLoadTool,
   skillResourceTool,
@@ -63,6 +71,13 @@ export interface HarnessDeps {
    * and appends an "Available skills" section to the system prompt.
    */
   skills?: SkillRegistry;
+  /**
+   * Memory adapter. When provided AND `spec.memory?.enabled === true`, the
+   * harness auto-injects `remember` / `recall` (and optionally `forget`),
+   * appends a scoped memory index to the system prompt, and applies the
+   * rate-limit plugin if `writesPerTurn > 0`.
+   */
+  memory?: MemoryAdapter;
   /**
    * Connected MCP runtime. When provided AND the spec declares
    * `mcpServers`, every tool from the allowlisted servers is composed
@@ -114,7 +129,16 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     const usage: Usage = { inputTokens: 0, outputTokens: 0 };
     const toolCalls: string[] = resumeFrom ? [...resumeFrom.toolCalls] : [];
 
-    const plugins: ReadonlyArray<import("@drover/core").HarnessPlugin> = spec.plugins ?? [];
+    const explicitPlugins: ReadonlyArray<import("@drover/core").HarnessPlugin> = spec.plugins ?? [];
+    // Auto-apply memory rate-limit when memory is enabled and writes-per-turn > 0.
+    const writesPerTurn = spec.memory?.writesPerTurn ?? 1;
+    const autoMemoryPlugin: import("@drover/core").HarnessPlugin | null =
+      spec.memory?.enabled && deps.memory && writesPerTurn > 0
+        ? memoryRateLimitPlugin({ writesPerTurn })
+        : null;
+    const plugins: ReadonlyArray<import("@drover/core").HarnessPlugin> = autoMemoryPlugin
+      ? [...explicitPlugins, autoMemoryPlugin]
+      : explicitPlugins;
     const storage = deps.storage;
     // Seq counter continues from the checkpoint to avoid collisions with the
     // events that were already persisted before pause. We add a small gap so
@@ -194,7 +218,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       ...(deps.env ? { env: deps.env } : {}),
     });
 
-    const tools = composeTools(spec, deps, plugins, safeEmit);
+    const tools = composeTools(spec, deps, plugins, safeEmit, ctx.runId);
     const promptSource = spec.systemPrompt;
     const basePrompt: string =
       typeof promptSource === "string"
@@ -207,7 +231,16 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       spec.skills && spec.skills.length > 0 && deps.skills
         ? renderSkillsBlock(deps.skills, spec.skills)
         : "";
-    const systemPrompt = skillsBlock ? `${basePrompt}\n${skillsBlock}` : basePrompt;
+    // Memory index block (opt-out via spec.memory.includeIndex === false).
+    const memoryBlock =
+      spec.memory?.enabled && spec.memory.includeIndex !== false && deps.memory
+        ? yield* renderMemoryIndex(deps.memory, spec.id, {
+            maxEntries: spec.memory.maxIndexEntries ?? 30,
+          })
+        : "";
+    const systemPrompt = [basePrompt, skillsBlock, memoryBlock]
+      .filter((s) => s.length > 0)
+      .join("\n");
 
     const userPrompt = buildUserPrompt(spec, input);
 
@@ -560,6 +593,7 @@ function composeTools(
   deps: HarnessDeps,
   plugins: ReadonlyArray<import("@drover/core").HarnessPlugin>,
   parentEmit: (event: HarnessEvent) => void,
+  runId: string,
 ): ReadonlyArray<AnyToolDef> {
   const byId = builtinsById(deps.sandbox);
   const wanted = new Set(spec.tools);
@@ -597,6 +631,29 @@ function composeTools(
   if (spec.skills && spec.skills.length > 0 && deps.skills) {
     out.push(skillLoadTool({ registry: deps.skills, allowed: spec.skills }));
     out.push(skillResourceTool({ registry: deps.skills, allowed: spec.skills }));
+  }
+
+  // Auto-inject memory tools when the spec opts in + adapter is wired.
+  if (spec.memory?.enabled && deps.memory) {
+    out.push(
+      rememberTool({
+        adapter: deps.memory,
+        agentId: spec.id,
+        runId,
+        emit: parentEmit,
+      }),
+    );
+    out.push(
+      recallTool({
+        adapter: deps.memory,
+        agentId: spec.id,
+        runId,
+        emit: parentEmit,
+      }),
+    );
+    if (spec.memory.allowForget) {
+      out.push(forgetTool({ adapter: deps.memory, agentId: spec.id }));
+    }
   }
 
   // Inject MCP tools from allowed servers. Tool names are already
@@ -731,6 +788,7 @@ export function hashSpec(spec: AgentSpec): string {
     maxTurns: spec.maxTurns,
     timeoutMs: spec.timeoutMs,
     pluginIds: (spec.plugins ?? []).map((p) => p.id),
+    memory: spec.memory ?? null,
   });
   for (let i = 0; i < s.length; i++) {
     h = (h * 31 + s.charCodeAt(i)) | 0;

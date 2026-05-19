@@ -74,4 +74,34 @@ describe("hashSpec", () => {
     const b = { ...baseSpec, systemPrompt: () => "stable" };
     expect(hashSpec(a)).toBe(hashSpec(b));
   });
+
+  test("memory.enabled toggle changes the hash", () => {
+    const off = { ...baseSpec, memory: { enabled: false } };
+    const on = { ...baseSpec, memory: { enabled: true } };
+    expect(hashSpec(off)).not.toBe(hashSpec(on));
+  });
+
+  test("memory.includeIndex toggle changes the hash", () => {
+    const a = { ...baseSpec, memory: { enabled: true, includeIndex: true } };
+    const b = { ...baseSpec, memory: { enabled: true, includeIndex: false } };
+    expect(hashSpec(a)).not.toBe(hashSpec(b));
+  });
+
+  test("memory.allowForget toggle changes the hash", () => {
+    const a = { ...baseSpec, memory: { enabled: true, allowForget: false } };
+    const b = { ...baseSpec, memory: { enabled: true, allowForget: true } };
+    expect(hashSpec(a)).not.toBe(hashSpec(b));
+  });
+
+  test("memory.writesPerTurn drift changes the hash", () => {
+    const a = { ...baseSpec, memory: { enabled: true, writesPerTurn: 1 } };
+    const b = { ...baseSpec, memory: { enabled: true, writesPerTurn: 3 } };
+    expect(hashSpec(a)).not.toBe(hashSpec(b));
+  });
+
+  test("memory.maxIndexEntries drift changes the hash", () => {
+    const a = { ...baseSpec, memory: { enabled: true, maxIndexEntries: 30 } };
+    const b = { ...baseSpec, memory: { enabled: true, maxIndexEntries: 50 } };
+    expect(hashSpec(a)).not.toBe(hashSpec(b));
+  });
 });
