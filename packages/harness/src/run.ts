@@ -18,7 +18,12 @@ import {
 import type { McpRuntime } from "@drover/mcp";
 import { resolveModel, type ResolveOptions } from "@drover/model";
 import type { SandboxAdapter } from "@drover/sandbox";
-import { renderSkillsBlock, skillLoadTool, type SkillRegistry } from "@drover/skills";
+import {
+  renderSkillsBlock,
+  skillLoadTool,
+  skillResourceTool,
+  type SkillRegistry,
+} from "@drover/skills";
 import type { CheckpointRow, StorageAdapter } from "@drover/storage";
 import { builtinsById, type BuiltinToolId } from "@drover/tools";
 import { Effect } from "effect";
@@ -585,10 +590,13 @@ function composeTools(
     out.push(taskTool(subagentOpts));
   }
 
-  // Auto-inject `skill_load` when the spec declares skills + the caller
-  // supplied a registry. Allowlist is the spec's declared skill names.
+  // Auto-inject `skill_load` + `skill_resource` when the spec declares
+  // skills + the caller supplied a registry. Allowlist is the spec's
+  // declared skill names. Progressive disclosure: names in the system
+  // prompt → body via skill_load → supporting files via skill_resource.
   if (spec.skills && spec.skills.length > 0 && deps.skills) {
     out.push(skillLoadTool({ registry: deps.skills, allowed: spec.skills }));
+    out.push(skillResourceTool({ registry: deps.skills, allowed: spec.skills }));
   }
 
   // Inject MCP tools from allowed servers. Tool names are already

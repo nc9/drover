@@ -21,6 +21,9 @@ export function renderSkillsBlock(
     // long-form descriptions are written across multiple lines.
     const summary = skill.description.replace(/\s+/g, " ").trim().slice(0, 200);
     lines.push(`- ${name}: ${summary}`);
+    if (skill.compatibility) {
+      lines.push(`  (compatibility: ${skill.compatibility})`);
+    }
   }
   if (lines.length === 0) return "";
   return [

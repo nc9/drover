@@ -1,25 +1,72 @@
 ---
 title: "@drover/skills"
-description: SKILL.md loader + registry + skill_load tool.
+description: Agent Skills loader + registry + skill_load / skill_resource tools.
 ---
+
+Implements the [Agent Skills specification](https://agentskills.io/specification).
+
+## `SkillSpec`
+
+```ts
+interface SkillSpec {
+  name: string;                          // 1-64 chars, [a-z0-9-]+
+  description: string;                   // 1-1024 chars
+  license?: string;                      // optional
+  compatibility?: string;                // optional, ≤500 chars
+  metadata: Readonly<Record<string, string>>;  // typed metadata field
+  allowedTools?: string;                 // raw `allowed-tools` value
+  body: string;                          // markdown after frontmatter
+  path: string;                          // abs path to SKILL.md
+  dir: string;                           // abs path to skill root
+  extra: Readonly<Record<string, unknown>>;  // non-spec frontmatter keys
+}
+```
+
+## `parseSkill`
+
+```ts
+function parseSkill(
+  contents: string,
+  filepath: string,
+  opts?: { mode?: "strict" | "lenient"; skipParentDirCheck?: boolean },
+): { spec: SkillSpec; warnings: readonly SkillIssue[] };
+
+interface SkillIssue {
+  field: string;
+  message: string;
+}
+```
+
+Parses YAML frontmatter + body. Validates per the spec:
+
+- `name`: 1-64 chars, `[a-z0-9-]+`, no leading/trailing/consecutive
+  hyphens, must equal parent directory name (skip via
+  `skipParentDirCheck`).
+- `description`: 1-1024 chars.
+- `compatibility`: ≤500 chars.
+- `metadata`: string→string map.
+- `allowed-tools`: string OR YAML list of strings.
+
+Strict mode (default) throws `SkillLoadError` on any violation. Lenient
+mode returns the spec with `warnings` populated.
 
 ## `parseSkillFile`
 
 ```ts
 function parseSkillFile(contents: string, filepath: string): SkillSpec;
-
-interface SkillSpec {
-  name: string;
-  description: string;
-  body: string;
-  path: string;
-  metadata: Readonly<Record<string, unknown>>;
-}
 ```
 
-Parses YAML frontmatter + body. Requires `name` + `description`.
-Extra frontmatter fields preserved in `metadata`. Throws
-`SkillLoadError` on malformed input.
+Strict-mode convenience around `parseSkill`. Returns the spec or throws.
+
+## `parseAllowedTools`
+
+```ts
+function parseAllowedTools(raw: string | undefined): readonly string[];
+```
+
+Tokenises an `allowed-tools` string. Accepts space- and comma-separated
+forms; preserves parenthesised sub-patterns like `Bash(git:*)` as one
+token.
 
 ## `scanSkillDirs`
 
@@ -27,16 +74,19 @@ Extra frontmatter fields preserved in `metadata`. Throws
 function scanSkillDirs(
   roots: readonly string[],
   opts?: {
-    filename?: string;          // default "SKILL.md"
-    maxDepth?: number;          // default 3
-    skipPrefixes?: readonly string[];  // default [".", "_", "node_modules"]
+    filename?: string;                  // default "SKILL.md"
+    maxDepth?: number;                  // default 3
+    skipPrefixes?: readonly string[];   // default [".", "_", "node_modules"]
+    mode?: "strict" | "lenient";        // default "strict"
+    onIssue?: (filepath: string, issues: readonly SkillIssue[]) => void;
   },
 ): Promise<readonly SkillSpec[]>;
 ```
 
 Recursively scans for skill files. Each leaf dir holds at most one
 skill — descent stops once found. Dedups by `name` (first wins).
-Absent roots are silently skipped.
+Absent roots are silently skipped. Strict mode throws; lenient mode
+reports parse failures via `onIssue` and continues.
 
 ## `createSkillRegistry`
 
@@ -52,20 +102,63 @@ interface SkillRegistry {
 
 In-process directory. First-wins dedup matches `scanSkillDirs`.
 
+## `listSkillResources`
+
+```ts
+function listSkillResources(spec: SkillSpec): Promise<{
+  scripts: readonly string[];
+  references: readonly string[];
+  assets: readonly string[];
+  other: readonly string[];
+}>;
+```
+
+Enumerates supporting files one level deep under `spec.dir`. Returns
+basenames relative to each subdirectory (`scripts/extract.py` →
+`extract.py` under `scripts`). `other` collects top-level files outside
+the three well-known dirs (e.g. `README.md`, `LICENSE`).
+
+## `readSkillResource`
+
+```ts
+function readSkillResource(spec: SkillSpec, relativePath: string): Promise<string>;
+```
+
+Reads a file under the skill root. Refuses absolute paths and any `..`
+segments — access stays inside `spec.dir`.
+
 ## `skillLoadTool`
 
 ```ts
 function skillLoadTool(opts: {
   registry: SkillRegistry;
   allowed: readonly string[];
+  hintResources?: boolean;   // default true
 }): ToolDef<{ name: string }>;
 ```
 
-The tool the harness auto-injects when `spec.skills` is declared.
-`allowed` is the spec's skill list — names outside it return a deny
-result (the model can recover; the run continues).
+The activation half of progressive disclosure — auto-injected when
+`spec.skills` is declared. `allowed` is the spec's skill list; names
+outside it return a deny result (the model can recover).
 
-You won't usually construct this directly; the harness wires it.
+When `hintResources` is true, the response body is suffixed with a
+pointer to `skill_resource` if the skill ships scripts, references, or
+assets.
+
+## `skillResourceTool`
+
+```ts
+function skillResourceTool(opts: {
+  registry: SkillRegistry;
+  allowed: readonly string[];
+  maxBytes?: number;   // default 65536
+}): ToolDef<{ name: string; resource?: string }>;
+```
+
+The on-demand half of progressive disclosure — also auto-injected when
+`spec.skills` is declared. Without `resource`, lists supporting files;
+with `resource`, reads one (sandboxed to the skill directory).
+Resources larger than `maxBytes` return a truncation notice.
 
 ## `renderSkillsBlock`
 
@@ -77,5 +170,17 @@ function renderSkillsBlock(
 ```
 
 Builds the "Available skills" block appended to the system prompt.
-Lists name + one-line description for each allowlisted skill the
-registry knows about. Empty string when nothing matches.
+Lists name + one-line description (plus a `compatibility` hint when
+set) for each allowlisted skill the registry knows about. Empty string
+when nothing matches.
+
+## `SkillLoadError`
+
+```ts
+class SkillLoadError extends Error {
+  readonly issues: readonly SkillIssue[];
+}
+```
+
+Thrown by `parseSkill` in strict mode. `issues` lists every violation
+detected; the error message concatenates them with `field: message`.

@@ -3,29 +3,55 @@ title: Skills
 description: SKILL.md files agents load on demand via skill_load.
 ---
 
-A skill is a markdown file with frontmatter. The agent's system prompt
-advertises the name + description; the body loads on demand via the
-auto-injected `skill_load` tool. Progressive disclosure keeps the system
-prompt small.
+drover implements the [Agent Skills](https://agentskills.io/specification)
+specification. A skill is a directory containing a `SKILL.md` file plus
+optional `scripts/`, `references/`, and `assets/` subdirectories. The
+agent's system prompt advertises name + description; the body loads on
+demand via `skill_load`; supporting files are pulled lazily via
+`skill_resource`. Progressive disclosure keeps the system prompt small.
 
-## Format
+## Directory layout
+
+```
+my-skill/
+├── SKILL.md          # required: metadata + instructions
+├── scripts/          # optional: executable code agents can run
+├── references/       # optional: extended documentation
+└── assets/           # optional: templates, schemas, images
+```
+
+## SKILL.md format
 
 ```mdx
 ---
-name: grumpy-editor
-description: |
-  Strict editorial pass. Cut AI tells, hedges, tricolons, passive voice.
+name: pdf-processing
+description: Extract text and tables from PDFs, fill forms, merge files. Use when working with PDF documents.
+license: Apache-2.0
+compatibility: Requires poppler-utils
+metadata:
+  author: example-org
+  version: "1.0"
+allowed-tools: Bash(jq:*) Read Edit
 ---
 
-# grumpy-editor
+# pdf-processing
 
-When applying this skill, you MUST:
-1. Strip AI hedge words.
-2. No tricolons. ...
+Step-by-step instructions go here. See [references/REFERENCE.md](references/REFERENCE.md)
+for the full API.
 ```
 
-Frontmatter requires `name` + `description`. Extra fields are preserved
-in `metadata` for project-specific use.
+### Frontmatter fields
+
+| field | required | constraints |
+| --- | --- | --- |
+| `name` | yes | 1-64 chars, `[a-z0-9-]+`, no leading/trailing/consecutive hyphens. Must equal the parent directory name. |
+| `description` | yes | 1-1024 chars. Describes what the skill does and when to use it. |
+| `license` | no | License name or reference to a bundled file. |
+| `compatibility` | no | ≤500 chars. Environment requirements (system packages, network access, etc.). |
+| `metadata` | no | Map of string keys to string values for clients to use. |
+| `allowed-tools` | no | Space-separated (or list) of pre-approved tools. Experimental. |
+
+Any other frontmatter keys are preserved verbatim under `spec.extra`.
 
 ## Build a registry
 
@@ -40,12 +66,27 @@ const skills = createSkillRegistry(specs);
 finds `SKILL.md` files, dedups by `name` with first-wins. Pass agent-
 local dirs ahead of shared library dirs so local skills shadow.
 
+### Strict vs lenient parsing
+
+By default, any spec violation throws and stops the scan. Use
+`mode: "lenient"` plus an `onIssue` callback to load best-effort and
+surface warnings:
+
+```ts
+const specs = await scanSkillDirs([root], {
+  mode: "lenient",
+  onIssue: (file, issues) => {
+    for (const i of issues) console.warn(`${file} — ${i.field}: ${i.message}`);
+  },
+});
+```
+
 ## Declare in a spec
 
 ```ts
 const spec = defineAgent({
   /* ... */
-  skills: ["grumpy-editor", "factcheck"],
+  skills: ["pdf-processing", "factcheck"],
 });
 ```
 
@@ -60,33 +101,58 @@ runAgent(spec, input, { skills });
 ```
 
 The harness:
-1. Auto-injects a `skill_load` tool gated by `spec.skills`.
-2. Appends an "Available skills" section to the system prompt listing
-   only allowlisted name + one-line description.
 
-The model decides which skill to load. The body returns as the tool
-result — usually a few hundred to a few thousand tokens of instructions
-the model applies inline.
+1. Auto-injects `skill_load` and `skill_resource`, both gated by
+   `spec.skills`.
+2. Appends an "Available skills" section to the system prompt listing
+   only allowlisted name + one-line description (plus a `compatibility`
+   hint when set).
+
+## Progressive disclosure in practice
+
+1. **Startup (~100 tokens per skill):** name + description in the system
+   prompt.
+2. **Activation (full body):** the model calls `skill_load(name="<x>")`
+   when it decides the skill is relevant.
+3. **Resources (on demand):** if the body references `scripts/extract.py`
+   or `references/REFERENCE.md`, the model calls
+   `skill_resource(name="<x>", resource="<relative-path>")`.
+
+`skill_resource` denies absolute paths and any `..` segments — reads
+stay inside the skill directory.
 
 ## Inspect a registry
 
 ```ts
-skills.has("grumpy-editor");  // boolean
-skills.get("grumpy-editor");  // SkillSpec | undefined
+skills.has("pdf-processing");  // boolean
+skills.get("pdf-processing");  // SkillSpec | undefined
 skills.list();                  // SkillSpec[]
 ```
 
-## Mintlify-flavoured skills
+```ts
+import { listSkillResources, readSkillResource } from "@drover/skills";
 
-drover doesn't ship a renderer for `SKILL.md` bodies — they're injected
-raw to the model. If you want richer authoring (e.g. you author skills
-as MDX with shared snippets), preprocess into plain markdown before
-calling `parseSkillFile` or `scanSkillDirs`.
+const spec = skills.get("pdf-processing")!;
+const res = await listSkillResources(spec);
+// { scripts: ["extract.py"], references: ["REFERENCE.md"], assets: [], other: [...] }
+
+const text = await readSkillResource(spec, "references/REFERENCE.md");
+```
 
 ## Alternative layouts
 
-drover supports the `skills/<name>/SKILL.md` layout (one dir per skill)
-out of the box. For flat layouts (`skills/<name>.md`) or any other
-on-disk shape, write a small custom loader that produces `SkillSpec[]`
-and pass to `createSkillRegistry` — the registry is decoupled from the
-on-disk layout.
+drover supports the canonical `skills/<name>/SKILL.md` layout out of
+the box. For flat layouts (`skills/<name>.md`) or any other on-disk
+shape, write a custom loader that produces `SkillSpec[]` and pass to
+`createSkillRegistry` — the registry is decoupled from the on-disk
+layout.
+
+## Authoring guidance
+
+- Keep the `SKILL.md` body under 500 lines / ~5000 tokens.
+- Push detailed reference material to `references/` so the model only
+  loads it when explicitly needed.
+- Use relative paths from the skill root for file references; keep them
+  one level deep.
+- Validate with the [skills-ref](https://github.com/agentskills/agentskills/tree/main/skills-ref)
+  reference linter before committing.
