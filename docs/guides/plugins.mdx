@@ -166,3 +166,16 @@ Anything with mutable closure state should be wired per run.
 
 For state that needs to survive pause/resume, persist it through
 [storage](/guides/storage) — `runs.meta` JSON is the easiest hook.
+
+## Auto-applied plugins
+
+drover normally treats `spec.plugins` and `options.plugins` as the
+only sources of truth — but there is one exception. When
+`spec.memory.enabled` is true and `writesPerTurn > 0`, the harness
+constructs `memoryRateLimitPlugin({ writesPerTurn })` and appends it
+to the run's plugin list. This is the only auto-injected plugin in
+drover; everything else is either explicit or doesn't ship with state.
+
+If you need a different rate-limit policy (or to disable it entirely)
+set `spec.memory.writesPerTurn = 0` and add your own plugin to
+`options.plugins`.

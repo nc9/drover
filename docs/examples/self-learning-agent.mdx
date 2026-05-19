@@ -1,0 +1,122 @@
+---
+title: Self-learning agent
+description: Wire memory, see it surface a pre-seeded fact, write a new lesson.
+---
+
+End-to-end example: a writer agent with memory enabled, a pre-seeded
+global fact, and a question that exercises both the auto-injected
+index and the `recall` tool.
+
+## Define the agent
+
+```ts title="writer.ts"
+import { Type } from "@sinclair/typebox";
+import { defineAgent } from "@drover/core";
+
+export const writer = defineAgent({
+  id: "writer",
+  systemPrompt:
+    "You answer one question. If 'Recalled memory' appears in your " +
+    "system prompt, prefer those facts. Otherwise call `recall(query=...)` " +
+    "first. If you learn something worth keeping, call `remember`.",
+  inputSchema: Type.Object({ question: Type.String() }),
+  outputSchema: Type.Object({
+    answer: Type.String(),
+    used_memory: Type.Boolean(),
+  }),
+  model: "cheap",
+  tools: [],
+  maxTurns: 4,
+  memory: {
+    enabled: true,
+    includeIndex: true,
+    writesPerTurn: 1,
+  },
+});
+```
+
+## Wire memory + seed a fact
+
+```ts title="server.ts"
+import { runAgent } from "@drover/facade";
+import { createMarkdownMemory } from "@drover/memory";
+import { Effect } from "effect";
+
+import { writer } from "./writer.ts";
+
+const memory = await createMarkdownMemory({ root: "./memory" });
+
+// Seed one global fact the agent should surface.
+await Effect.runPromise(
+  memory.put({
+    scope: "global",
+    kind: "reference",
+    summary: "drover uses TypeBox for all schemas",
+    body: "Tool I/O, agent specs, and MCP wire format all use TypeBox. Zod was rejected at design time.",
+    tags: ["schema", "drover"],
+  }),
+);
+
+const handle = runAgent(
+  writer,
+  { question: "What schema library does drover use?" },
+  { memory },
+);
+
+for await (const e of handle.events) {
+  if (e.kind === "memory_recalled") {
+    console.log(`recall q="${e.query ?? ""}" → ${e.hits.length} hit(s)`);
+  } else if (e.kind === "memory_written") {
+    console.log(`wrote ${e.entry.scope}/${e.entry.kind}: ${e.entry.summary}`);
+  }
+}
+
+const result = await handle.result;
+console.log(result.output); // → { answer: "TypeBox.", used_memory: true }
+```
+
+## What happens on the first run
+
+1. Harness builds the system prompt and appends:
+   ```
+   ## Recalled memory
+
+   Scoped summaries — call `recall(query=..., scopes=...)` for the full body.
+
+   ### Global
+   - [reference] drover uses TypeBox for all schemas
+   ```
+
+2. Model sees the seeded summary in turn 1 → answers `TypeBox` and
+   sets `used_memory: true`.
+
+3. (Optional) If the model decides a follow-up lesson is worth keeping,
+   it calls `remember(scope=..., kind=..., summary=..., body=...)` —
+   capped at one write per turn by the auto-applied rate-limit plugin.
+
+## What happens on the second run (same project)
+
+The markdown adapter rebuilds its index on construction. Any
+memories the first run wrote land back in the index block of the
+second run's system prompt automatically. No code changes needed.
+
+## Inspecting the store
+
+```bash
+tree memory/
+# memory/
+# ├── global/
+# │   └── 01HXYZ...md         # the seeded fact
+# └── agents/
+#     └── writer/
+#         └── 01HXYZ...md     # whatever turn 2 wrote
+```
+
+Each file is YAML frontmatter + markdown body — diffable, grep-able,
+git-commit-able.
+
+## Inspecting on the timeline
+
+The eval-viewer renders `memory_written` and `memory_recalled` events
+inline on the run timeline. Drill into a run to see exactly which
+memories the agent wrote vs surfaced.

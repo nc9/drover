@@ -1,0 +1,139 @@
+---
+title: Memory
+description: Self-curated knowledge across runs. Three scopes, BM25 search, markdown-on-disk default.
+---
+
+drover ships a memory module agents use to write down lessons that
+should outlive a single run. The model writes via `remember`, reads via
+`recall`, and (opt-in) deletes via `forget`. A scoped summary index is
+auto-injected into the system prompt so the agent sees what it already
+knows without paying for full bodies.
+
+## Three scopes
+
+| Scope | Persists across | Visible to |
+| --- | --- | --- |
+| `global` | every run, every agent | all agents |
+| `agent` | every run of a given agent id | only that agent |
+| `run` | one specific run (and pause/resume) | only that runId, while active |
+
+`run`-scoped entries stay on disk after the run terminates (for
+forensics) but are no longer reachable via `recall` once a different
+runId is active.
+
+## SKILL.md vs memory
+
+- **Skills** are author-curated content shipped with the project. They
+  don't change at runtime.
+- **Memory** is model-curated content learned during runs. It changes
+  every time an agent crosses a "worth remembering" bar.
+
+## Wire it on
+
+```ts
+import { defineAgent } from "@drover/core";
+import { createMarkdownMemory } from "@drover/memory";
+import { runAgent } from "@drover/facade";
+
+const writer = defineAgent({
+  id: "writer",
+  /* ... */
+  memory: {
+    enabled: true,
+    includeIndex: true,        // default — auto-inject summary index
+    writesPerTurn: 1,          // default — rate-limit `remember`
+    allowForget: false,        // default — `forget` is off
+  },
+});
+
+const memory = await createMarkdownMemory({ root: "./memory" });
+
+runAgent(writer, input, { memory });
+```
+
+When `spec.memory.enabled === true` and `deps.memory` is wired:
+
+1. The harness auto-injects `remember` and `recall` (and `forget` if
+   `allowForget`).
+2. It appends a `## Recalled memory` block to the system prompt listing
+   global + agent-scope summaries (capped by `maxIndexEntries`,
+   default 30).
+3. It applies `memoryRateLimitPlugin({ writesPerTurn })` so a runaway
+   model can't spam the store.
+
+## The self-learning bar
+
+`remember` is gated by the model's own judgement, not by automatic
+capture. The tool description nudges:
+
+> Save a memory only when the lesson is non-obvious AND will apply to
+> future runs. Lead the body with the rule, then a **Why:** line and a
+> **How to apply:** line. Don't save what's already in the code or
+> commit log.
+
+Pair with the rate-limit (default 1/turn) so the agent has to choose.
+
+## Kinds
+
+Borrowed from the auto-memory schema — short taxonomy that's easy to
+filter on:
+
+- `user` — facts about the operator
+- `feedback` — behavioural rules from corrections / wins
+- `project` — state about ongoing work
+- `reference` — pointers to external systems
+
+## Progressive disclosure
+
+1. **System prompt** — summaries only (one line per entry, capped).
+2. **Activation** — model calls `recall(query=...)`; full bodies return.
+3. **Update** — model calls `remember(id=..., ...)` to overwrite.
+
+If a memory turns out wrong, the model can update it in place (`id`
+preserves the original `createdAt`) instead of writing a contradicting
+new one.
+
+## Scope inference
+
+`recall` infers the default scope from context: `global + agent` when
+no runId is active, all three when there is one. Pass `scopes`
+explicitly to override. Agent-scoped reads always filter to the
+calling agent — no cross-agent leaks.
+
+## Tags
+
+Optional `tags?: string[]` on every entry. `recall({ tags: [...] })`
+returns matches when ANY tag overlaps (set union, not intersection).
+Tag hits also give a small BM25 score boost so curated tags rank above
+incidental text matches.
+
+## Events
+
+Two new `HarnessEvent` kinds surface every write and recall:
+
+- `memory_written` — emitted after `remember` succeeds.
+- `memory_recalled` — emitted after `recall`; lists hit ids + scores.
+
+The eval-viewer renders both on the run timeline. Tracers and
+observers see them just like any other harness event.
+
+## Adapters
+
+drover ships two:
+
+- **`createMarkdownMemory({ root })`** — files on disk under
+  `<root>/global/`, `<root>/agents/<agentId>/`, `<root>/runs/<runId>/`.
+  Each file is YAML frontmatter + markdown body. Git-friendly. Single
+  writer per process.
+- **`createInMemoryMemory()`** — Map-backed, no persistence. For tests
+  and ephemeral runs.
+
+Custom adapters implement [`MemoryAdapter`](/reference/memory).
+
+## Resume contract
+
+The memory settings (`enabled`, `includeIndex`, `maxIndexEntries`,
+`allowForget`, `writesPerTurn`) all go into `hashSpec`. A paused run
+resumed under different memory settings fails with `ResumeError: spec
+hash mismatch` — same contract as the other policy fields, so you
+can't accidentally replay a run under a different memory policy.

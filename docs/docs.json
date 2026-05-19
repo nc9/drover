@@ -29,6 +29,7 @@
           "guides/runtime",
           "guides/sandboxes",
           "guides/storage",
+          "guides/memory",
           "guides/evals"
         ]
       },
@@ -46,7 +47,8 @@
         "pages": [
           "examples/echo-agent",
           "examples/multi-agent-research",
-          "examples/queue-worker"
+          "examples/queue-worker",
+          "examples/self-learning-agent"
         ]
       },
       {
@@ -62,7 +64,8 @@
           "reference/skills",
           "reference/mcp",
           "reference/storage",
-          "reference/runtime"
+          "reference/runtime",
+          "reference/memory"
         ]
       }
     ]

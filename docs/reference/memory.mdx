@@ -1,0 +1,191 @@
+---
+title: "@drover/memory"
+description: MemoryAdapter, in-memory and markdown impls, remember/recall/forget tools.
+---
+
+Implements the memory module — self-curated knowledge across runs.
+
+## `MemoryEntry`
+
+```ts
+interface MemoryEntry {
+  id: string;                            // ULID
+  scope: "global" | "agent" | "run";
+  agentId?: string;                      // present when scope ∈ {agent, run}
+  runId?: string;                        // present when scope === "run"
+  kind: "user" | "feedback" | "project" | "reference";
+  summary: string;                       // ≤200 chars
+  body: string;                          // markdown; recommended ≤2000 chars
+  tags?: readonly string[];
+  createdAt: number;
+  updatedAt?: number;
+}
+```
+
+## `MemoryAdapter`
+
+```ts
+interface MemoryAdapter {
+  readonly id: string;
+  put(draft: MemoryDraft): Effect<MemoryEntry, MemoryError>;
+  get(id: string): Effect<MemoryEntry | null, MemoryError>;
+  search(opts: SearchOpts): Effect<readonly MemoryHit[], MemoryError>;
+  list(filter: Omit<SearchOpts, "query">): Effect<readonly MemoryEntry[], MemoryError>;
+  forget(id: string): Effect<boolean, MemoryError>;
+  close(): Effect<void, MemoryError>;
+}
+```
+
+`put` is upsert by `id`; omit to mint a fresh ULID. `search` ranks via
+BM25 when `query` is set, by recency otherwise. `forget` returns
+`false` if the id wasn't present.
+
+## `SearchOpts`
+
+```ts
+interface SearchOpts {
+  query?: string;
+  scopes?: readonly MemoryScope[];      // default ["global", "agent"]; +"run" when runId set
+  agentId?: string;
+  runId?: string;                        // required when "run" ∈ scopes
+  kinds?: readonly MemoryKind[];
+  tags?: readonly string[];              // matches on ANY overlap
+  limit?: number;                        // default 20
+}
+```
+
+## `createMarkdownMemory`
+
+```ts
+function createMarkdownMemory(opts: { root: string }): Promise<MemoryAdapter>;
+```
+
+Layout:
+
+```
+<root>/
+├── global/<id>.md
+├── agents/<agentId>/<id>.md
+└── runs/<runId>/<id>.md
+```
+
+YAML frontmatter + markdown body. Builds an in-process index on
+construction. Writes go through a Promise-chain mutex (single writer
+per process). Cross-process modifications aren't seen until the next
+boot.
+
+## `createInMemoryMemory`
+
+```ts
+function createInMemoryMemory(): MemoryAdapter;
+```
+
+Map-backed; no persistence. For tests and ephemeral runs.
+
+## Tools
+
+### `rememberTool`
+
+```ts
+function rememberTool(opts: {
+  adapter: MemoryAdapter;
+  agentId: string;
+  runId: string;
+  emit?: (event: HarnessEvent) => void;
+}): ToolDef;
+```
+
+Auto-injected by the harness when `spec.memory.enabled` is true and
+`deps.memory` is wired. Emits `memory_written` on success.
+
+### `recallTool`
+
+```ts
+function recallTool(opts: {
+  adapter: MemoryAdapter;
+  agentId: string;
+  runId: string;
+  emit?: (event: HarnessEvent) => void;
+  defaultLimit?: number;       // default 10
+}): ToolDef;
+```
+
+Default scopes inferred from context. Always filters agent-scope reads
+to `opts.agentId` — no cross-agent leaks. Emits `memory_recalled`.
+
+### `forgetTool`
+
+```ts
+function forgetTool(opts: {
+  adapter: MemoryAdapter;
+  agentId: string;
+  enforceOwnership?: boolean;  // default true
+}): ToolDef;
+```
+
+Only injected when `spec.memory.allowForget === true`. Refuses to
+delete entries owned by a different agent unless
+`enforceOwnership: false`.
+
+## `memoryRateLimitPlugin`
+
+```ts
+function memoryRateLimitPlugin(opts?: {
+  writesPerTurn?: number;       // default 1
+  toolIds?: readonly string[];  // default ["remember"]
+}): HarnessPlugin;
+```
+
+Auto-applied by the harness when `spec.memory.enabled` and
+`writesPerTurn > 0`. Counter resets on `turn_start`.
+
+## `renderMemoryIndex`
+
+```ts
+function renderMemoryIndex(
+  adapter: MemoryAdapter,
+  agentId: string,
+  opts?: { maxEntries?: number; maxPerScope?: number },
+): Effect<string, never>;
+```
+
+Builds the `## Recalled memory` block appended to the system prompt
+when `spec.memory.includeIndex !== false`. Returns empty string when
+no entries match.
+
+## BM25
+
+```ts
+function bm25(query: string, docs: readonly Doc[]): ScoredDoc[];
+function buildDoc(id: string, summary: string, body: string, tags: readonly string[] | undefined): Doc;
+function tokenise(text: string): string[];
+```
+
+Standard Okapi BM25 (`k1=1.5`, `b=0.75`) with a tag-match boost. Drops
+~25 English stopwords and single-char tokens. No external deps.
+
+## `MemoryError`
+
+```ts
+class MemoryError extends Data.TaggedError("MemoryError")<{
+  op: "put" | "get" | "search" | "list" | "forget" | "close" | "init";
+  reason: "not_found" | "invalid_scope" | "path_escape" | "io" | "invalid_id";
+  message: string;
+  id?: string;
+}> {}
+```
+
+## Spec integration
+
+```ts
+interface MemorySpec {
+  enabled: boolean;
+  includeIndex?: boolean;       // default true
+  maxIndexEntries?: number;     // default 30
+  allowForget?: boolean;        // default false
+  writesPerTurn?: number;       // default 1; 0 disables rate-limit
+}
+```
+
+All fields go into `hashSpec` — spec-drift on memory settings rejects
+resume with `ResumeError`.
