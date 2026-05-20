@@ -9,6 +9,8 @@
  * vanishingly rare and not load-bearing.
  */
 
+import { createHash } from "node:crypto";
+
 const ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 export function ulid(now: number = Date.now()): string {
@@ -32,5 +34,22 @@ function encodeRandom(): string {
   crypto.getRandomValues(bytes);
   let out = "";
   for (const b of bytes) out += ALPHABET[b & 0x1f]!;
+  return out;
+}
+
+/**
+ * Deterministic, ULID-shaped id derived from a seed string. Same seed
+ * always yields the same 26-char Crockford-base32 id, so re-seeding the
+ * same source (e.g. an instruction file path) is an idempotent upsert
+ * rather than an accumulation.
+ *
+ * Not time-sortable — unlike `ulid()`, the id carries no timestamp.
+ */
+export function stableId(seed: string): string {
+  const hash = createHash("sha256").update(seed).digest();
+  let out = "";
+  for (let i = 0; i < 26; i++) {
+    out += ALPHABET[hash[i]! & 0x1f]!;
+  }
   return out;
 }

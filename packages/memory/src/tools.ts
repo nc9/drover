@@ -217,23 +217,36 @@ export function forgetTool(opts: ForgetToolOptions): ToolDef<typeof ForgetInput>
     inputSchema: ForgetInput,
     execute: (input) =>
       Effect.gen(function* () {
-        if (enforceOwnership) {
-          const existing = yield* Effect.either(opts.adapter.get(input.id));
-          if (existing._tag === "Left") {
-            return {
-              content: `forget failed: ${existing.left.message}`,
-              isError: true,
-              data: { reason: existing.left.reason },
-            } as ToolResult;
-          }
-          const entry = existing.right;
-          if (entry && entry.scope !== "global" && entry.agentId !== opts.agentId) {
-            return {
-              content: `cannot forget '${input.id}' — owned by a different agent.`,
-              isError: true,
-              data: { reason: "not_owned" },
-            } as ToolResult;
-          }
+        // Fetch once — both the read-only guard and the ownership check
+        // need the entry. The read-only guard always runs; ownership is
+        // gated by `enforceOwnership`.
+        const existing = yield* Effect.either(opts.adapter.get(input.id));
+        if (existing._tag === "Left") {
+          return {
+            content: `forget failed: ${existing.left.message}`,
+            isError: true,
+            data: { reason: existing.left.reason },
+          } as ToolResult;
+        }
+        const entry = existing.right;
+        if (entry && (entry.tags ?? []).includes("instructions")) {
+          return {
+            content: `cannot forget '${input.id}' — it's a loaded project-instruction file. Edit the file on disk instead.`,
+            isError: true,
+            data: { reason: "read_only" },
+          } as ToolResult;
+        }
+        if (
+          enforceOwnership &&
+          entry &&
+          entry.scope !== "global" &&
+          entry.agentId !== opts.agentId
+        ) {
+          return {
+            content: `cannot forget '${input.id}' — owned by a different agent.`,
+            isError: true,
+            data: { reason: "not_owned" },
+          } as ToolResult;
         }
         const r = yield* Effect.either(opts.adapter.forget(input.id));
         if (r._tag === "Left") {

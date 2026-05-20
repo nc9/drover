@@ -208,4 +208,23 @@ describe("forgetTool", () => {
     )) as ToolResult;
     expect(r.isError).toBe(true);
   });
+
+  test("refuses entries tagged 'instructions'", async () => {
+    const adapter = createInMemoryMemory();
+    const e = await Effect.runPromise(
+      adapter.put({
+        scope: "global",
+        kind: "reference",
+        summary: "Project instructions — (repo root)",
+        body: "rules",
+        tags: ["instructions"],
+      }),
+    );
+    const tool = forgetTool({ adapter, agentId: "writer" });
+    const r = (await Effect.runPromise(
+      tool.execute({ id: e.id }, ctx()) as Effect.Effect<ToolResult, never, never>,
+    )) as ToolResult;
+    expect(r.isError).toBe(true);
+    expect((r.data as { reason: string }).reason).toBe("read_only");
+  });
 });
