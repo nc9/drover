@@ -104,4 +104,16 @@ describe("hashSpec", () => {
     const b = { ...baseSpec, memory: { enabled: true, maxIndexEntries: 50 } };
     expect(hashSpec(a)).not.toBe(hashSpec(b));
   });
+
+  test("adding instructionFiles changes the hash", () => {
+    const off = { ...baseSpec };
+    const on = { ...baseSpec, instructionFiles: {} };
+    expect(hashSpec(off)).not.toBe(hashSpec(on));
+  });
+
+  test("instructionFiles config drift changes the hash", () => {
+    const a = { ...baseSpec, instructionFiles: { filenames: ["AGENTS.md"] } };
+    const b = { ...baseSpec, instructionFiles: { filenames: ["RULES.md"] } };
+    expect(hashSpec(a)).not.toBe(hashSpec(b));
+  });
 });

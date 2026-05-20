@@ -20,10 +20,13 @@ import { resolveModel, type ResolveOptions } from "@drover/model";
 import type { SandboxAdapter } from "@drover/sandbox";
 import {
   forgetTool,
+  loadInstructionFiles,
   memoryRateLimitPlugin,
   recallTool,
   rememberTool,
+  renderInstructionsBlock,
   renderMemoryIndex,
+  seedInstructionFiles,
   type MemoryAdapter,
 } from "@drover/memory";
 import {
@@ -231,6 +234,29 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       spec.skills && spec.skills.length > 0 && deps.skills
         ? renderSkillsBlock(deps.skills, spec.skills)
         : "";
+    // Instruction-file block (AGENTS.md / CLAUDE.md ancestor chain). Loaded
+    // fresh each run; seeded into memory as recall-able entries when an
+    // adapter is wired. Fully opt-in via spec.instructionFiles.
+    let instructionsBlock = "";
+    if (spec.instructionFiles) {
+      const files = yield* Effect.promise(() =>
+        loadInstructionFiles({
+          cwd: ctx.cwd,
+          ...(spec.instructionFiles!.filenames
+            ? { filenames: spec.instructionFiles!.filenames }
+            : {}),
+          ...(spec.instructionFiles!.root ? { root: spec.instructionFiles!.root } : {}),
+          ...(spec.instructionFiles!.maxBytesPerFile !== undefined
+            ? { maxBytesPerFile: spec.instructionFiles!.maxBytesPerFile }
+            : {}),
+        }),
+      );
+      instructionsBlock = renderInstructionsBlock(files);
+      if (deps.memory && spec.instructionFiles.seedMemory !== false) {
+        const seeded = yield* Effect.either(seedInstructionFiles(deps.memory, files));
+        if (seeded._tag === "Left") void seeded.left;
+      }
+    }
     // Memory index block (opt-out via spec.memory.includeIndex === false).
     const memoryBlock =
       spec.memory?.enabled && spec.memory.includeIndex !== false && deps.memory
@@ -238,7 +264,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             maxEntries: spec.memory.maxIndexEntries ?? 30,
           })
         : "";
-    const systemPrompt = [basePrompt, skillsBlock, memoryBlock]
+    const systemPrompt = [basePrompt, instructionsBlock, skillsBlock, memoryBlock]
       .filter((s) => s.length > 0)
       .join("\n");
 
@@ -789,6 +815,7 @@ export function hashSpec(spec: AgentSpec): string {
     timeoutMs: spec.timeoutMs,
     pluginIds: (spec.plugins ?? []).map((p) => p.id),
     memory: spec.memory ?? null,
+    instructionFiles: spec.instructionFiles ?? null,
   });
   for (let i = 0; i < s.length; i++) {
     h = (h * 31 + s.charCodeAt(i)) | 0;
