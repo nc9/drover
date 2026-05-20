@@ -3,11 +3,50 @@ title: Memory
 description: Self-curated knowledge across runs. Three scopes, BM25 search, markdown-on-disk default.
 ---
 
-drover ships a memory module agents use to write down lessons that
-should outlive a single run. The model writes via `remember`, reads via
-`recall`, and (opt-in) deletes via `forget`. A scoped summary index is
-auto-injected into the system prompt so the agent sees what it already
-knows without paying for full bodies.
+An agent with no memory starts every run from zero — it can't recall
+what the operator told it last week or what it learned the hard way two
+runs ago. drover's memory module fixes that. Composing memory for an
+agent means deciding **what it should know going in** and **what it's
+allowed to learn** — then wiring an adapter to make both durable.
+
+## The two halves of memory
+
+Memory has two halves. Compose with both in mind:
+
+| | Ambient instructions | Learned memory |
+| --- | --- | --- |
+| **Written by** | you (the developer) | the agent, during runs |
+| **Source** | `AGENTS.md` / `CLAUDE.md` files on disk | `remember` tool calls |
+| **Mutable at runtime** | no — edit the file | yes — `remember` / `forget` |
+| **Always in context** | yes — injected every run | no — summaries indexed, bodies on `recall` |
+| **Configured via** | `spec.instructionFiles` | `spec.memory` |
+
+Ambient instructions are *what the agent should know going in* — house
+rules, conventions, the shape of the project. Learned memory is *what
+the agent picks up* — operator preferences, corrections, project state.
+A well-composed agent usually uses both: instruction files for the
+stable baseline, learned memory for everything that accrues.
+
+This is also how memory differs from [skills](/guides/skills): skills
+are author-curated capabilities the agent loads *on demand*; memory
+(both halves) is knowledge the agent carries *by default*.
+
+## How it layers in the system prompt
+
+When a run starts, the harness assembles the system prompt in layers —
+broadest context first, most specific last:
+
+```
+┌─ basePrompt ────────────── your spec.systemPrompt
+├─ ## Project instructions ─ ambient: AGENTS.md / CLAUDE.md chain
+├─ ## Available skills ───── skill names + descriptions
+└─ ## Recalled memory ────── learned: scoped summary index
+```
+
+Instruction-file *bodies* are injected whole. Learned-memory entries
+appear only as one-line summaries — the agent calls `recall` to pull a
+full body. That keeps the prompt cheap no matter how much the agent has
+learned.
 
 ## Three scopes
 
@@ -60,6 +99,94 @@ When `spec.memory.enabled === true` and `deps.memory` is wired:
    default 30).
 3. It applies `memoryRateLimitPlugin({ writesPerTurn })` so a runaway
    model can't spam the store.
+
+## Composition patterns
+
+One adapter, wired per run, backs whatever set of agents you point at
+it. How you compose depends on how much agents should share.
+
+### Single agent, durable
+
+The common case — one agent, file-backed memory, instructions from the
+repo:
+
+```ts
+const memory = await createMarkdownMemory({ root: "./.memory" });
+
+const agent = defineAgent({
+  id: "writer",
+  /* ... */
+  memory: { enabled: true },
+  instructionFiles: {},   // {} = all defaults
+});
+
+runAgent(agent, input, { memory });
+```
+
+### Many agents, one store
+
+Pass the *same* adapter to every run. `global` entries are shared;
+`agent`-scoped entries stay private to each `spec.id`. No extra wiring —
+scope isolation is automatic.
+
+```ts
+const memory = await createMarkdownMemory({ root: "./.memory" });
+
+runAgent(researcher, input, { memory });   // sees global + researcher's own
+runAgent(writer, input, { memory });       // sees global + writer's own
+```
+
+Use `global` for cross-agent facts ("the operator prefers metric
+units"); let each agent accrue its own `agent`-scoped lessons.
+
+### Private memory per agent
+
+For hard isolation — no shared `global` — give each agent its own
+adapter rooted at its own directory:
+
+```ts
+const researcherMem = await createMarkdownMemory({ root: "./.memory/researcher" });
+const writerMem = await createMarkdownMemory({ root: "./.memory/writer" });
+```
+
+### Ephemeral (tests, throwaway runs)
+
+`createInMemoryMemory()` is a drop-in adapter with no disk footprint —
+use it in tests or short-lived processes:
+
+```ts
+runAgent(agent, input, { memory: createInMemoryMemory() });
+```
+
+### Subagents
+
+Subagents spawned via `taskTool` inherit the parent's `deps` — including
+the memory adapter. A child agent reads `global` plus its *own*
+`agent`-scoped entries (keyed by the child's `spec.id`), never the
+parent's. Compose shared knowledge at `global` if you want it to reach
+the whole tree.
+
+## Choosing what goes where
+
+When you (or the agent) have a fact to persist, the scope and source
+follow from two questions — *who wrote it* and *how long it should
+live*:
+
+| The fact is… | Put it in… |
+| --- | --- |
+| A house rule you maintain | an `AGENTS.md` / `CLAUDE.md` file (`instructionFiles`) |
+| True for every agent, learned at runtime | `global` scope |
+| Specific to one agent's behaviour | `agent` scope |
+| Only relevant to the current task | `run` scope |
+
+And the `kind` tags *what type* of fact it is — `user`, `feedback`,
+`project`, `reference` (see [Kinds](#kinds)). Scope is lifetime; kind is
+category. They're independent: a `feedback` memory can be `global` or
+`agent`-scoped.
+
+Rule of thumb: if *you* would commit it to the repo, it's an
+instruction file. If the *agent* discovers it mid-run, it's learned
+memory — and the scope is "how broadly does this apply."
 
 ## The self-learning bar
 
