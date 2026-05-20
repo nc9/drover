@@ -5,7 +5,9 @@ import { Effect } from "effect";
 
 const InputSchema = Type.Object({
   pattern: Type.String({ description: "Extended regex pattern" }),
-  path: Type.Optional(Type.String({ description: "Search root (file or dir). Defaults to run cwd." })),
+  path: Type.Optional(
+    Type.String({ description: "Search root (file or dir). Defaults to run cwd." }),
+  ),
   glob: Type.Optional(Type.String({ description: "Optional file glob, e.g. '*.ts'" })),
   max_results: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
 });
@@ -13,7 +15,8 @@ const InputSchema = Type.Object({
 export function grepTool(sandbox: SandboxAdapter): ToolDef<typeof InputSchema> {
   return defineTool({
     id: "grep",
-    description: "Recursive regex search. Returns up to max_results matching lines with file:line prefixes.",
+    description:
+      "Recursive regex search. Returns up to max_results matching lines with file:line prefixes.",
     inputSchema: InputSchema,
     execute: (input, ctx) =>
       Effect.gen(function* () {
@@ -23,11 +26,21 @@ export function grepTool(sandbox: SandboxAdapter): ToolDef<typeof InputSchema> {
         // `path: "/etc"` and exfiltrate from outside the sandbox root.
         yield* sandbox.assertPathAllowed(target);
         const limit = input.max_results ?? 100;
-        const args = ["-RInE", `--max-count=${limit}`];
+        // `-RnE`, not `-RInE`: the `-I` (skip-binary) flag is GNU-only and the
+        // just-bash virtual sandbox's grep rejects it. Without it a binary hit
+        // prints "Binary file … matches" instead of being skipped — harmless.
+        const args = ["-RnE", `--max-count=${limit}`];
         if (input.glob) args.push(`--include=${input.glob}`);
         args.push(input.pattern, target);
-        const result = yield* sandbox.run("grep", args, { cwd: ctx.cwd, env: ctx.env, signal: ctx.signal });
-        const content = result.stdout.length > 16384 ? result.stdout.slice(0, 16384) + "\n…[truncated]" : result.stdout;
+        const result = yield* sandbox.run("grep", args, {
+          cwd: ctx.cwd,
+          env: ctx.env,
+          signal: ctx.signal,
+        });
+        const content =
+          result.stdout.length > 16384
+            ? result.stdout.slice(0, 16384) + "\n…[truncated]"
+            : result.stdout;
         return {
           content: content || "(no matches)",
           isError: false,

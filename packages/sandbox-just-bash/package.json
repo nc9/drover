@@ -1,5 +1,5 @@
 {
-  "name": "@drover/facade",
+  "name": "@drover/sandbox-just-bash",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -13,11 +13,8 @@
   },
   "dependencies": {
     "@drover/core": "workspace:*",
-    "@drover/harness": "workspace:*",
     "@drover/sandbox": "workspace:*",
-    "@drover/sandbox-just-bash": "workspace:*",
-    "@drover/storage": "workspace:*",
     "effect": "^3.10.0",
-    "@sinclair/typebox": "^0.34.0"
+    "just-bash": "^3.0.1"
   }
 }

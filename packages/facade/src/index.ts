@@ -1,5 +1,6 @@
 import type { TSchema } from "@sinclair/typebox";
 import { Effect } from "effect";
+import * as path from "node:path";
 
 import type {
   AgentInput,
@@ -11,7 +12,8 @@ import type {
   RunResult,
 } from "@drover/core";
 import { hashSpec, runAgentEffect, type HarnessDeps } from "@drover/harness";
-import { createNoneSandbox, type SandboxAdapter } from "@drover/sandbox";
+import type { SandboxAdapter } from "@drover/sandbox";
+import { createJustBashSandbox } from "@drover/sandbox-just-bash";
 
 export interface RunOptions {
   runId?: string;
@@ -19,7 +21,11 @@ export interface RunOptions {
   env?: Record<string, string>;
   signal?: AbortSignal;
   meta?: Record<string, unknown>;
-  /** Override the sandbox adapter. Defaults to a `none` sandbox rooted at cwd. */
+  /**
+   * Override the sandbox adapter. Defaults to a just-bash virtual sandbox
+   * with the run cwd mounted read-write — isolated (no host network, no
+   * filesystem access outside the mount) and safe for `bash` by default.
+   */
   sandbox?: SandboxAdapter;
   /** Override the model alias map. */
   modelAliases?: HarnessDeps["modelAliases"];
@@ -89,17 +95,26 @@ export function runAgent<S extends AgentSpec<TSchema, TSchema>>(
   options?: RunOptions,
 ): RunHandle<S> {
   const runId = options?.runId ?? cryptoRandomId();
-  const cwd = options?.cwd ?? process.cwd();
-  const env = options?.env ?? (Object.fromEntries(
-    Object.entries(process.env).filter(([, v]) => typeof v === "string"),
-  ) as Record<string, string>);
+  // Resolve to an absolute path: a relative `options.cwd` (e.g. ".") is a
+  // valid host directory but an invalid just-bash mount target.
+  const cwd = path.resolve(options?.cwd ?? process.cwd());
+  const env =
+    options?.env ??
+    (Object.fromEntries(
+      Object.entries(process.env).filter(([, v]) => typeof v === "string"),
+    ) as Record<string, string>);
   const ac = new AbortController();
   if (options?.signal) {
     if (options.signal.aborted) ac.abort();
     else options.signal.addEventListener("abort", () => ac.abort(), { once: true });
   }
 
-  const sandbox = options?.sandbox ?? createNoneSandbox({ allowedRoots: [cwd] });
+  const sandbox =
+    options?.sandbox ??
+    createJustBashSandbox({
+      mounts: [{ source: cwd, target: cwd, mode: "readwrite" }],
+      cwd,
+    });
 
   const ctx: RunContext = {
     runId,
@@ -136,26 +151,26 @@ export function runAgent<S extends AgentSpec<TSchema, TSchema>>(
     pauseFlag,
   });
 
-  const result: Promise<RunResult<AgentOutput<S>>> = Effect.runPromise(
-    Effect.either(effect),
-  ).then((either) => {
-    stream.close();
-    if (either._tag === "Right") return either.right;
-    const err = either.left;
-    const tag = (err as { _tag?: string })._tag ?? "Error";
-    const message = (err as { message?: string }).message ?? String(err);
-    const out: RunResult<AgentOutput<S>> = {
-      runId,
-      status: tag === "CancelledError" ? "cancelled" : "error",
-      finalText: "",
-      turns: 0,
-      durationMs: 0,
-      usage: { inputTokens: 0, outputTokens: 0 },
-      toolCalls: [],
-      error: { tag, message },
-    };
-    return out;
-  });
+  const result: Promise<RunResult<AgentOutput<S>>> = Effect.runPromise(Effect.either(effect)).then(
+    (either) => {
+      stream.close();
+      if (either._tag === "Right") return either.right;
+      const err = either.left;
+      const tag = (err as { _tag?: string })._tag ?? "Error";
+      const message = (err as { message?: string }).message ?? String(err);
+      const out: RunResult<AgentOutput<S>> = {
+        runId,
+        status: tag === "CancelledError" ? "cancelled" : "error",
+        finalText: "",
+        turns: 0,
+        durationMs: 0,
+        usage: { inputTokens: 0, outputTokens: 0 },
+        toolCalls: [],
+        error: { tag, message },
+      };
+      return out;
+    },
+  );
 
   return {
     runId,
@@ -201,7 +216,9 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
   runId: string,
   options: ResumeOptions,
 ): RunHandle<S> {
-  const cwd = options.cwd ?? process.cwd();
+  // Resolve to an absolute path: a relative `options.cwd` (e.g. ".") is a
+  // valid host directory but an invalid just-bash mount target.
+  const cwd = path.resolve(options.cwd ?? process.cwd());
   const env =
     options.env ??
     (Object.fromEntries(
@@ -213,7 +230,12 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
     else options.signal.addEventListener("abort", () => ac.abort(), { once: true });
   }
 
-  const sandbox = options.sandbox ?? createNoneSandbox({ allowedRoots: [cwd] });
+  const sandbox =
+    options.sandbox ??
+    createJustBashSandbox({
+      mounts: [{ source: cwd, target: cwd, mode: "readwrite" }],
+      cwd,
+    });
   const ctx: RunContext = {
     runId,
     depth: 0,

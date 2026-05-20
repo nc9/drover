@@ -4,23 +4,78 @@ description: How drover constrains filesystem and shell access — and what it d
 ---
 
 A `SandboxAdapter` is the boundary between drover tools and the host
-filesystem / processes. drover ships one impl (`none`) and an interface
-for projects that need stronger isolation.
+filesystem / processes. drover ships two:
+
+- **`just-bash`** — the **default**. A virtual sandbox: an in-process bash
+  interpreter with its own filesystem. A real isolation boundary — the agent
+  reaches the host only through explicit mounts, has no network unless you
+  configure one, and runs under execution limits. `bash` is safe here.
+- **`none`** — an in-process adapter that enforces a path allowlist for file
+  I/O. **Not** a security boundary; the shell escapes it. For trusted runs.
+
+## `just-bash` — the default
+
+Every run gets a `just-bash` sandbox unless you pass `options.sandbox`. The
+facade mounts the run's cwd read-write:
+
+```ts
+import { createJustBashSandbox } from "@drover/sandbox-just-bash";
+
+const sandbox = createJustBashSandbox({
+  mounts: [{ source: process.cwd(), target: process.cwd(), mode: "readwrite" }],
+});
+```
+
+Mounts are **docker-style and explicit**. With no mounts the sandbox is fully
+in-memory — the agent sees no host files at all. Each mount is `readonly`
+(default) or `readwrite`:
+
+```ts
+createJustBashSandbox({
+  mounts: [
+    { source: "/repo", target: "/repo", mode: "readwrite" }, // writes hit disk
+    { source: "/refs", target: "/refs", mode: "readonly" },  // COW; host untouched
+  ],
+});
+```
+
+Either way the agent **cannot escape a mount root** — no `..`, absolute-path,
+or symlink traversal reaches outside `source`. An unmounted path simply does
+not exist.
+
+| Option | Effect |
+| --- | --- |
+| `mounts` | docker-style host↔sandbox bind mounts. Default `[]`. |
+| `files` | seed files for the in-memory base filesystem |
+| `env` | base environment inside the sandbox |
+| `python` | enable `python3` (CPython→WASM). Off by default. |
+| `javascript` | enable `js-exec` (QuickJS). Off by default. |
+| `network` | `curl`/`wget` URL allowlist. Off by default. |
+| `timeoutMs` | per-call default timeout (30 s) |
+
+Because it is a genuine boundary, `just-bash` advertises
+`capabilities.shell: true` unconditionally — `bash` composes by default, no
+opt-in needed. `assertPathAllowed` always succeeds: the mount namespace *is*
+the boundary, so there is nothing to gate against.
 
 <Warning>
-The `none` sandbox is NOT a security boundary. It's an in-process
-adapter that enforces a path allowlist for file I/O. The shell escapes
-it. Read on.
+`just-bash` runs without VM-level isolation. It is a strong boundary against
+filesystem and network reach, not a defence against a hostile native exploit.
+For untrusted code at scale, still layer an OS sandbox underneath.
 </Warning>
 
-## What `none` enforces
+## `none` — the trusted escape hatch
+
+`none` is in-process and enforces a path allowlist. Use it when the agent is
+*meant* to operate on the real host with the runtime's own reach — CLIs, eval
+runners, CI — or when isolation already exists at another layer.
 
 ```ts
 import { createNoneSandbox } from "@drover/sandbox";
 
 const sandbox = createNoneSandbox({
   allowedRoots: ["/tmp/safe"],
-  allowShell: false,  // default
+  allowShell: false, // default
 });
 ```
 
@@ -31,18 +86,12 @@ const sandbox = createNoneSandbox({
 | `assertPathAllowed(path)` | same realpath + allowedRoots check, surfaced for tools that pass argv to spawned processes (`grep`, `find`, `ls`) |
 | `run(cmd, args)` | only spawn `cwd` is checked. **argv is opaque.** |
 
-Allowed roots are canonicalised at construction via `realpathSync`. On
-macOS `/var` is a symlink to `/private/var`, etc. — without
-canonicalisation, every tmp-rooted path would fail the check.
+### What `bash` does to the `none` boundary
 
-## What `bash` does to the boundary
-
-`bash` runs `/bin/sh -c <command>`. Once the shell has the command, it
-can `cat /etc/passwd`, `ls /`, write anywhere your user can write. The
-sandbox checks `cwd` — that's all it can check.
-
-So drover refuses to compose `bash` into a run unless the sandbox
-advertises shell capability:
+`bash` runs `/bin/sh -c <command>`. Under `none` the shell can `cat
+/etc/passwd`, `ls /`, write anywhere your user can. The sandbox checks `cwd` —
+that's all it can check. So drover refuses to compose `bash` into a run
+unless the sandbox advertises shell capability:
 
 ```ts
 // bash is silently dropped from the toolset
@@ -52,9 +101,16 @@ createNoneSandbox({ allowedRoots: [cwd] });
 createNoneSandbox({ allowedRoots: [cwd], allowShell: true });
 ```
 
-`tools: ["bash"]` in a spec passed to the first sandbox is a no-op. The
-agent doesn't see the tool. This is intentional — silently dropping is
-safer than silently exposing.
+`tools: ["bash"]` passed to the first sandbox is a no-op — silently dropping
+is safer than silently exposing. (Under `just-bash`, `bash` always composes.)
+
+### Empty `allowedRoots`
+
+```ts
+createNoneSandbox(); // allowedRoots: []
+```
+
+Empty means **no boundary** — drover treats it as "trusted runtime."
 
 ## Wiring a stronger sandbox
 
@@ -72,40 +128,27 @@ interface SandboxAdapter {
 }
 ```
 
-Drop-in adapter shapes drover doesn't ship; common production picks:
+Adapter shapes drover doesn't ship; common production picks:
 
 | adapter | provides |
 | --- | --- |
-| `sandbox-exec` (macOS SBPL) | per-call seatbelt profile that constrains read+exec at the kernel level |
+| `sandbox-exec` (macOS SBPL) | per-call seatbelt profile constraining read+exec at the kernel level |
 | `firejail` (Linux) | namespaced filesystem + network isolation |
 | `docker` | full container per run, network gated |
 | `daytona` / Cloudflare container | remote VM, attach via API |
 
-When you implement one, advertise `capabilities.shell: true` only when
-the spawned process actually can't escape the sandbox.
+Advertise `capabilities.shell: true` only when the spawned process genuinely
+cannot escape.
 
 ## Path / sandbox boundary checklist
 
 When auditing a new tool:
 
-1. Does it call `sandbox.run` with a user-supplied path as argv? If yes,
-   gate the path with `sandbox.assertPathAllowed(target)` before
-   spawning. `grep`, `find`, `ls` do this.
-2. Does it shell out? If yes, the tool inherits the sandbox's shell
-   limitations — only inject under capability-checked sandboxes.
+1. Does it call `sandbox.run` with a user-supplied path as argv? Gate the
+   path with `sandbox.assertPathAllowed(target)` before spawning. `grep`,
+   `find`, `ls` do this. (Under `just-bash` the check is a no-op; under
+   `none` it is load-bearing — write tools to satisfy both.)
+2. Does it shell out? It inherits the sandbox's shell limitations — only
+   inject under capability-checked sandboxes.
 3. Does it read or write a user-supplied path? Use `readFile`/`writeFile`
-   directly; they realpath-check.
-
-The sandbox's `assertPathAllowed` is the canonical place for non-builtin
-custom tools to plug in.
-
-## Empty `allowedRoots`
-
-```ts
-createNoneSandbox();  // allowedRoots: []
-```
-
-Empty means **no boundary**. drover treats this as "trusted runtime."
-Useful in CLIs, eval runners, and similar contexts where the agent's
-filesystem reach matches the runtime's. **Don't ship this to untrusted
-prompts.**
+   directly; they enforce the boundary.
