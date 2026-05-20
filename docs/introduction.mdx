@@ -1,7 +1,32 @@
 ---
 title: drover
-description: A high-taste agent harness library — Effect-native, TypeBox-schemaed, pi-agent-core powered.
+description: A declarative, strongly-typed, Effect-native agent harness library for TypeScript.
 ---
+
+**drover is a declarative, strongly-typed, Effect-native agent harness library
+for TypeScript.** Define agents as JSON-serialisable specs. The API surface is
+Effect-first, with a `Promise`/`AsyncIterable` facade as a fallback for
+non-Effect consumers.
+
+## Features
+
+- **Declarative agent specs** — `defineAgent({...})` returns a JSON-serialisable, TypeBox-typed `AgentSpec`; dynamic agents use the same shape.
+- **Effect-first API** — internals and public surface speak `Effect`; `Promise`/`AsyncIterable` facade kept as a fallback.
+- **Schemaed agent loop** — typed input/output, output retry budget on schema-decode failures.
+- **Streaming events** — normalised `HarnessEvent` stream as an `AsyncIterable`.
+- **Plugin hooks** — `HarnessPlugin` bundles: `beforeToolCall` / `afterToolCall` / `wrapTool` / `onEvent` / `onError`.
+- **Built-in plugins** — loop-detect, step-tracer, bash-blocklist, circuit-breaker, write-policy, phase-recorder, confirm-gate, output-validate.
+- **Built-in tools** — bash, read, write, edit, grep, …
+- **Subagents** — `taskTool` factory; depth ≤ 2, fan-out ≤ 3 caps; child lifecycle events on the parent stream.
+- **Skills** — `SKILL.md` loader + `skill_load` tool, progressive disclosure.
+- **Instruction files** — `AGENTS.md` / `CLAUDE.md` loaders.
+- **MCP** — stdio + HTTP transports, tool-name prefixing, per-agent allowlist.
+- **Model layer** — pi-ai wrapper, alias resolver, routing interface, circuit breaker.
+- **Pause / resume** — durable checkpoints; resume validates run id / status / agent id / spec hash before replay.
+- **Storage** — libsql default + `StorageAdapter`; in-memory adapter for tests.
+- **Sandbox** — `SandboxAdapter` interface; just-bash virtual sandbox by default (isolated, docker-style mounts, `bash`-safe), plus in-process `none`.
+- **Runtime (opt-in)** — worker pool, lease queue, `RunApi`, crash recovery.
+- **Evals** — `ScenarioRunner`, `Scorer`, `Reporter`, plus the eval-viewer app.
 
 drover is a small library that hosts LLM agents. You give it an agent spec
 (prompt, schemas, tools, model), and it runs the loop: validate input, call
@@ -48,10 +73,10 @@ durably if you ask it to.
 
 ## Design principles
 
-- **Effect-native internals, Promise/AsyncIterable facade.** Internals
-  speak `Effect<RunResult, HarnessError, R>`. The facade gives you a
-  Promise that never rejects and an `AsyncIterable<HarnessEvent>` — so
-  existing Promise-based consumers can adopt without rewriting.
+- **Effect-first, Promise/AsyncIterable facade as fallback.** The public
+  surface speaks `Effect<RunResult, HarnessError, R>`. The facade gives
+  non-Effect consumers a Promise that never rejects and an
+  `AsyncIterable<HarnessEvent>` — adopt without rewriting.
 - **Capability flags over docstrings.** Sandbox capabilities are typed.
   Want `bash`? Pass `allowShell: true`. Documenting an escape in prose is
   not a safety boundary.
