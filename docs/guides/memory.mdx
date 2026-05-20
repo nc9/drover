@@ -130,10 +130,78 @@ drover ships two:
 
 Custom adapters implement [`MemoryAdapter`](/reference/memory).
 
+## Instruction files (AGENTS.md / CLAUDE.md)
+
+Most projects already keep `AGENTS.md` / `CLAUDE.md` files describing how
+agents should behave — at the repo root and in subdirectories. drover can
+load them as *ambient* memory: read-only context the agent always sees,
+distinct from the learned entries above.
+
+This is fully opt-in. Set `spec.instructionFiles` and the harness:
+
+1. Discovers instruction files along the **ancestor chain** — from the repo
+   root down to the run's `cwd`. A subdirectory's file is loaded only when
+   the agent works in (or under) that directory.
+2. Injects them into the system prompt, root-first, fresh every run.
+3. If a memory adapter is wired, also seeds them as read-only `reference`
+   entries (tag `instructions`) so `recall` reaches them.
+
+```ts
+const writer = defineAgent({
+  id: "writer",
+  /* ... */
+  instructionFiles: {
+    // defaults shown
+    filenames: ["AGENTS.md", "CLAUDE.md"],
+    // root: auto-detected via the nearest .git ancestor of cwd
+    maxBytesPerFile: 16384,
+    seedMemory: true,
+  },
+});
+```
+
+For `cwd = packages/api`, the loaded chain is:
+
+```
+./AGENTS.md              ← repo root
+./packages/AGENTS.md
+./packages/api/CLAUDE.md ← run cwd
+```
+
+`./packages/web/AGENTS.md` is off-path and not loaded.
+
+No filename is privileged — `AGENTS.md` / `CLAUDE.md` are just the default
+`filenames`. Point it at any set (`["RULES.md", "team-conventions.md"]`).
+
+### Read-only
+
+Seeded instruction entries carry the `instructions` tag. `forget` refuses
+them — they mirror files on disk; edit the file, not the memory. Each run
+re-seeds from disk, so the store always reflects current file content.
+
+### Manual use
+
+The loader is also exported standalone for full control — bespoke block
+formats, custom discovery, or files outside the ancestor chain:
+
+```ts
+import {
+  loadInstructionFiles,
+  renderInstructionsBlock,
+  seedInstructionFiles,
+} from "@drover/memory";
+
+const files = await loadInstructionFiles({ cwd, root, filenames: ["RULES.md"] });
+const block = renderInstructionsBlock(files);   // → system-prompt markdown
+await Effect.runPromise(seedInstructionFiles(memory, files));
+```
+
 ## Resume contract
 
 The memory settings (`enabled`, `includeIndex`, `maxIndexEntries`,
-`allowForget`, `writesPerTurn`) all go into `hashSpec`. A paused run
-resumed under different memory settings fails with `ResumeError: spec
-hash mismatch` — same contract as the other policy fields, so you
-can't accidentally replay a run under a different memory policy.
+`allowForget`, `writesPerTurn`) and `instructionFiles` config all go into
+`hashSpec`. A paused run resumed under different memory settings fails with
+`ResumeError: spec hash mismatch` — same contract as the other policy
+fields, so you can't accidentally replay a run under a different memory
+policy. (File *content* isn't hashed — only the config — same boundary as
+skills.)

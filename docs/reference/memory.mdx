@@ -139,6 +139,64 @@ function memoryRateLimitPlugin(opts?: {
 Auto-applied by the harness when `spec.memory.enabled` and
 `writesPerTurn > 0`. Counter resets on `turn_start`.
 
+## Instruction files
+
+### `loadInstructionFiles`
+
+```ts
+function loadInstructionFiles(opts: {
+  cwd: string;                          // bottom of the ancestor chain
+  filenames?: readonly string[];        // default ["AGENTS.md", "CLAUDE.md"]
+  root?: string;                        // default: nearest .git ancestor of cwd
+  maxBytesPerFile?: number;             // default 16384
+}): Promise<readonly InstructionFile[]>;
+
+interface InstructionFile {
+  path: string;          // absolute file path
+  dir: string;           // absolute directory
+  relativeDir: string;   // dir relative to root ("" at root)
+  filename: string;      // bare filename
+  content: string;       // body, truncated to maxBytesPerFile if oversized
+  truncated: boolean;
+}
+```
+
+Discovers instruction files along the ancestor chain from `root` down to
+`cwd`. Returns root-first. Nothing is loaded unless called — no implicit
+scan.
+
+### `renderInstructionsBlock`
+
+```ts
+function renderInstructionsBlock(files: readonly InstructionFile[]): string;
+```
+
+Renders discovered files as a `## Project instructions` system-prompt
+block, one `###` section per file in the given order. Empty string when
+`files` is empty.
+
+### `seedInstructionFiles`
+
+```ts
+function seedInstructionFiles(
+  adapter: MemoryAdapter,
+  files: readonly InstructionFile[],
+): Effect<void, MemoryError>;
+```
+
+Upserts each file into the adapter as a `global` / `reference` entry
+tagged `instructions`, with a `stableId`-derived id. Re-seeding the same
+files is idempotent.
+
+### `stableId`
+
+```ts
+function stableId(seed: string): string;
+```
+
+Deterministic, ULID-shaped (26-char Crockford base32) id derived from a
+seed string via SHA-256. Same seed → same id. Not time-sortable.
+
 ## `renderMemoryIndex`
 
 ```ts
@@ -185,7 +243,16 @@ interface MemorySpec {
   allowForget?: boolean;        // default false
   writesPerTurn?: number;       // default 1; 0 disables rate-limit
 }
+
+interface InstructionFilesConfig {
+  filenames?: readonly string[]; // default ["AGENTS.md", "CLAUDE.md"]
+  root?: string;                 // default: nearest .git ancestor of cwd
+  maxBytesPerFile?: number;      // default 16384
+  seedMemory?: boolean;          // default true
+}
 ```
 
-All fields go into `hashSpec` — spec-drift on memory settings rejects
-resume with `ResumeError`.
+`spec.memory` (a `MemorySpec`) and `spec.instructionFiles` (an
+`InstructionFilesConfig`) both go into `hashSpec` — spec-drift on either
+rejects resume with `ResumeError`. Instruction-file *content* is not
+hashed, only the config.
