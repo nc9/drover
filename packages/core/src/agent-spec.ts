@@ -40,6 +40,22 @@ export interface MemorySpec {
   writesPerTurn?: number;
 }
 
+/**
+ * Instruction-file loading config — discovers `AGENTS.md` / `CLAUDE.md`
+ * (or any configured filenames) along the ancestor chain from the repo
+ * root down to the run's `cwd`. Fully opt-in; absent = no scanning.
+ */
+export interface InstructionFilesConfig {
+  /** Filenames to match, in precedence order. Default `["AGENTS.md", "CLAUDE.md"]`. */
+  filenames?: readonly string[];
+  /** Top of the ancestor chain. Default: nearest `.git` ancestor of cwd, else cwd. */
+  root?: string;
+  /** Per-file byte cap; larger files are truncated with a notice. Default 16384. */
+  maxBytesPerFile?: number;
+  /** Also seed loaded files into the memory adapter as recall-able entries. Default true. */
+  seedMemory?: boolean;
+}
+
 /** Subagent capacity limits enforced by the `taskTool` factory. */
 export interface SubagentConfig {
   /** Maximum nesting depth from the root run. Default 2. */
@@ -90,6 +106,12 @@ export interface AgentSpec<
   timeoutMs?: number;
   /** Self-curated knowledge across runs. Wires `remember`/`recall` tools. */
   memory?: MemorySpec;
+  /**
+   * Ambient project instructions (`AGENTS.md` / `CLAUDE.md`). When set,
+   * the harness loads the ancestor chain into the system prompt and —
+   * when a memory adapter is wired — seeds them as recall-able entries.
+   */
+  instructionFiles?: InstructionFilesConfig;
 }
 
 /** Static input type derived from an `AgentSpec`'s `inputSchema`. */
