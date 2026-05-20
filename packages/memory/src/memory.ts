@@ -94,6 +94,15 @@ export function createInMemoryMemory(): MemoryAdapter {
 }
 
 /**
+ * Body length cap. Model-written entries (`user`/`feedback`/`project`)
+ * stay terse — the `remember` tool schema caps them at 4000 too.
+ * `reference` entries hold pointers and loaded documents (e.g. seeded
+ * AGENTS.md / CLAUDE.md instruction files), which are legitimately
+ * larger, so they get a much higher ceiling.
+ */
+const MAX_BODY_CHARS = { default: 4000, reference: 65536 } as const;
+
+/**
  * Shared validation used by both adapters. Returns a `MemoryError` to
  * fail with, or null when the draft is valid.
  */
@@ -145,11 +154,13 @@ export function validateDraft(draft: MemoryDraft): MemoryError | null {
       message: `summary must be 1-200 chars (got ${draft.summary.length})`,
     });
   }
-  if (draft.body.length === 0 || draft.body.length > 4000) {
+  const maxBody =
+    draft.kind === "reference" ? MAX_BODY_CHARS.reference : MAX_BODY_CHARS.default;
+  if (draft.body.length === 0 || draft.body.length > maxBody) {
     return new MemoryError({
       op: "put",
       reason: "io",
-      message: `body must be 1-4000 chars (got ${draft.body.length})`,
+      message: `body must be 1-${maxBody} chars (got ${draft.body.length})`,
     });
   }
   return null;

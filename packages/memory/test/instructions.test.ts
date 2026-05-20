@@ -136,6 +136,28 @@ describe("seedInstructionFiles", () => {
     expect(listed.length).toBe(1);
     expect(listed[0]!.body).toBe("v2");
   });
+
+  test("seeds an instruction file larger than the 4000-char learned-memory cap", async () => {
+    // A typical CLAUDE.md (~8 KiB) is well over the model-written body
+    // limit but must still become a recall-able `reference` entry.
+    const adapter = createInMemoryMemory();
+    const big = "x".repeat(8000);
+    await run(
+      seedInstructionFiles(adapter, [
+        {
+          path: "/r/CLAUDE.md",
+          dir: "/r",
+          relativeDir: "",
+          filename: "CLAUDE.md",
+          content: big,
+          truncated: false,
+        },
+      ]),
+    );
+    const listed = await run(adapter.list({ scopes: ["global"], tags: ["instructions"] }));
+    expect(listed.length).toBe(1);
+    expect(listed[0]!.body.length).toBe(8000);
+  });
 });
 
 describe("stableId", () => {
