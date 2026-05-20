@@ -27,8 +27,10 @@ import {
   renderInstructionsBlock,
   renderMemoryIndex,
   seedInstructionFiles,
+  type InstructionFile,
   type MemoryAdapter,
 } from "@drover/memory";
+import { createPromptEngine, loadPromptFile, type PromptScope } from "@drover/prompt";
 import {
   renderSkillsBlock,
   skillLoadTool,
@@ -44,6 +46,7 @@ import type { AgentLoopConfig, AgentMessage } from "@mariozechner/pi-agent-core"
 import type { KnownApi, Message, UserMessage } from "@mariozechner/pi-ai";
 import { Value } from "@sinclair/typebox/value";
 import type { TSchema } from "@sinclair/typebox";
+import * as path from "node:path";
 
 import { createTranslator, toPiTool, type PiEvent } from "./translate.ts";
 
@@ -112,6 +115,44 @@ export interface RunArgs<S extends AgentSpec<TSchema, TSchema>> {
 
 const DEFAULT_MAX_TURNS = 30;
 const DEFAULT_OUTPUT_RETRIES = 2;
+
+/** Stateless engine — registered builtins only; run state travels per render. */
+const promptEngine = createPromptEngine();
+
+/**
+ * Build the `PromptScope` a template renders against, from resolved run
+ * state. `skills` / `memory` are populated only when both the spec opts in
+ * and the dependency is wired — otherwise their builtins render empty.
+ */
+export function buildPromptScope(args: {
+  spec: AgentSpec;
+  ctx: RunContext;
+  deps: HarnessDeps;
+  modelId: string;
+  toolIds: ReadonlyArray<string>;
+  instructionFiles: ReadonlyArray<InstructionFile>;
+}): PromptScope {
+  const { spec, ctx, deps, modelId, toolIds, instructionFiles } = args;
+  return {
+    agent: { id: spec.id },
+    run: { runId: ctx.runId, cwd: ctx.cwd },
+    model: modelId,
+    tools: toolIds,
+    ...(instructionFiles.length > 0 ? { instructions: instructionFiles } : {}),
+    ...(deps.skills && spec.skills && spec.skills.length > 0
+      ? { skills: { registry: deps.skills, allowed: spec.skills } }
+      : {}),
+    ...(deps.memory && spec.memory?.enabled
+      ? {
+          memory: {
+            adapter: deps.memory,
+            agentId: spec.id,
+            maxEntries: spec.memory.maxIndexEntries ?? 30,
+          },
+        }
+      : {}),
+  };
+}
 
 /**
  * The main Effect-native run loop. Composes tools, validates input,
@@ -222,24 +263,14 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     });
 
     const tools = composeTools(spec, deps, plugins, safeEmit, ctx.runId);
-    const promptSource = spec.systemPrompt;
-    const basePrompt: string =
-      typeof promptSource === "string"
-        ? promptSource
-        : yield* Effect.promise(async (): Promise<string> => await promptSource(ctx));
-    // Append the skills advertisement block when skills are wired. The
-    // block lists only spec-declared (allowed) skill names so the model
-    // never learns about anything it can't reach.
-    const skillsBlock =
-      spec.skills && spec.skills.length > 0 && deps.skills
-        ? renderSkillsBlock(deps.skills, spec.skills)
-        : "";
-    // Instruction-file block (AGENTS.md / CLAUDE.md ancestor chain). Loaded
-    // fresh each run; seeded into memory as recall-able entries when an
-    // adapter is wired. Fully opt-in via spec.instructionFiles.
-    let instructionsBlock = "";
+
+    // Instruction files (AGENTS.md / CLAUDE.md ancestor chain). Loaded
+    // fresh each run and seeded into memory as recall-able entries when an
+    // adapter is wired — both side effects run regardless of how the
+    // system prompt is assembled below. Fully opt-in via spec.instructionFiles.
+    let instructionFilesList: ReadonlyArray<InstructionFile> = [];
     if (spec.instructionFiles) {
-      const files = yield* Effect.promise(() =>
+      instructionFilesList = yield* Effect.promise(() =>
         loadInstructionFiles({
           cwd: ctx.cwd,
           ...(spec.instructionFiles!.filenames
@@ -251,22 +282,75 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             : {}),
         }),
       );
-      instructionsBlock = renderInstructionsBlock(files);
       if (deps.memory && spec.instructionFiles.seedMemory !== false) {
-        const seeded = yield* Effect.either(seedInstructionFiles(deps.memory, files));
+        const seeded = yield* Effect.either(
+          seedInstructionFiles(deps.memory, instructionFilesList),
+        );
         if (seeded._tag === "Left") void seeded.left;
       }
     }
-    // Memory index block (opt-out via spec.memory.includeIndex === false).
-    const memoryBlock =
-      spec.memory?.enabled && spec.memory.includeIndex !== false && deps.memory
-        ? yield* renderMemoryIndex(deps.memory, spec.id, {
-            maxEntries: spec.memory.maxIndexEntries ?? 30,
-          })
-        : "";
-    const systemPrompt = [basePrompt, instructionsBlock, skillsBlock, memoryBlock]
-      .filter((s) => s.length > 0)
-      .join("\n");
+
+    const tplConfig = spec.promptTemplate;
+    let systemPrompt: string;
+    if (tplConfig && (tplConfig.source !== undefined || tplConfig.path !== undefined)) {
+      // Template-driven assembly: the .md.liquid template owns layout and
+      // renders drover builtins from run state. spec.systemPrompt is not
+      // used on this path. A promptTemplate config with neither source nor
+      // path is ignored — assembly falls through to the default branch.
+      let tplSource: string;
+      if (tplConfig.source !== undefined) {
+        tplSource = tplConfig.source;
+      } else {
+        const p = tplConfig.path!;
+        const abs = path.isAbsolute(p) ? p : path.join(ctx.cwd, p);
+        tplSource = yield* Effect.promise(() => loadPromptFile(abs));
+      }
+      const promptScope = buildPromptScope({
+        spec,
+        ctx,
+        deps,
+        modelId: resolved.model.id,
+        toolIds: tools.map((t) => t.id),
+        instructionFiles: instructionFilesList,
+      });
+      const rendered = yield* Effect.promise(() =>
+        promptEngine.render(tplSource, promptScope, {
+          autoReorder: tplConfig.autoReorder ?? false,
+        }),
+      );
+      systemPrompt = rendered.text;
+      safeEmit({
+        kind: "prompt_rendered",
+        runId: ctx.runId,
+        cacheablePrefixChars: rendered.cache.cacheablePrefixChars,
+        totalChars: rendered.cache.totalChars,
+        reordered: rendered.cache.reordered,
+        warnings: rendered.cache.warnings.map((w) => w.message),
+        ts: Date.now(),
+      });
+    } else {
+      // Default assembly: base prompt + auto-blocks (instructions, skills,
+      // memory index) joined. Each block renderer returns "" when empty.
+      const promptSource = spec.systemPrompt;
+      const basePrompt: string =
+        typeof promptSource === "string"
+          ? promptSource
+          : yield* Effect.promise(async (): Promise<string> => await promptSource(ctx));
+      const skillsBlock =
+        spec.skills && spec.skills.length > 0 && deps.skills
+          ? renderSkillsBlock(deps.skills, spec.skills)
+          : "";
+      const instructionsBlock = renderInstructionsBlock(instructionFilesList);
+      const memoryBlock =
+        spec.memory?.enabled && spec.memory.includeIndex !== false && deps.memory
+          ? yield* renderMemoryIndex(deps.memory, spec.id, {
+              maxEntries: spec.memory.maxIndexEntries ?? 30,
+            })
+          : "";
+      systemPrompt = [basePrompt, instructionsBlock, skillsBlock, memoryBlock]
+        .filter((s) => s.length > 0)
+        .join("\n");
+    }
 
     const userPrompt = buildUserPrompt(spec, input);
 
@@ -465,6 +549,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       ...(effectiveReasoning ? { reasoning: effectiveReasoning } : {}),
       ...(resolved.temperature !== undefined ? { temperature: resolved.temperature } : {}),
       ...(resolved.maxTokens !== undefined ? { maxTokens: resolved.maxTokens } : {}),
+      ...(resolved.cacheRetention ? { cacheRetention: resolved.cacheRetention } : {}),
       ...(transformContext ? { transformContext } : {}),
       ...(beforeToolCall ? { beforeToolCall: beforeToolCall as never } : {}),
       ...(afterToolCall ? { afterToolCall: afterToolCall as never } : {}),
@@ -816,6 +901,7 @@ export function hashSpec(spec: AgentSpec): string {
     pluginIds: (spec.plugins ?? []).map((p) => p.id),
     memory: spec.memory ?? null,
     instructionFiles: spec.instructionFiles ?? null,
+    promptTemplate: spec.promptTemplate ?? null,
   });
   for (let i = 0; i < s.length; i++) {
     h = (h * 31 + s.charCodeAt(i)) | 0;

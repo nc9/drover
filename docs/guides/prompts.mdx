@@ -1,0 +1,108 @@
+---
+title: Prompt templates
+description: Compose system prompts from Liquid templates with drover builtins.
+---
+
+`@drover/prompt` assembles system prompts from [Liquid](https://liquidjs.com)
+templates instead of hand-concatenated strings. A template is markdown with two
+kinds of directive:
+
+- `{% builtin %}` tags — **drover-provided** blocks resolved from run state
+  (memory, skills, instruction files, date, …).
+- `{{ slot }}` outputs — **your** values, supplied per render.
+
+A template with no directives is just markdown: it renders verbatim. Directives
+are entirely opt-in.
+
+## The `.md.liquid` format
+
+The convention is a double extension — `system.md.liquid` — where `.liquid`
+marks the template language and `.md` the output. A plain `.md` file works too.
+
+```liquid
+You are {% agent field: "name" %}, working in {% cwd %}.
+
+{% instructions %}
+
+{% skills %}
+
+Keep responses concise and grounded in the conventions above.
+
+Today is {% date %}.
+```
+
+## Builtins
+
+| Tag | Volatility | Renders |
+|---|---|---|
+| `{% instructions %}` | static | `AGENTS.md` / `CLAUDE.md` block |
+| `{% skills %}` | static | available-skills block |
+| `{% memory %}` | volatile | recalled-memory index |
+| `{% agent %}` | static | agent id (`field: "name"` → name) |
+| `{% cwd %}` | static | run working directory |
+| `{% runId %}` | volatile | run id |
+| `{% model %}` | static | resolved model id |
+| `{% tools %}` | static | composed tool ids (`sep:` joins) |
+| `{% date %}` / `{% time %}` | volatile | current date / time (`format:` arg) |
+
+A builtin whose backing run state is absent renders an empty string — drop
+`{% memory %}` into any template without guarding it. *Volatility* drives the
+[cache analyzer](/concepts/prompt-caching).
+
+Args are named: `{% memory limit: 10 %}`, `{% date format: "iso" %}`,
+`{% agent field: "name" %}`.
+
+## Wiring it to an agent
+
+Set `promptTemplate` on the spec. The harness builds the render scope from run
+state, renders the template, and uses it as the system prompt. When
+`promptTemplate` is set the template fully defines the prompt — `systemPrompt`
+is not used for assembly.
+
+```ts
+import { defineAgent } from "@drover/core";
+
+defineAgent({
+  id: "writer",
+  systemPrompt: "(unused when promptTemplate is set)",
+  promptTemplate: { path: "prompts/system.md.liquid", autoReorder: true },
+  // ...
+});
+```
+
+`promptTemplate` accepts `source` (inline string) or `path` (a file; relative
+paths resolve against the run `cwd`). `autoReorder` is covered under
+[prompt caching](/concepts/prompt-caching).
+
+## Standalone use
+
+The engine works without the harness — useful for previewing or bespoke
+assembly:
+
+```ts
+import { createPromptEngine } from "@drover/prompt";
+
+const engine = createPromptEngine();
+const { text, cache } = await engine.render(templateSource, {
+  agent: { id: "writer", name: "Writer" },
+  vars: { audience: "external developers" },
+});
+```
+
+`vars` feeds `{{ }}` slots. Liquid control flow (`{% if %}`, `{% for %}`,
+filters) is available alongside the builtins.
+
+## Composition pattern
+
+Liquid `{% if %}` lets one template serve multiple modes — build the dynamic
+parts in TypeScript, pass them as `vars`, keep the template declarative:
+
+```liquid
+{% instructions %}
+
+{% if mode == "review" %}
+Focus on correctness and edge cases.
+{% else %}
+Focus on shipping the smallest correct change.
+{% endif %}
+```

@@ -1,0 +1,82 @@
+---
+title: Prompt caching
+description: Why directive ordering decides what a system prompt can cache.
+---
+
+Anthropic prompt caching caches a **byte-identical prefix** of a request. The
+system prompt is the highest-value thing to cache — so where volatile content
+sits inside it decides how much can be cached.
+
+## The constraint
+
+drover runs on `pi-agent-core`, whose loop takes the system prompt as a single
+`string`. `pi-ai` sends it as one Anthropic system block with one uniform
+`cache_control` marker. drover cannot place a mid-prompt breakpoint.
+
+What it *can* do: keep the volatile content out of the prefix. Because the whole
+system string is one cached block, Anthropic still matches the longest identical
+prefix run-to-run. `{% date %}` at the top → near-zero cache hit. `{% date %}`
+at the bottom → the entire static body caches.
+
+## Volatility
+
+`@drover/prompt` classifies every template segment:
+
+- **static** — identical across runs of the same agent: literal markdown,
+  `{% instructions %}`, `{% skills %}`, `{% agent %}`, `{% model %}`,
+  `{% cwd %}`, `{% tools %}`.
+- **volatile** — changes per run or mid-run: `{% date %}`, `{% time %}`,
+  `{% runId %}`, `{% memory %}` (the agent rewrites memory as it runs), and
+  every `{{ }}` slot.
+
+The **cacheable prefix** is the leading run of static segments — everything
+before the first volatile segment.
+
+## The analyzer
+
+Every render returns a `CacheReport`:
+
+```ts
+interface CacheReport {
+  cacheablePrefixChars: number;   // length of the leading static run
+  totalChars: number;
+  warnings: readonly CacheWarning[];
+  reordered: boolean;
+}
+```
+
+`warnings` flags each volatile directive sitting before static content — it
+shortens the cacheable prefix. `engine.analyze(template)` produces the same
+report at compile time, with no run state.
+
+## `autoReorder`
+
+Set `autoReorder` (per render, or `promptTemplate.autoReorder` on the spec) and
+the engine moves volatile **builtin tags** to a footer so the static prefix runs
+contiguous:
+
+```ts
+const { text, cache } = await engine.render(src, scope, { autoReorder: true });
+// cache.reordered === true when it moved anything
+```
+
+It only relocates self-contained volatile builtins (`{% date %}`, `{% time %}`,
+`{% memory %}`, `{% runId %}`) — never your prose, never `{{ }}` slots, and never
+across `{% if %}` / `{% for %}` boundaries. Because it moves the *directive* and
+not the surrounding text, keep volatile builtins on their own lines rather than
+inline (`Today is {% date %}.` leaves an orphaned `Today is .`).
+
+## Turning caching on
+
+The analyzer's advice is moot unless caching is enabled. Set `cacheRetention`
+on the model spec — it maps to `pi-ai`'s knob:
+
+```ts
+defineAgent({
+  model: { name: "sonnet", cacheRetention: "short" },
+  // ...
+});
+```
+
+`"none"` (default) disables caching; `"short"` and `"long"` select the
+breakpoint TTL.

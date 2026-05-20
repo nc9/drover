@@ -30,6 +30,7 @@
           "guides/sandboxes",
           "guides/storage",
           "guides/memory",
+          "guides/prompts",
           "guides/evals"
         ]
       },
@@ -39,7 +40,8 @@
           "concepts/agent-spec",
           "concepts/events-and-streams",
           "concepts/plugin-model",
-          "concepts/hash-spec"
+          "concepts/hash-spec",
+          "concepts/prompt-caching"
         ]
       },
       {
@@ -65,7 +67,8 @@
           "reference/mcp",
           "reference/storage",
           "reference/runtime",
-          "reference/memory"
+          "reference/memory",
+          "reference/prompt"
         ]
       }
     ]

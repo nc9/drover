@@ -33,6 +33,7 @@ JSON.stringify({
   pluginIds,                // spec.plugins.map(p => p.id)
   memory,                   // full MemorySpec object or null
   instructionFiles,         // full InstructionFilesConfig or null
+  promptTemplate,           // full PromptTemplateConfig or null
 });
 ```
 
@@ -47,7 +48,9 @@ A change to any of these flips the hash. Resume rejects.
   `() => greeting` with a different outer `greeting` hash equal.
   Prefer string prompts for resumable agents.
 - **External resources.** A skill body changing on disk doesn't bump
-  the hash — only the skill name does. Same for MCP server tool sets.
+  the hash — only the skill name does. Same for MCP server tool sets,
+  instruction-file content, and a `promptTemplate.path` file's body
+  (the config is hashed, not the file it points at).
 
 The boundary is "source-level intent in the spec." Anything outside
 the spec literal slips through.

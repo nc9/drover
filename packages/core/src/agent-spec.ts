@@ -10,10 +10,19 @@ import type { HarnessPlugin } from "./plugin.ts";
 export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
 
 /**
+ * Anthropic prompt-cache retention. Maps 1:1 onto pi-ai's
+ * `cacheRetention` stream option — `none` disables caching, `short`/`long`
+ * select the breakpoint TTL. Drover cannot place a mid-prompt breakpoint
+ * (pi sends the system prompt as one block), so the cache hit depends on
+ * a byte-stable prefix — see `@drover/prompt`'s cache analyzer.
+ */
+export type CacheRetention = "none" | "short" | "long";
+
+/**
  * Model spec. Three accepted forms:
  *   - "sonnet"            — bare name (alias or pi-ai builtin)
  *   - "sonnet:high"       — name with reasoning suffix
- *   - { name, reasoning?, temperature?, maxTokens? }
+ *   - { name, reasoning?, temperature?, maxTokens?, cacheRetention? }
  *
  * Resolution lookup: aliases ∪ pi-ai builtin names. Aliases shadow builtins.
  */
@@ -24,6 +33,8 @@ export type ModelSpec =
       reasoning?: ReasoningLevel;
       temperature?: number;
       maxTokens?: number;
+      /** Prompt-cache retention. Default: pi-ai's default (no caching). */
+      cacheRetention?: CacheRetention;
     };
 
 /** Memory configuration — gates `remember`/`recall`/`forget` and the index block. */
@@ -54,6 +65,25 @@ export interface InstructionFilesConfig {
   maxBytesPerFile?: number;
   /** Also seed loaded files into the memory adapter as recall-able entries. Default true. */
   seedMemory?: boolean;
+}
+
+/**
+ * Prompt-template config — opt in to assembling the system prompt from a
+ * `.md.liquid` template (via `@drover/prompt`) instead of the harness's
+ * default block join. The template renders drover builtins (`{% memory %}`,
+ * `{% skills %}`, `{% instructions %}`, …) from run state. When active,
+ * `spec.systemPrompt` is not used for assembly — the template owns layout.
+ *
+ * Provide one of `source` or `path`. A config with neither is ignored —
+ * assembly falls back to the default `systemPrompt` + block join.
+ */
+export interface PromptTemplateConfig {
+  /** Inline template source. Takes precedence over `path`. */
+  source?: string;
+  /** Path to a `.md.liquid` template; relative paths resolve against the run cwd. */
+  path?: string;
+  /** Move volatile builtins to a cacheable footer. Default false. */
+  autoReorder?: boolean;
 }
 
 /** Subagent capacity limits enforced by the `taskTool` factory. */
@@ -112,6 +142,11 @@ export interface AgentSpec<
    * when a memory adapter is wired — seeds them as recall-able entries.
    */
   instructionFiles?: InstructionFilesConfig;
+  /**
+   * Compose the system prompt from a Liquid template instead of the
+   * default block join. When set, the template fully defines the prompt.
+   */
+  promptTemplate?: PromptTemplateConfig;
 }
 
 /** Static input type derived from an `AgentSpec`'s `inputSchema`. */

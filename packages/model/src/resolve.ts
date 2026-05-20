@@ -1,4 +1,4 @@
-import type { ModelSpec, ReasoningLevel } from "@drover/core";
+import type { CacheRetention, ModelSpec, ReasoningLevel } from "@drover/core";
 import { ModelError } from "@drover/core";
 import { Effect } from "effect";
 import { getModel, getProviders, getModels } from "@mariozechner/pi-ai";
@@ -13,6 +13,7 @@ export interface ResolvedModel {
   reasoning?: ReasoningLevel;
   temperature?: number;
   maxTokens?: number;
+  cacheRetention?: CacheRetention;
 }
 
 /** Normalised view of a `ModelSpec` after slug parsing. */
@@ -21,6 +22,7 @@ interface NormalisedSpec {
   reasoning?: ReasoningLevel;
   temperature?: number;
   maxTokens?: number;
+  cacheRetention?: CacheRetention;
 }
 
 const VALID_REASONING: ReadonlySet<ReasoningLevel> = new Set([
@@ -46,6 +48,7 @@ function parseSpec(spec: ModelSpec): NormalisedSpec {
   if (spec.reasoning) out.reasoning = spec.reasoning;
   if (spec.temperature !== undefined) out.temperature = spec.temperature;
   if (spec.maxTokens !== undefined) out.maxTokens = spec.maxTokens;
+  if (spec.cacheRetention) out.cacheRetention = spec.cacheRetention;
   return out;
 }
 
@@ -156,6 +159,7 @@ export function resolveModel(
     if (reasoning) result.reasoning = reasoning;
     if (norm.temperature !== undefined) result.temperature = norm.temperature;
     if (norm.maxTokens !== undefined) result.maxTokens = norm.maxTokens;
+    if (norm.cacheRetention) result.cacheRetention = norm.cacheRetention;
     return result;
   });
 }

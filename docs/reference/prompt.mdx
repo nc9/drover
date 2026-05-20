@@ -1,0 +1,121 @@
+---
+title: "@drover/prompt"
+description: Liquid prompt-template engine with drover builtins and a cache analyzer.
+---
+
+Renders system prompts from Liquid templates. See the
+[prompt templates guide](/guides/prompts) for usage and
+[prompt caching](/concepts/prompt-caching) for the analyzer.
+
+## `createPromptEngine`
+
+```ts
+function createPromptEngine(): PromptEngine;
+```
+
+Builds a LiquidJS engine with the drover builtins registered as custom tags.
+Stateless — create once, reuse across renders. Run state travels through each
+`render` call, not the engine.
+
+## `PromptEngine`
+
+```ts
+interface PromptEngine {
+  render(template: string, scope: PromptScope, opts?: RenderOpts): Promise<RenderResult>;
+  renderFile(path: string, scope: PromptScope, opts?: RenderOpts): Promise<RenderResult>;
+  analyze(template: string): CacheReport;
+}
+```
+
+`render` parses, applies the cache analysis, and renders. `renderFile` reads a
+file first. `analyze` produces a compile-time `CacheReport` with no run state.
+
+## `PromptScope`
+
+Run state the builtins resolve from. Every field is optional — an absent field
+makes its builtin render `""`.
+
+```ts
+interface PromptScope {
+  agent?: { id: string; name?: string };
+  run?: { runId: string; cwd: string };
+  model?: string;
+  tools?: readonly string[];
+  instructions?: readonly InstructionFile[];
+  skills?: { registry: SkillRegistry; allowed: readonly string[] };
+  memory?: { adapter: MemoryAdapter; agentId: string; maxEntries?: number };
+  vars?: Readonly<Record<string, string | number | boolean>>;   // {{ }} slots
+}
+```
+
+`__drover` is a reserved render-scope key.
+
+## `RenderResult` / `CacheReport`
+
+```ts
+interface RenderResult {
+  text: string;
+  cache: CacheReport;
+}
+
+interface CacheReport {
+  cacheablePrefixChars: number;
+  totalChars: number;
+  warnings: readonly CacheWarning[];
+  reordered: boolean;
+}
+
+interface CacheWarning {
+  message: string;
+  line?: number;       // 1-based source line of the offending directive
+  builtin?: string;    // builtin name, when the offender is a builtin tag
+}
+```
+
+## `RenderOpts`
+
+```ts
+interface RenderOpts {
+  autoReorder?: boolean;   // move volatile builtins to a cacheable footer
+}
+```
+
+## `BUILTINS`
+
+```ts
+const BUILTINS: readonly Builtin[];
+function getBuiltin(name: string): Builtin | undefined;
+
+interface Builtin {
+  name: string;
+  volatility: "static" | "volatile";
+  render(scope: PromptScope, hash: Readonly<Record<string, unknown>>): string | Promise<string>;
+}
+```
+
+The registered builtin tags: `instructions`, `skills`, `memory`, `agent`,
+`cwd`, `runId`, `model`, `tools`, `date`, `time`.
+
+## `loadPromptFile`
+
+```ts
+function loadPromptFile(path: string): Promise<string>;
+```
+
+Reads a template file from disk.
+
+## `PromptTemplateConfig`
+
+The spec field that wires a template into the harness lives in `@drover/core`:
+
+```ts
+interface PromptTemplateConfig {
+  source?: string;        // inline template; takes precedence over path
+  path?: string;          // .md.liquid file; relative paths resolve to run cwd
+  autoReorder?: boolean;
+}
+```
+
+Set it as `AgentSpec.promptTemplate`. When present, the harness renders the
+template into the system prompt and emits a `prompt_rendered` event carrying the
+`CacheReport`.

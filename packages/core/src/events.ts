@@ -113,6 +113,18 @@ export type HarnessEvent =
       hits: ReadonlyArray<{ id: string; scope: "global" | "agent" | "run"; score: number }>;
       ts: number;
     }
+  | {
+      kind: "prompt_rendered";
+      runId: string;
+      /** Length of the leading static run — the cacheable prefix. */
+      cacheablePrefixChars: number;
+      totalChars: number;
+      /** True when `autoReorder` relocated volatile builtins to a footer. */
+      reordered: boolean;
+      /** Cache-ordering advisories from the analyzer. */
+      warnings: ReadonlyArray<string>;
+      ts: number;
+    }
   | { kind: "error"; runId: string; tag: string; message: string; ts: number };
 
 /** Narrow on `kind`. */

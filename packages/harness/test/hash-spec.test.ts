@@ -116,4 +116,22 @@ describe("hashSpec", () => {
     const b = { ...baseSpec, instructionFiles: { filenames: ["RULES.md"] } };
     expect(hashSpec(a)).not.toBe(hashSpec(b));
   });
+
+  test("adding promptTemplate changes the hash", () => {
+    const off = { ...baseSpec };
+    const on = { ...baseSpec, promptTemplate: { source: "{% instructions %}" } };
+    expect(hashSpec(off)).not.toBe(hashSpec(on));
+  });
+
+  test("promptTemplate config drift changes the hash", () => {
+    const a = { ...baseSpec, promptTemplate: { source: "v1" } };
+    const b = { ...baseSpec, promptTemplate: { source: "v2" } };
+    expect(hashSpec(a)).not.toBe(hashSpec(b));
+  });
+
+  test("promptTemplate.autoReorder toggle changes the hash", () => {
+    const a = { ...baseSpec, promptTemplate: { source: "x", autoReorder: false } };
+    const b = { ...baseSpec, promptTemplate: { source: "x", autoReorder: true } };
+    expect(hashSpec(a)).not.toBe(hashSpec(b));
+  });
 });
