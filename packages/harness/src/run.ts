@@ -47,7 +47,7 @@ import { runLifecycleSteps } from "./lifecycle.ts";
 import type { AgentLoopConfig, AgentMessage } from "@mariozechner/pi-agent-core";
 import type { KnownApi, Message, UserMessage } from "@mariozechner/pi-ai";
 import { Value } from "@sinclair/typebox/value";
-import type { TSchema } from "@sinclair/typebox";
+import { Kind, type TSchema } from "@sinclair/typebox";
 import * as path from "node:path";
 
 import { createTranslator, toPiTool, type PiEvent } from "./translate.ts";
@@ -532,6 +532,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // Output-schema self-correction.
     const getFollowUpMessages = async (): Promise<UserMessage[]> => {
       if (ctx.signal.aborted) return [];
+      // Open-schema agents have no structured-output contract — never push a
+      // schema-correction turn at them.
+      if (isOpenSchema(spec.outputSchema)) return [];
       if (retriesUsed >= outputRetries) return [];
       const text = lastAssistant.text;
       if (!text || text.trim().length === 0) return [];
@@ -775,15 +778,12 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       status = "cancelled";
       errorOut = { tag: "CancelledError", message: "cancelled by caller" };
     } else {
+      // Order matters. An enforced budget breach is terminal — it wins even
+      // if the breaching turn happened to produce valid output (a blown
+      // budget must not be reported as success). Then loop errors, then the
+      // output check.
       const breach = quotaBreach.value;
-      const decoded =
-        finalText && finalText.trim().length > 0
-          ? tryDecode(spec.outputSchema, finalText)
-          : undefined;
-      if (decoded?.ok) {
-        output = decoded.value as AgentOutput<S>;
-        safeEmit({ kind: "output_validated", runId: ctx.runId, ts: Date.now() });
-      } else if (breach) {
+      if (breach) {
         status = "quota";
         errorOut = {
           tag: "QuotaExceededError",
@@ -795,12 +795,19 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       } else if (!finalText || finalText.trim().length === 0) {
         status = "error";
         errorOut = { tag: "OutputValidationError", message: "no final assistant text" };
+      } else if (isOpenSchema(spec.outputSchema)) {
+        // No structured-output contract — any non-empty final text succeeds;
+        // `output` stays undefined and the caller reads `finalText`.
+        safeEmit({ kind: "output_validated", runId: ctx.runId, ts: Date.now() });
       } else {
-        status = "error";
-        errorOut = {
-          tag: "OutputValidationError",
-          message: (decoded as { message: string }).message,
-        };
+        const decoded = tryDecode(spec.outputSchema, finalText);
+        if (decoded.ok) {
+          output = decoded.value as AgentOutput<S>;
+          safeEmit({ kind: "output_validated", runId: ctx.runId, ts: Date.now() });
+        } else {
+          status = "error";
+          errorOut = { tag: "OutputValidationError", message: decoded.message };
+        }
       }
     }
 
@@ -1041,20 +1048,30 @@ function composeTools(
   return out;
 }
 
+/**
+ * An "open" output schema (`Type.Unknown()` / `Type.Any()`) means the agent
+ * has no structured-output contract — the system prompt drives the response
+ * shape. Only schema-bearing agents get the JSON-output instructions.
+ */
+function isOpenSchema(schema: TSchema): boolean {
+  const k = (schema as unknown as Record<symbol, unknown>)[Kind];
+  return k === "Unknown" || k === "Any";
+}
+
 function buildUserPrompt(spec: AgentSpec, input: unknown): string {
-  return [
-    "Input (JSON):",
-    "```json",
-    JSON.stringify(input, null, 2),
-    "```",
-    "",
-    "Your output MUST be a JSON object matching this schema:",
-    "```json",
-    JSON.stringify(spec.outputSchema, null, 2),
-    "```",
-    "",
-    "Reply with the JSON object only. If you must include prose, wrap the JSON in a ```json fenced block at the end of your message; the validator extracts the last fenced JSON. Do NOT echo the input.",
-  ].join("\n");
+  const parts = ["Input (JSON):", "```json", JSON.stringify(input, null, 2), "```"];
+  if (!isOpenSchema(spec.outputSchema)) {
+    parts.push(
+      "",
+      "Produce output as a JSON object matching this schema:",
+      "```json",
+      JSON.stringify(spec.outputSchema, null, 2),
+      "```",
+      "",
+      "If you include prose, put the JSON in a final ```json fenced block — the validator reads the last fenced block.",
+    );
+  }
+  return parts.join("\n");
 }
 
 function buildSchemaFeedback(message: string): string {
