@@ -13,7 +13,7 @@ const stableSpec = defineAgent({
   outputSchema: Type.Object({ ok: Type.Boolean() }),
   model: "cheap",
   tools: [],
-  maxTurns: 2,
+  quota: { maxTurns: 2 },
 });
 
 const seedPausedRun = async (

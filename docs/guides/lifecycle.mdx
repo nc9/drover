@@ -35,7 +35,7 @@ history).
 
 `postSuccess` steps run **after the agent's natural completion**, and only
 when the run's terminal status is `success` — they are skipped on `error`,
-`max_turns`, `cancelled`, and `paused`. It is *not* an unconditional
+`quota`, `cancelled`, and `paused`. It is *not* an unconditional
 `finally`; the name says so deliberately.
 
 The blocks are appended as one closing user turn and the loop continues — the
@@ -48,7 +48,7 @@ is also disabled for the continuation, so a plain post-processing reply can't
 fail the original schema. If a `postSuccess` step is misconfigured or its
 turns fail, the run's terminal status becomes `error`.
 
-`postSuccess` shares the run's `timeoutMs` budget — the wall-clock timer
+`postSuccess` shares the run's `quota.maxDurationMs` budget — the wall-clock timer
 stays armed across `init`, the loop, and `postSuccess`.
 
 ## Step kinds

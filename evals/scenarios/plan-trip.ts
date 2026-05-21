@@ -32,7 +32,7 @@ const spec = defineAgent({
   }),
   model: "cheap",
   tools: [],
-  maxTurns: 3,
+  quota: { maxTurns: 3 },
 });
 
 export const scenario: Scenario<typeof spec> = {

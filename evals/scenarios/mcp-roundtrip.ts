@@ -20,7 +20,7 @@ const spec = defineAgent({
   model: "cheap",
   tools: [],
   mcpServers: ["fixture"],
-  maxTurns: 6,
+  quota: { maxTurns: 6 },
 });
 
 export const scenario: Scenario<typeof spec> = {

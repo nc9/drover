@@ -26,7 +26,7 @@ import {
   // errors
   type HarnessError,
   InputValidationError, OutputValidationError,
-  SubagentLimitError, MaxTurnsError, TimeoutError,
+  SubagentLimitError, QuotaExceededError,
   CancelledError, PausedForConfirmationError,
   ModelError, SandboxError, StorageError, PluginError,
 } from "@drover/core";
@@ -74,7 +74,7 @@ channel when composing.
 ```ts
 interface RunResult<TOutput = unknown> {
   runId: string;
-  status: "success" | "max_turns" | "cancelled" | "error" | "paused";
+  status: "success" | "quota" | "cancelled" | "error" | "paused";
   output?: TOutput;
   finalText: string;
   turns: number;
@@ -96,8 +96,7 @@ called. The Promise resolution NEVER rejects — typed errors fold into
 | `InputValidationError` | input failed `inputSchema` |
 | `OutputValidationError` | output failed `outputSchema` after retry budget |
 | `SubagentLimitError` | depth/fan-out/allowed limit hit |
-| `MaxTurnsError` | no output at turn cap |
-| `TimeoutError` | wall-clock budget exhausted |
+| `QuotaExceededError` | a run budget (turns / duration / cost) was exhausted |
 | `CancelledError` | caller aborted |
 | `PausedForConfirmationError` | confirm-gate triggered (reserved for runtime) |
 | `ModelError` | routing miss / circuit open / provider error / auth |

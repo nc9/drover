@@ -8,7 +8,6 @@ import {
   type HarnessEvent,
   InputValidationError,
   LifecycleError,
-  MaxTurnsError,
   OutputValidationError,
   type RunContext,
   type RunResult,
@@ -123,6 +122,13 @@ export interface RunArgs<S extends AgentSpec<TSchema, TSchema>> {
 
 const DEFAULT_MAX_TURNS = 30;
 const DEFAULT_OUTPUT_RETRIES = 2;
+
+/** Which run budget tripped, with its configured ceiling and the breaching value. */
+type QuotaBreach = {
+  dimension: "turns" | "duration" | "cost";
+  limit: number;
+  observed: number;
+};
 
 /** Stateless engine — registered builtins only; run state travels per render. */
 const promptEngine = createPromptEngine();
@@ -430,7 +436,14 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     };
     let retriesUsed = resumeFrom ? resumeFrom.retriesUsed : 0;
     const outputRetries = spec.outputRetries ?? DEFAULT_OUTPUT_RETRIES;
-    const maxTurns = spec.maxTurns ?? DEFAULT_MAX_TURNS;
+    const quota = spec.quota ?? {};
+    const maxTurns = quota.maxTurns ?? DEFAULT_MAX_TURNS;
+
+    // Why a run budget was exhausted. Set once (first breach wins) by the
+    // duration timer or the in-`sink` turn/cost checks; read in the
+    // post-loop section to resolve the terminal status. Boxed so a closure
+    // write survives TS control-flow narrowing at the post-loop read site.
+    const quotaBreach: { value: QuotaBreach | null } = { value: null };
 
     // Snapshot of pi's message list, updated each LLM call via transformContext.
     // Used to checkpoint state for resume. Seeded from the checkpoint on resume.
@@ -485,6 +498,12 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           const cost = (lastUsage.value.costUsd ?? 0) + (u.cost?.total ?? 0);
           if (cost > 0) next.costUsd = cost;
           lastUsage.value = next;
+          // Cost ceiling — checked once per model response, after the
+          // running total is updated. Aborts mid-turn if a tool batch is
+          // still pending.
+          if (quota.maxCostUsd !== undefined && (next.costUsd ?? 0) >= quota.maxCostUsd) {
+            tripQuota({ dimension: "cost", limit: quota.maxCostUsd, observed: next.costUsd ?? 0 });
+          }
         }
       }
       // Emit translated drover events. safeEmit fans out to plugin observers.
@@ -492,7 +511,14 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       // Persist checkpoint at the end of every turn — covers tool-using runs
       // (turn_end fires after each tool batch) and pure-text runs.
       if (e.type === "turn_end") {
-        persistCheckpoint(translator.currentTurn(), Date.now());
+        const turn = translator.currentTurn();
+        persistCheckpoint(turn, Date.now());
+        // Turn budget — abort the *next* turn from starting. The turn that
+        // just completed keeps its output: the cap is a budget, not a
+        // tripwire on a turn that produced a valid answer.
+        if (turn >= maxTurns) {
+          tripQuota({ dimension: "turns", limit: maxTurns, observed: turn });
+        }
       }
     };
 
@@ -631,16 +657,31 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     };
 
     // Wall-clock timeout + abort handling. The timer/listener must stay armed
-    // through the optional `postSuccess` lifecycle continuation — `timeoutMs`
-    // is the budget for the *whole* run — so teardown is an explicit,
-    // idempotent call made after `postSuccess`, not a `finally` on the loop.
+    // through the optional `postSuccess` lifecycle continuation —
+    // `quota.maxDurationMs` is the budget for the *whole* run — so teardown is
+    // an explicit, idempotent call made after `postSuccess`, not a `finally`
+    // on the loop.
     const abortController = new AbortController();
     const onParentAbort = (): void => abortController.abort();
     if (ctx.signal.aborted) abortController.abort();
     else ctx.signal.addEventListener("abort", onParentAbort, { once: true });
-    const timeoutHandle = spec.timeoutMs
-      ? setTimeout(() => abortController.abort(), spec.timeoutMs)
-      : undefined;
+    // Record a budget breach and abort the loop. First breach wins — the
+    // post-loop section reads `quotaBreach` to pick the terminal status.
+    const tripQuota = (b: QuotaBreach): void => {
+      quotaBreach.value ??= b;
+      abortController.abort();
+    };
+    const maxDurationMs = quota.maxDurationMs;
+    const timeoutHandle =
+      maxDurationMs !== undefined
+        ? setTimeout(() => {
+            tripQuota({
+              dimension: "duration",
+              limit: maxDurationMs,
+              observed: Date.now() - startedAt,
+            });
+          }, maxDurationMs)
+        : undefined;
     let abortCleaned = false;
     const cleanupAbort = (): void => {
       if (abortCleaned) return;
@@ -700,12 +741,16 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
 
     // Resolve terminal status. Priority order:
     //   1. pauseFlag → paused (resumable later via resumeAgent)
-    //   2. external cancellation → cancelled
-    //   3. loop threw → error
-    //   4. no final text + turn cap → max_turns
-    //   5. no final text → error
-    //   6. final text decodes → success
+    //   2. caller cancellation → cancelled
+    //   3. final text decodes → success (even at a quota breach — a turn
+    //      that produced a valid answer is success; the budget is not a
+    //      tripwire on the happy path)
+    //   4. quota breach → quota
+    //   5. genuine loop crash → error
+    //   6. no final text → error
     //   7. final text fails schema → error
+    // A quota abort makes pi throw, so `loopError` is set on every breach —
+    // a genuine crash is `loopError && !breach`.
     let output: AgentOutput<S> | undefined;
     let status: RunStatus = "success";
     let errorOut: { tag: string; message: string } | undefined;
@@ -714,29 +759,36 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
 
     if (pauseFlag?.requested) {
       status = "paused";
-    } else if (abortController.signal.aborted && ctx.signal.aborted) {
+    } else if (ctx.signal.aborted) {
       status = "cancelled";
       errorOut = { tag: "CancelledError", message: "cancelled by caller" };
-    } else if (loopError) {
-      status = "error";
-      errorOut = { tag: "LoopError", message: (loopError as Error).message };
-    } else if (!finalText || finalText.trim().length === 0) {
-      const turnCap = translator.currentTurn() >= maxTurns;
-      if (turnCap) {
-        status = "max_turns";
-        errorOut = { tag: "MaxTurnsError", message: `reached ${maxTurns} turns without output` };
-      } else {
-        status = "error";
-        errorOut = { tag: "OutputValidationError", message: "no final assistant text" };
-      }
     } else {
-      const decoded = tryDecode(spec.outputSchema, finalText);
-      if (decoded.ok) {
+      const breach = quotaBreach.value;
+      const decoded =
+        finalText && finalText.trim().length > 0
+          ? tryDecode(spec.outputSchema, finalText)
+          : undefined;
+      if (decoded?.ok) {
         output = decoded.value as AgentOutput<S>;
         safeEmit({ kind: "output_validated", runId: ctx.runId, ts: Date.now() });
+      } else if (breach) {
+        status = "quota";
+        errorOut = {
+          tag: "QuotaExceededError",
+          message: `${breach.dimension} budget exceeded (limit ${breach.limit}, observed ${breach.observed})`,
+        };
+      } else if (loopError) {
+        status = "error";
+        errorOut = { tag: "LoopError", message: (loopError as Error).message };
+      } else if (!finalText || finalText.trim().length === 0) {
+        status = "error";
+        errorOut = { tag: "OutputValidationError", message: "no final assistant text" };
       } else {
         status = "error";
-        errorOut = { tag: "OutputValidationError", message: decoded.message };
+        errorOut = {
+          tag: "OutputValidationError",
+          message: (decoded as { message: string }).message,
+        };
       }
     }
 
@@ -810,8 +862,20 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           }
         });
         if (loopError) {
-          status = "error";
-          errorOut = { tag: "LoopError", message: (loopError as Error).message };
+          // The wall-clock timer stays armed through `postSuccess`, and the
+          // shared `sink` keeps checking turns/cost — so a breach here is a
+          // quota abort, not a crash. Mirror the main post-loop split.
+          const breach = quotaBreach.value;
+          if (breach) {
+            status = "quota";
+            errorOut = {
+              tag: "QuotaExceededError",
+              message: `${breach.dimension} budget exceeded (limit ${breach.limit}, observed ${breach.observed})`,
+            };
+          } else {
+            status = "error";
+            errorOut = { tag: "LoopError", message: (loopError as Error).message };
+          }
         }
         // Re-aggregate usage — the `postSuccess` turns consumed tokens too.
         usage.inputTokens = lastUsage.value.inputTokens;
@@ -824,13 +888,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // disarm now. Idempotent — terminal paths below won't double-clear.
     cleanupAbort();
 
-    // Success at the turn cap is still success — the cap is a budget,
-    // not a tripwire on the happy path. Only convert no-output runs at
-    // the cap into MaxTurnsError (that path was handled above).
+    // A `quota` status carries its `QuotaExceededError` in `errorOut` (set
+    // in the post-loop block above) and is returned as a `RunResult` — the
+    // run reached a terminal state, it just exhausted a budget.
     const turns = translator.currentTurn();
-    if (status === "max_turns" && !errorOut) {
-      return yield* Effect.fail(new MaxTurnsError({ runId: ctx.runId, maxTurns }));
-    }
 
     const durationMs = Date.now() - startedAt;
     const endedAt = Date.now();
@@ -1073,8 +1134,7 @@ export function hashSpec(spec: AgentSpec): string {
     outputSchema: spec.outputSchema,
     subagents: spec.subagents,
     outputRetries: spec.outputRetries,
-    maxTurns: spec.maxTurns,
-    timeoutMs: spec.timeoutMs,
+    quota: spec.quota ?? null,
     pluginIds: (spec.plugins ?? []).map((p) => p.id),
     memory: spec.memory ?? null,
     instructionFiles: spec.instructionFiles ?? null,

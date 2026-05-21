@@ -15,6 +15,7 @@ import { scenario as skillRewrite } from "./skill-rewrite.ts";
 import { scenario as mcpRoundtrip } from "./mcp-roundtrip.ts";
 import { scenario as circuitBreakerTrip } from "./circuit-breaker-trip.ts";
 import { scenario as phaseRecorderPipeline } from "./phase-recorder-pipeline.ts";
+import { scenario as quotaTurns } from "./quota-turns.ts";
 
 export const ALL_SCENARIOS: ReadonlyArray<Scenario> = [
   writeArticle as unknown as Scenario,
@@ -32,6 +33,7 @@ export const ALL_SCENARIOS: ReadonlyArray<Scenario> = [
   mcpRoundtrip as unknown as Scenario,
   circuitBreakerTrip as unknown as Scenario,
   phaseRecorderPipeline as unknown as Scenario,
+  quotaTurns as unknown as Scenario,
 ];
 
 /** Subagent registry shared across runs. Add child specs here. */

@@ -38,7 +38,7 @@ const echo = defineAgent({
   outputSchema: Type.Object({ ok: Type.Boolean() }),
   model: "cheap",
   tools: [],
-  maxTurns: 2,
+  quota: { maxTurns: 2 },
 });
 
 const queue = await createLibsqlQueue({ url: "file:./var/queue.db" });

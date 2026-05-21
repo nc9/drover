@@ -31,7 +31,7 @@ const echo = defineAgent({
   }),
   model: "cheap",
   tools: [],
-  maxTurns: 2,
+  quota: { maxTurns: 2 },
 });
 
 // 2. Wire shared infra

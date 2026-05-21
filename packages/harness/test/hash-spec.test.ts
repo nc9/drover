@@ -11,7 +11,7 @@ const baseSpec = defineAgent({
   outputSchema: Type.Object({ a: Type.String() }),
   model: "cheap",
   tools: ["bash"],
-  maxTurns: 5,
+  quota: { maxTurns: 5 },
   outputRetries: 2,
 });
 
@@ -39,8 +39,8 @@ describe("hashSpec", () => {
     expect(hashSpec(other)).not.toBe(hashSpec(baseSpec));
   });
 
-  test("maxTurns drift produces different hash", () => {
-    const other = { ...baseSpec, maxTurns: 10 };
+  test("quota drift produces different hash", () => {
+    const other = { ...baseSpec, quota: { maxTurns: 10 } };
     expect(hashSpec(other)).not.toBe(hashSpec(baseSpec));
   });
 

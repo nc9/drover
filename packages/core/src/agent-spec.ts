@@ -130,9 +130,24 @@ export interface LifecycleConfig {
   /**
    * Steps appended as a closing turn after a successful natural end. Runs
    * only when the run's terminal status is `success` — skipped on
-   * `error` / `max_turns` / `cancelled` / `paused`.
+   * `error` / `quota` / `cancelled` / `paused`.
    */
   postSuccess?: readonly LifecycleStep[];
+}
+
+/**
+ * Resource budget for a whole run. Every dimension is enforced through the
+ * same abort path — a breach stops the loop and yields terminal status
+ * `quota` (see {@link QuotaExceededError}). Omit a field to leave that
+ * dimension unbounded.
+ */
+export interface RunQuota {
+  /** Hard turn budget. The loop is aborted once this many turns complete. Default 30. */
+  maxTurns?: number;
+  /** Wall-clock budget (ms) for the whole run — `init` + loop + `postSuccess`. */
+  maxDurationMs?: number;
+  /** Cumulative USD ceiling, checked after each model response. */
+  maxCostUsd?: number;
 }
 
 /**
@@ -167,10 +182,8 @@ export interface AgentSpec<ISchema extends TSchema = TSchema, OSchema extends TS
   outputRetries?: number;
   /** Plugin bundles (hooks + tools + observers) attached to this agent. */
   plugins?: readonly HarnessPlugin[];
-  /** Hard turn budget. Default 100. */
-  maxTurns?: number;
-  /** Wall-clock budget (ms) for the whole run. */
-  timeoutMs?: number;
+  /** Resource budget — turns, wall-clock, cost. See {@link RunQuota}. */
+  quota?: RunQuota;
   /** Self-curated knowledge across runs. Wires `remember`/`recall` tools. */
   memory?: MemorySpec;
   /**

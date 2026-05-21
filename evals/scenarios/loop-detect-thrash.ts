@@ -45,7 +45,7 @@ const spec = defineAgent({
       tools: [flakySearch],
     },
   ],
-  maxTurns: 8,
+  quota: { maxTurns: 8 },
 });
 
 export const scenario: Scenario<typeof spec> = {

@@ -30,7 +30,7 @@ interface RunRow {
   parentRunId?: string;
   agentId: string;
   specHash: string;
-  status: "running" | "success" | "max_turns" | "cancelled" | "error" | "paused";
+  status: "running" | "success" | "quota" | "cancelled" | "error" | "paused";
   input: unknown;
   output?: unknown;
   error?: { tag: string; message: string };

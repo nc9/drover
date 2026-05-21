@@ -16,8 +16,7 @@ interface AgentSpec<ISchema = TSchema, OSchema = TSchema> {
   subagents?: SubagentConfig;
   outputRetries?: number;     // default 2
   plugins?: readonly HarnessPlugin[];
-  maxTurns?: number;          // default 30
-  timeoutMs?: number;
+  quota?: RunQuota;           // { maxTurns?, maxDurationMs?, maxCostUsd? }
 }
 ```
 
@@ -69,8 +68,8 @@ type Out = AgentOutput<typeof spec>;
 
 `hashSpec(spec)` covers every field that affects execution:
 id / tools / skills / mcpServers / model / systemPrompt /
-inputSchema / outputSchema / subagents / outputRetries / maxTurns /
-timeoutMs / plugins (by id).
+inputSchema / outputSchema / subagents / outputRetries / quota /
+plugins (by id).
 
 Plugin function bodies aren't included — bump the plugin's `id` when
 its behaviour changes. Function-valued `systemPrompt` uses

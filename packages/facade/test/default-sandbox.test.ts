@@ -11,7 +11,7 @@ const spec = defineAgent({
   outputSchema: Type.Object({ ok: Type.Boolean() }),
   model: "cheap",
   tools: [],
-  maxTurns: 1,
+  quota: { maxTurns: 1 },
 });
 
 describe("default sandbox", () => {

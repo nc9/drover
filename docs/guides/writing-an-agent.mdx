@@ -26,7 +26,7 @@ const summariser = defineAgent({
   }),
   model: "cheap",
   tools: ["read"],
-  maxTurns: 4,
+  quota: { maxTurns: 4 },
 });
 ```
 

@@ -22,7 +22,7 @@ const spec = defineAgent({
   }),
   model: "cheap",
   tools: [],
-  maxTurns: 2,
+  quota: { maxTurns: 2 },
 });
 
 const handle = runAgent(spec, { word: "drover" });

@@ -21,7 +21,7 @@ export const runtimeAgent = defineAgent({
   }),
   model: "cheap",
   tools: [],
-  maxTurns: 2,
+  quota: { maxTurns: 2 },
 });
 
 export const RUNTIME_QUEUE_SCENARIO = {

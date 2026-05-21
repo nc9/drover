@@ -52,7 +52,7 @@ const echo = defineAgent({
   }),
   model: "cheap",       // alias for gemini-3.1-flash-lite-preview
   tools: [],
-  maxTurns: 2,
+  quota: { maxTurns: 2 },
 });
 
 const handle = runAgent(echo, { word: "drover" });
@@ -100,7 +100,7 @@ tokens: 179/24
     retried up to `outputRetries` times (default 2).
   </Step>
   <Step title="Terminal status">
-    `result.status` is one of `success`, `max_turns`, `cancelled`,
+    `result.status` is one of `success`, `quota`, `cancelled`,
     `paused`, or `error`. `result.error` populates on the error path —
     the Promise never rejects.
   </Step>

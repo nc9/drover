@@ -27,7 +27,7 @@ const spec = defineAgent({
   }),
   model: "mini",
   tools: ["bash", "read", "edit", "grep", "ls"],
-  maxTurns: 10,
+  quota: { maxTurns: 10 },
 });
 
 export const scenario: Scenario<typeof spec> = {

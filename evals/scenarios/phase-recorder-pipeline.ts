@@ -28,7 +28,7 @@ const spec = defineAgent({
   model: "cheap",
   tools: [],
   plugins: [recorder.plugin],
-  maxTurns: 6,
+  quota: { maxTurns: 6 },
 });
 
 export const scenario: Scenario<typeof spec> = {

@@ -40,7 +40,7 @@ const spec = defineAgent({
     circuitBreakerPlugin({ failureThreshold: 3, cooldownMs: 60_000 }),
     { id: "broken-api-provider", tools: [alwaysErrorsTool] },
   ],
-  maxTurns: 8,
+  quota: { maxTurns: 8 },
 });
 
 export const scenario: Scenario<typeof spec> = {

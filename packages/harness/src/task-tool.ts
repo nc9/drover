@@ -133,7 +133,7 @@ export function taskTool(opts: TaskToolOptions): AnyToolDef {
         const childSpec: AgentSpec = {
           ...spec,
           ...(input.model ? { model: input.model } : {}),
-          ...(input.max_turns ? { maxTurns: input.max_turns } : {}),
+          ...(input.max_turns ? { quota: { ...spec.quota, maxTurns: input.max_turns } } : {}),
         };
 
         nextChildSeq += 1;
@@ -190,7 +190,8 @@ export function taskTool(opts: TaskToolOptions): AnyToolDef {
             } satisfies ToolResult;
           }
           const r = child.right;
-          if (r.status !== "success") childStatus = r.status === "cancelled" ? "cancelled" : "error";
+          if (r.status !== "success")
+            childStatus = r.status === "cancelled" ? "cancelled" : "error";
           if (r.status !== "success") {
             return {
               content: `subagent ${input.agent_type} finished with status=${r.status}: ${r.error?.message ?? r.finalText.slice(0, 200)}`,

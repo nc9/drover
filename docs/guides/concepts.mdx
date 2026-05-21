@@ -19,9 +19,8 @@ const spec = defineAgent({
   mcpServers: ["fixture"],
   subagents: { allowed: ["researcher"], depth: 2, fanOut: 3 },
   plugins: [loopDetectPlugin(), bashBlocklistPlugin()],
-  maxTurns: 10,
   outputRetries: 2,
-  timeoutMs: 60_000,
+  quota: { maxTurns: 10, maxDurationMs: 60_000 },
 });
 ```
 

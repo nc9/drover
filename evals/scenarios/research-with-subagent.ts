@@ -17,7 +17,7 @@ export const researcherSpec = defineAgent({
   }),
   model: "cheap",
   tools: [],
-  maxTurns: 2,
+  quota: { maxTurns: 2 },
 });
 
 // Parent agent: a planner that decomposes a question into 2 sub-topics
@@ -44,7 +44,7 @@ const plannerSpec = defineAgent({
   model: "cheap",
   tools: [],
   subagents: { depth: 2, fanOut: 2, allowed: ["researcher"] },
-  maxTurns: 6,
+  quota: { maxTurns: 6 },
 });
 
 export const scenario: Scenario<typeof plannerSpec> = {

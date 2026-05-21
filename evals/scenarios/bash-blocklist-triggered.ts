@@ -23,7 +23,7 @@ const spec = defineAgent({
   model: "mini",
   tools: ["bash"],
   plugins: [bashBlocklistPlugin()],
-  maxTurns: 5,
+  quota: { maxTurns: 5 },
 });
 
 export const scenario: Scenario<typeof spec> = {

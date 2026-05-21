@@ -7,7 +7,7 @@ import type { Usage } from "./events.ts";
  * the run is suspended waiting on an external signal (confirm-gate,
  * explicit pause). Resuming continues from the last checkpoint.
  */
-export type RunStatus = "success" | "max_turns" | "cancelled" | "error" | "paused";
+export type RunStatus = "success" | "quota" | "cancelled" | "error" | "paused";
 
 /** What every run returns on completion (or where it left off, if paused). */
 export interface RunResult<TOutput = unknown> {

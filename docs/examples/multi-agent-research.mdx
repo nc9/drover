@@ -27,7 +27,7 @@ const researcher = defineAgent({
   }),
   model: "cheap",
   tools: [],
-  maxTurns: 2,
+  quota: { maxTurns: 2 },
 });
 
 // Parent
@@ -48,7 +48,7 @@ const planner = defineAgent({
   model: "cheap",
   tools: [],
   subagents: { allowed: ["researcher"], depth: 2, fanOut: 2 },
-  maxTurns: 6,
+  quota: { maxTurns: 6 },
 });
 ```
 

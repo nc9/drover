@@ -29,7 +29,7 @@ export const memoryAgent = defineAgent({
   }),
   model: "cheap",
   tools: [],
-  maxTurns: 4,
+  quota: { maxTurns: 4 },
   memory: {
     enabled: true,
     includeIndex: true,

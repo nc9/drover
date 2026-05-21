@@ -29,14 +29,13 @@ describe("defineAgent", () => {
       tools: ["bash"],
       skills: ["editor"],
       mcpServers: ["fixture"],
-      maxTurns: 7,
+      quota: { maxTurns: 7, maxDurationMs: 30_000 },
       outputRetries: 0,
-      timeoutMs: 30_000,
       subagents: { allowed: ["child"], depth: 3, fanOut: 2 },
     });
-    expect(spec.maxTurns).toBe(7);
+    expect(spec.quota?.maxTurns).toBe(7);
     expect(spec.subagents?.depth).toBe(3);
-    expect(spec.timeoutMs).toBe(30_000);
+    expect(spec.quota?.maxDurationMs).toBe(30_000);
   });
 });
 
@@ -47,8 +46,7 @@ describe("defineTool", () => {
       id: "noop",
       description: "noop",
       inputSchema: InputSchema,
-      execute: () =>
-        Effect.succeed({ content: "ok" }),
+      execute: () => Effect.succeed({ content: "ok" }),
     });
     expect(tool.id).toBe("noop");
     expect(tool.inputSchema).toBe(InputSchema);

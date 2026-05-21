@@ -31,16 +31,16 @@ export class SubagentLimitError extends Data.TaggedError("SubagentLimitError")<{
   readonly attempted: string;
 }> {}
 
-/** Hard turn cap reached without producing a valid output. */
-export class MaxTurnsError extends Data.TaggedError("MaxTurnsError")<{
+/**
+ * A run budget was exhausted without producing a valid output. `dimension`
+ * identifies which limit tripped; `limit` is the configured ceiling and
+ * `observed` the value that breached it (turn count, elapsed ms, or USD).
+ */
+export class QuotaExceededError extends Data.TaggedError("QuotaExceededError")<{
   readonly runId: string;
-  readonly maxTurns: number;
-}> {}
-
-/** Wall-clock budget exhausted. */
-export class TimeoutError extends Data.TaggedError("TimeoutError")<{
-  readonly runId: string;
-  readonly timeoutMs: number;
+  readonly dimension: "turns" | "duration" | "cost";
+  readonly limit: number;
+  readonly observed: number;
 }> {}
 
 /** Caller-initiated cancellation via `AbortSignal`. */
@@ -115,8 +115,7 @@ export type HarnessError =
   | InputValidationError
   | OutputValidationError
   | SubagentLimitError
-  | MaxTurnsError
-  | TimeoutError
+  | QuotaExceededError
   | CancelledError
   | PausedForConfirmationError
   | ModelError

@@ -20,7 +20,7 @@ const spec = defineAgent({
   model: "cheap",
   tools: [],
   skills: ["grumpy-editor", "factcheck"],
-  maxTurns: 4,
+  quota: { maxTurns: 4 },
 });
 
 export const scenario: Scenario<typeof spec> = {

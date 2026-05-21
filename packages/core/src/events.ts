@@ -91,7 +91,7 @@ export type HarnessEvent =
   | {
       kind: "run_end";
       runId: string;
-      status: "success" | "max_turns" | "cancelled" | "error" | "paused";
+      status: "success" | "quota" | "cancelled" | "error" | "paused";
       ts: number;
     }
   | {
