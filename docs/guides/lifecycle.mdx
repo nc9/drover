@@ -1,0 +1,86 @@
+---
+title: Lifecycle (init / postSuccess)
+description: Deterministic steps run before and after the agent loop.
+---
+
+An agent's `lifecycle` is a deterministic, host-controlled wrapper around the
+run loop. It is **declarative data** on the `AgentSpec` — JSON-serialisable and
+covered by the [spec hash](/concepts/hash-spec) — not callbacks.
+
+```ts
+defineAgent({
+  // …
+  commands: ["setup", "lint-and-commit"],
+  lifecycle: {
+    init: [
+      { kind: "command", name: "setup", args: { repo: "drover" } },
+      { kind: "skill", name: "house-style" },
+      { kind: "mcp", tool: "github__list_open_issues" },
+    ],
+    postSuccess: [{ kind: "command", name: "lint-and-commit" }],
+  },
+});
+```
+
+## `init` — prime the opening turn
+
+`init` steps run **before the first model call**. Each resolves to a text
+block; the blocks are composed into the opening user turn, ahead of the run
+input — so the agent starts already primed.
+
+`init` is skipped on resume (the blocks are already in the checkpointed
+history).
+
+## `postSuccess` — a closing turn
+
+`postSuccess` steps run **after the agent's natural completion**, and only
+when the run's terminal status is `success` — they are skipped on `error`,
+`max_turns`, `cancelled`, and `paused`. It is *not* an unconditional
+`finally`; the name says so deliberately.
+
+The blocks are appended as one closing user turn and the loop continues — the
+agent executes them with its tools. This is how "lint and commit when done"
+works: it is a closing instruction the agent *acts on*, not a side effect.
+
+The run output is captured *before* `postSuccess` runs, so a `postSuccess`
+turn cannot change it — it is post-processing. Output-schema self-correction
+is also disabled for the continuation, so a plain post-processing reply can't
+fail the original schema. If a `postSuccess` step is misconfigured or its
+turns fail, the run's terminal status becomes `error`.
+
+`postSuccess` shares the run's `timeoutMs` budget — the wall-clock timer
+stays armed across `init`, the loop, and `postSuccess`.
+
+## Step kinds
+
+| `kind` | Effect |
+| --- | --- |
+| `command` | Render a [command](/guides/commands) with `args`, inject the text. |
+| `skill` | Pre-expand a [skill](/guides/skills)'s body into context (no `skill_load` round-trip). |
+| `mcp` | Call an MCP tool host-side and inject its result. `tool` is the prefixed `<server>__<tool>`. |
+| `prompt` | A literal text block. |
+
+`command` / `skill` / `mcp` steps are gated by the agent's `commands` /
+`skills` / `mcpServers` allowlists. A step referencing something outside the
+allowlist, missing from a registry, or a failed MCP call fails the run with a
+`LifecycleError` — a broken lifecycle fails loudly, never silently.
+
+## Lifecycle vs. plugin hooks
+
+Use `lifecycle` for anything that shapes what the agent *sees or does* —
+commands, skills, MCP priming. Use a plugin's run-level hooks for pure side
+effects that the model never sees:
+
+```ts
+const metricsPlugin: HarnessPlugin = {
+  id: "metrics",
+  onRunStart: (ctx) => Effect.sync(() => track("run.start", ctx.runId)),
+  // async effects are awaited — fire-and-forget a webhook here is fine
+  onRunEnd: (result, ctx) => Effect.promise(() => postWebhook(result)),
+};
+```
+
+`onRunStart` fires after `init`, before the loop; `onRunEnd` after
+`postSuccess` and terminal resolution. Both are observation-only — async
+effects are awaited, and any failure or defect is swallowed so an observer
+hook can't crash a run.

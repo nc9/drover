@@ -10,11 +10,12 @@ Define agents as JSON-serialisable specs. The API surface is Effect-first, with 
 - **Effect-first API** — internals and public surface speak `Effect`; `Promise`/`AsyncIterable` facade kept as a fallback.
 - **Schemaed agent loop** — typed input/output, output retry budget on schema-decode failures.
 - **Streaming events** — normalised `HarnessEvent` stream as an `AsyncIterable`.
-- **Plugin hooks** — `HarnessPlugin` bundles: `beforeToolCall` / `afterToolCall` / `wrapTool` / `onEvent` / `onError`.
+- **Plugin hooks** — `HarnessPlugin` bundles: `beforeToolCall` / `afterToolCall` / `wrapTool` / `onEvent` / `onError` / `onRunStart` / `onRunEnd`.
 - **Built-in plugins** — loop-detect, step-tracer, bash-blocklist, circuit-breaker, write-policy, phase-recorder, confirm-gate, output-validate.
 - **Built-in tools** — bash, read, write, edit, grep, …
 - **Subagents** — `taskTool` factory; depth ≤ 2, fan-out ≤ 3 caps; child lifecycle events on the parent stream.
 - **Skills** — `SKILL.md` loader + `skill_load` tool, progressive disclosure.
+- **Commands & lifecycle** — markdown prompt macros (host-pushed) run as deterministic `init` / `postSuccess` steps around the loop.
 - **Instruction files** — `AGENTS.md` / `CLAUDE.md` loaders.
 - **MCP** — stdio + HTTP transports, tool-name prefixing, per-agent allowlist.
 - **Model layer** — pi-ai wrapper, alias resolver, routing interface, circuit breaker.
@@ -38,6 +39,7 @@ Pre-alpha. Public surface stabilising; do not depend on it yet.
 | `drover/plugins` | Built-in `HarnessPlugin` bundles (loop-detect, confirm-gate, step-tracer, …) |
 | `drover/tools` | Built-in `ToolDef` library (bash, read, write, edit, grep, …) |
 | `drover/skills` | `SKILL.md` loader + `skill_load` tool |
+| `drover/commands` | Markdown command loader + registry — host-pushed prompt macros |
 | `drover/mcp` | MCP runtime, per-agent allowlist, transport adapters |
 | `drover/model` | pi-ai wrapper, alias resolver, routing interface, circuit breaker |
 | `drover/sandbox` | `SandboxAdapter` interface; in-process `none` impl |
@@ -52,8 +54,9 @@ Shipped: `core`, `harness`, `facade`, `model`, `sandbox` +
 `sandbox-just-bash` (default), `tools`, `plugins` (loop-detect,
 step-tracer, bash-blocklist, circuit-breaker, write-policy,
 phase-recorder, confirm-gate, output-validate), `storage` (memory +
-libsql), `mcp`, `skills`, `runtime` (worker pool + lease queue +
-RunApi), plus an eval suite and the `eval-viewer` Vite app.
+libsql), `mcp`, `skills`, `commands` (+ `init`/`postSuccess` lifecycle),
+`runtime` (worker pool + lease queue + RunApi), plus an eval suite and
+the `eval-viewer` Vite app.
 
 Out of scope for v0: heavier OS-level sandbox adapters (SBPL / docker /
 daytona — projects keep their own), OTel/Langfuse exporters (clean

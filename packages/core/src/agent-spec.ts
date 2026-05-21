@@ -103,16 +103,46 @@ export interface SubagentConfig {
 export type SystemPromptFn = (ctx: RunContext) => string | Promise<string>;
 
 /**
+ * One deterministic step in an agent's `lifecycle`. Each step resolves to a
+ * text block: `init` blocks prepend to the opening user turn; `postSuccess`
+ * blocks are appended as a closing turn the agent acts on after its natural
+ * end. A tagged union so the whole `lifecycle` stays JSON-serialisable.
+ */
+export type LifecycleStep =
+  /** Render a command (markdown prompt macro) with `args`. */
+  | { kind: "command"; name: string; args?: Record<string, unknown> }
+  /** Pre-expand a skill's body into context (no `skill_load` round-trip). */
+  | { kind: "skill"; name: string }
+  /** Call an MCP tool host-side and inject its result. `tool` is prefixed. */
+  | { kind: "mcp"; tool: string; args?: Record<string, unknown> }
+  /** A literal text block. */
+  | { kind: "prompt"; text: string };
+
+/**
+ * Deterministic, host-controlled lifecycle around the agent loop.
+ * `init` runs before the loop (priming context); `postSuccess` runs after
+ * the agent's natural completion, on a `success` terminal status only —
+ * hence the explicit name (it is *not* an unconditional `finally`).
+ */
+export interface LifecycleConfig {
+  /** Steps composed into the opening user turn, before the run input. */
+  init?: readonly LifecycleStep[];
+  /**
+   * Steps appended as a closing turn after a successful natural end. Runs
+   * only when the run's terminal status is `success` — skipped on
+   * `error` / `max_turns` / `cancelled` / `paused`.
+   */
+  postSuccess?: readonly LifecycleStep[];
+}
+
+/**
  * The data substrate. JSON-serialisable when `systemPrompt` is a string.
  * Dynamic agents (LLM-composed at runtime) build the same shape.
  *
  * Generic params `I`/`O` carry static input/output types inferred from
  * TypeBox schemas — use `defineAgent` to get inference automatically.
  */
-export interface AgentSpec<
-  ISchema extends TSchema = TSchema,
-  OSchema extends TSchema = TSchema,
-> {
+export interface AgentSpec<ISchema extends TSchema = TSchema, OSchema extends TSchema = TSchema> {
   id: string;
   systemPrompt: string | SystemPromptFn;
   inputSchema: ISchema;
@@ -124,6 +154,13 @@ export interface AgentSpec<
   skills?: readonly string[];
   /** MCP server ids whose tools are merged into the toolset. */
   mcpServers?: readonly string[];
+  /** Command ids the agent's `lifecycle` steps may invoke (allowlist). */
+  commands?: readonly string[];
+  /**
+   * Deterministic, host-controlled steps run before (`init`) and after
+   * (`postSuccess`) the agent loop. See {@link LifecycleConfig}.
+   */
+  lifecycle?: LifecycleConfig;
   /** Subagent configuration; omit to forbid spawning entirely. */
   subagents?: SubagentConfig;
   /** Output-schema self-correction retry budget. Default 2. */

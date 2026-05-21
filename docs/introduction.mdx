@@ -14,11 +14,12 @@ non-Effect consumers.
 - **Effect-first API** — internals and public surface speak `Effect`; `Promise`/`AsyncIterable` facade kept as a fallback.
 - **Schemaed agent loop** — typed input/output, output retry budget on schema-decode failures.
 - **Streaming events** — normalised `HarnessEvent` stream as an `AsyncIterable`.
-- **Plugin hooks** — `HarnessPlugin` bundles: `beforeToolCall` / `afterToolCall` / `wrapTool` / `onEvent` / `onError`.
+- **Plugin hooks** — `HarnessPlugin` bundles: `beforeToolCall` / `afterToolCall` / `wrapTool` / `onEvent` / `onError` / `onRunStart` / `onRunEnd`.
 - **Built-in plugins** — loop-detect, step-tracer, bash-blocklist, circuit-breaker, write-policy, phase-recorder, confirm-gate, output-validate.
 - **Built-in tools** — bash, read, write, edit, grep, …
 - **Subagents** — `taskTool` factory; depth ≤ 2, fan-out ≤ 3 caps; child lifecycle events on the parent stream.
 - **Skills** — `SKILL.md` loader + `skill_load` tool, progressive disclosure.
+- **Commands & lifecycle** — markdown prompt macros (host-pushed) run as deterministic `init` / `postSuccess` steps around the loop.
 - **Instruction files** — `AGENTS.md` / `CLAUDE.md` loaders.
 - **MCP** — stdio + HTTP transports, tool-name prefixing, per-agent allowlist.
 - **Model layer** — pi-ai wrapper, alias resolver, routing interface, circuit breaker.

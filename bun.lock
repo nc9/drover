@@ -52,6 +52,14 @@
         "zod": "^3.25.0",
       },
     },
+    "packages/commands": {
+      "name": "@drover/commands",
+      "version": "0.0.0",
+      "dependencies": {
+        "@drover/prompt": "workspace:*",
+        "yaml": "^2.6.0",
+      },
+    },
     "packages/core": {
       "name": "@drover/core",
       "version": "0.0.0",
@@ -87,6 +95,7 @@
       "name": "@drover/harness",
       "version": "0.0.0",
       "dependencies": {
+        "@drover/commands": "workspace:*",
         "@drover/core": "workspace:*",
         "@drover/mcp": "workspace:*",
         "@drover/memory": "workspace:*",
@@ -306,6 +315,8 @@
     "@babel/types": ["@babel/types@7.29.0", "", { "dependencies": { "@babel/helper-string-parser": "^7.27.1", "@babel/helper-validator-identifier": "^7.28.5" } }, "sha512-LwdZHpScM4Qz8Xw2iKSzS+cfglZzJGvofQICy7W7v4caru4EaAmyUuO6BGrbyQ2mYV11W0U8j5mBhd14dd3B0A=="],
 
     "@borewit/text-codec": ["@borewit/text-codec@0.2.2", "", {}, "sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ=="],
+
+    "@drover/commands": ["@drover/commands@workspace:packages/commands"],
 
     "@drover/core": ["@drover/core@workspace:packages/core"],
 

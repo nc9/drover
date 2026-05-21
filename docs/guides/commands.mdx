@@ -1,0 +1,73 @@
+---
+title: Commands
+description: Markdown prompt macros the host pushes into a run as a turn.
+---
+
+A **command** is a markdown prompt macro. Where a [skill](/guides/skills) is
+*agent-pulled* — the model decides to load it via `skill_load` — a command is
+*host-pushed*: orchestration code (a [lifecycle](/guides/lifecycle) step, a
+webhook, a cron) decides to inject it, and it lands as a conversation turn the
+agent acts on. Same markdown substrate, opposite control direction.
+
+Commands are the right tool when the decision to run something is *already
+made* by deterministic logic — a webhook label, a pipeline stage, a policy —
+not by the agent's judgement.
+
+## Command file format
+
+A command is a single flat markdown file, `<name>.md` — simpler than a skill
+(no resource directories). Frontmatter plus a body:
+
+```mdx
+---
+description: Review a pull request for correctness and security.
+argument-hint: "{ pr: number }"
+---
+
+Review pull request {{ pr }}.
+
+Check correctness, security, and test coverage. Post findings as a summary.
+```
+
+- `name` — defaults to the filename (`review-pr.md` → `review-pr`); a
+  frontmatter `name` overrides it. 1–64 chars, `[a-z0-9-]`.
+- `description` — required.
+- `argument-hint` — optional; documents the expected `args`.
+- The **body is a [Liquid template](/guides/prompts)** — `{{ args }}` slots and
+  `{% builtins %}` both work.
+
+## Loading commands
+
+Point a registry at one or more directories of `.md` files:
+
+```ts
+import { scanCommandDirs, createCommandRegistry } from "@drover/commands";
+
+const commands = createCommandRegistry(
+  await scanCommandDirs([".agents/commands"]),
+);
+```
+
+Pass the registry to a run via `commands`, and allowlist the command ids the
+agent may use on its spec:
+
+```ts
+runAgent(spec, input, { commands });
+
+defineAgent({
+  // …
+  commands: ["review-pr", "lint-and-commit"],
+});
+```
+
+Names dedupe first-wins across roots — list agent-local directories before
+shared ones so local commands shadow library ones.
+
+## Invoking a command
+
+Commands are invoked by an agent's [`lifecycle`](/guides/lifecycle) — the
+`init` and `postSuccess` steps. A command is rendered (its Liquid body filled with
+`args`) and the resulting text is injected as a conversation turn.
+
+Commands contribute no tool: the agent cannot call one itself. That is the
+defining contrast with skills.

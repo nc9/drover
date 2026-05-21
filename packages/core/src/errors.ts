@@ -95,6 +95,19 @@ export class MemoryError extends Data.TaggedError("MemoryError")<{
 }> {}
 
 /**
+ * A deterministic lifecycle step (`init` / `postSuccess`) failed — referenced
+ * a command/skill outside the agent's allowlist or missing from the registry,
+ * or a host-side MCP call threw.
+ */
+export class LifecycleError extends Data.TaggedError("LifecycleError")<{
+  readonly runId: string;
+  readonly phase: "init" | "postSuccess";
+  /** The offending step, e.g. `command:setup` or `mcp:github__list_issues`. */
+  readonly step: string;
+  readonly message: string;
+}> {}
+
+/**
  * Discriminated union of every error a run can fail with.
  * Effect surface uses this as the error channel: `Effect<RunResult, HarnessError, R>`.
  */
@@ -110,4 +123,5 @@ export type HarnessError =
   | SandboxError
   | StorageError
   | PluginError
-  | MemoryError;
+  | MemoryError
+  | LifecycleError;

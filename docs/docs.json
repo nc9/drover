@@ -23,6 +23,8 @@
           "guides/writing-an-agent",
           "guides/plugins",
           "guides/skills",
+          "guides/commands",
+          "guides/lifecycle",
           "guides/mcp",
           "guides/subagents",
           "guides/pause-resume",

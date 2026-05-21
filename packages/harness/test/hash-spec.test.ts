@@ -134,4 +134,16 @@ describe("hashSpec", () => {
     const b = { ...baseSpec, promptTemplate: { source: "x", autoReorder: true } };
     expect(hashSpec(a)).not.toBe(hashSpec(b));
   });
+
+  test("commands allowlist drift changes the hash", () => {
+    const a = { ...baseSpec, commands: ["setup"] };
+    const b = { ...baseSpec, commands: ["setup", "lint"] };
+    expect(hashSpec(a)).not.toBe(hashSpec(b));
+  });
+
+  test("lifecycle config drift changes the hash", () => {
+    const a = { ...baseSpec, lifecycle: { init: [{ kind: "prompt", text: "x" } as const] } };
+    const b = { ...baseSpec, lifecycle: { init: [{ kind: "prompt", text: "y" } as const] } };
+    expect(hashSpec(a)).not.toBe(hashSpec(b));
+  });
 });

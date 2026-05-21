@@ -1,10 +1,5 @@
 import { Type, type TSchema } from "@sinclair/typebox";
-import {
-  type AnyToolDef,
-  defineTool,
-  SandboxError,
-  type ToolResult,
-} from "@drover/core";
+import { type AnyToolDef, defineTool, SandboxError, type ToolResult } from "@drover/core";
 import { Effect } from "effect";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -13,6 +8,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import {
   type McpServerConfig,
   type McpServerInfo,
+  parsePrefixedToolName,
   prefixedToolName,
 } from "./config.ts";
 
@@ -26,6 +22,13 @@ export interface McpRuntime {
   tools(allowed?: ReadonlyArray<string>): ReadonlyArray<AnyToolDef>;
   /** Loaded server info — handy for system-prompt advertisement / debugging. */
   servers(): ReadonlyArray<McpServerInfo>;
+  /**
+   * Host-side single tool call — invoke an MCP tool directly, outside the
+   * LLM loop (used by deterministic `lifecycle` steps). `name` is the
+   * prefixed `<serverId>__<toolName>`. Returns the tool's text result;
+   * throws if the tool is unknown or the call fails.
+   */
+  callTool(name: string, args?: Record<string, unknown>): Promise<string>;
   /** Close all connected transports + clients. */
   close(): Promise<void>;
 }
@@ -79,6 +82,19 @@ export async function createMcpRuntime(
     },
     servers: (): ReadonlyArray<McpServerInfo> =>
       connected.map((s) => ({ id: s.id, transport: s.transport, toolCount: s.tools.length })),
+    callTool: async (name, args): Promise<string> => {
+      const parsed = parsePrefixedToolName(name);
+      if (!parsed) throw new Error(`mcp callTool: '${name}' is not a prefixed tool name`);
+      const server = connected.find((s) => s.id === parsed.serverId);
+      if (!server || !server.client) {
+        throw new Error(`mcp callTool: server '${parsed.serverId}' not connected`);
+      }
+      const result = await server.client.callTool({
+        name: parsed.toolName,
+        arguments: args ?? {},
+      });
+      return extractText(result);
+    },
     close: async (): Promise<void> => {
       await Promise.allSettled(
         connected.map(async (s) => {
@@ -112,9 +128,7 @@ function buildTransport(cfg: McpServerConfig): Transport {
   // implementation populates it lazily as `string | undefined`. Cast around
   // the exactOptionalPropertyTypes mismatch.
   return new StreamableHTTPClientTransport(new URL(cfg.url), {
-    ...(cfg.headers
-      ? { requestInit: { headers: { ...cfg.headers } } }
-      : {}),
+    ...(cfg.headers ? { requestInit: { headers: { ...cfg.headers } } } : {}),
   }) as unknown as Transport;
 }
 
@@ -132,9 +146,11 @@ function mcpToolToDroverTool(
   // The MCP tool's JSON Schema is preserved verbatim via Type.Unsafe so the
   // LLM sees the right arg shape; server-side enforcement is the source of
   // truth for validation.
-  const schema: TSchema = (tool.inputSchema && typeof tool.inputSchema === "object"
-    ? Type.Unsafe(tool.inputSchema)
-    : Type.Object({}, { additionalProperties: true })) as TSchema;
+  const schema: TSchema = (
+    tool.inputSchema && typeof tool.inputSchema === "object"
+      ? Type.Unsafe(tool.inputSchema)
+      : Type.Object({}, { additionalProperties: true })
+  ) as TSchema;
 
   const prefixed = prefixedToolName(serverId, tool.name);
   return defineTool({

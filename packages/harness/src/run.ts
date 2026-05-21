@@ -7,6 +7,7 @@ import {
   type HarnessError,
   type HarnessEvent,
   InputValidationError,
+  LifecycleError,
   MaxTurnsError,
   OutputValidationError,
   type RunContext,
@@ -15,6 +16,7 @@ import {
   type ToolExecutionContext,
   type Usage,
 } from "@drover/core";
+import type { CommandRegistry } from "@drover/commands";
 import type { McpRuntime } from "@drover/mcp";
 import { resolveModel, type ResolveOptions } from "@drover/model";
 import type { SandboxAdapter } from "@drover/sandbox";
@@ -42,6 +44,7 @@ import { builtinsById, type BuiltinToolId } from "@drover/tools";
 import { Effect } from "effect";
 import { runAgentLoop, runAgentLoopContinue } from "@mariozechner/pi-agent-core";
 import { taskTool } from "./task-tool.ts";
+import { runLifecycleSteps } from "./lifecycle.ts";
 import type { AgentLoopConfig, AgentMessage } from "@mariozechner/pi-agent-core";
 import type { KnownApi, Message, UserMessage } from "@mariozechner/pi-ai";
 import { Value } from "@sinclair/typebox/value";
@@ -90,6 +93,11 @@ export interface HarnessDeps {
    * into the agent's toolset with `<serverId>__<toolName>` prefixing.
    */
   mcpRuntime?: McpRuntime;
+  /**
+   * Command registry. Consumed by `spec.lifecycle` steps of kind
+   * `command`; the spec's `commands` array is the per-agent allowlist.
+   */
+  commands?: CommandRegistry;
 }
 
 export interface RunArgs<S extends AgentSpec<TSchema, TSchema>> {
@@ -352,10 +360,56 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         .join("\n");
     }
 
+    // Scope for deterministic lifecycle steps (commands render against it).
+    const lifecycleScope = buildPromptScope({
+      spec,
+      ctx,
+      deps,
+      modelId: resolved.model.id,
+      toolIds: tools.map((t) => t.id),
+      instructionFiles: instructionFilesList,
+    });
+
+    // Deterministic `init` lifecycle — resolve steps to text blocks that
+    // prepend to the opening user turn. Skipped on resume (the blocks are
+    // already in the checkpointed message history). A misconfigured step
+    // fails the run with a `LifecycleError`.
+    let initBlocks: ReadonlyArray<string> = [];
+    if (!isResume && spec.lifecycle?.init && spec.lifecycle.init.length > 0) {
+      initBlocks = yield* Effect.tryPromise({
+        try: (): Promise<string[]> =>
+          runLifecycleSteps({
+            phase: "init",
+            steps: spec.lifecycle!.init!,
+            runId: ctx.runId,
+            allowedCommands: spec.commands ?? [],
+            allowedSkills: spec.skills ?? [],
+            allowedMcpServers: spec.mcpServers ?? [],
+            deps,
+            engine: promptEngine,
+            scope: lifecycleScope,
+          }),
+        catch: (err): LifecycleError =>
+          err instanceof LifecycleError
+            ? err
+            : new LifecycleError({
+                runId: ctx.runId,
+                phase: "init",
+                step: "_",
+                message: (err as Error).message,
+              }),
+      });
+    }
+
     const userPrompt = buildUserPrompt(spec, input);
+    const composedPrompt =
+      initBlocks.length > 0 ? [...initBlocks, userPrompt].join("\n\n") : userPrompt;
 
     // Convert tools to pi shape.
-    const buildToolCtx = (toolCallId: string, signal?: AbortSignal): ToolExecutionContext & {
+    const buildToolCtx = (
+      toolCallId: string,
+      signal?: AbortSignal,
+    ): ToolExecutionContext & {
       run: RunContext;
     } => ({
       runId: ctx.runId,
@@ -420,7 +474,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       if (e.type === "tool_execution_start" && e.toolName) toolCalls.push(e.toolName);
       // Accumulate usage.
       if (e.type === "message_end") {
-        const u = (e.message as { usage?: { input?: number; output?: number; cost?: { total?: number } } })?.usage;
+        const u = (
+          e.message as { usage?: { input?: number; output?: number; cost?: { total?: number } } }
+        )?.usage;
         if (u) {
           const next: Usage = {
             inputTokens: (lastUsage.value.inputTokens ?? 0) + (u.input ?? 0),
@@ -472,9 +528,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // errors fails-closed (acts like deny) — observability shouldn't be
     // able to short-circuit policy.
     const beforeToolCall = plugins.some((p) => p.beforeToolCall)
-      ? async (
-          pCtx: { toolCall: { name: string }; args: unknown },
-        ): Promise<{ block?: boolean; reason?: string }> => {
+      ? async (pCtx: {
+          toolCall: { name: string };
+          args: unknown;
+        }): Promise<{ block?: boolean; reason?: string }> => {
           for (const p of plugins) {
             if (!p.beforeToolCall) continue;
             const decision = await Effect.runPromise(
@@ -496,9 +553,16 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
 
     // afterToolCall: walk plugins in order; each may rewrite the tool result.
     const afterToolCall = plugins.some((p) => p.afterToolCall)
-      ? async (
-          aCtx: { toolCall: { name: string }; args: unknown; result: { content: Array<{ type: string; text?: string }>; details?: unknown }; isError: boolean },
-        ): Promise<{ content?: Array<{ type: "text"; text: string }>; details?: unknown; isError?: boolean }> => {
+      ? async (aCtx: {
+          toolCall: { name: string };
+          args: unknown;
+          result: { content: Array<{ type: string; text?: string }>; details?: unknown };
+          isError: boolean;
+        }): Promise<{
+          content?: Array<{ type: "text"; text: string }>;
+          details?: unknown;
+          isError?: boolean;
+        }> => {
           let current: import("@drover/core").ToolResult = {
             content: (aCtx.result.content ?? [])
               .map((c) => (typeof c.text === "string" ? c.text : ""))
@@ -513,7 +577,11 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             );
             if (next._tag === "Right") current = next.right;
           }
-          const out: { content?: Array<{ type: "text"; text: string }>; details?: unknown; isError?: boolean } = {
+          const out: {
+            content?: Array<{ type: "text"; text: string }>;
+            details?: unknown;
+            isError?: boolean;
+          } = {
             content: [{ type: "text", text: current.content }],
           };
           if (current.data !== undefined) out.details = current.data;
@@ -558,11 +626,14 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
 
     const initialPrompt: UserMessage = {
       role: "user",
-      content: userPrompt,
+      content: composedPrompt,
       timestamp: Date.now(),
     };
 
-    // Wall-clock timeout + abort handling.
+    // Wall-clock timeout + abort handling. The timer/listener must stay armed
+    // through the optional `postSuccess` lifecycle continuation — `timeoutMs`
+    // is the budget for the *whole* run — so teardown is an explicit,
+    // idempotent call made after `postSuccess`, not a `finally` on the loop.
     const abortController = new AbortController();
     const onParentAbort = (): void => abortController.abort();
     if (ctx.signal.aborted) abortController.abort();
@@ -570,43 +641,57 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     const timeoutHandle = spec.timeoutMs
       ? setTimeout(() => abortController.abort(), spec.timeoutMs)
       : undefined;
+    let abortCleaned = false;
+    const cleanupAbort = (): void => {
+      if (abortCleaned) return;
+      abortCleaned = true;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      ctx.signal.removeEventListener("abort", onParentAbort);
+    };
+
+    // Run-level lifecycle: fire `onRunStart` once, after context assembly +
+    // `init`, before the first model call. Observation only — failures and
+    // defects are swallowed (and async effects awaited) so a metrics/webhook
+    // hook can't crash the run.
+    for (const p of plugins) {
+      if (!p.onRunStart) continue;
+      yield* p.onRunStart(ctx).pipe(Effect.catchAllCause(() => Effect.void));
+    }
 
     // Treat the pi loop's rejection as a recoverable signal — the post-loop
     // section is responsible for choosing the final status (paused vs
     // cancelled vs error). Without this, an abort-mid-flight would short-
     // circuit before storage gets the "paused" mark.
     let loopError: Error | null = null;
-    try {
-      yield* Effect.promise(async (): Promise<void> => {
-        try {
-          if (isResume) {
-            await runAgentLoopContinue(
-              {
-                systemPrompt,
-                messages: [...(resumeFrom!.messages as ReadonlyArray<AgentMessage>)],
-                tools: piTools,
-              },
-              loopConfig,
-              sink as (e: PiEvent) => void,
-              abortController.signal,
-            );
-          } else {
-            await runAgentLoop(
-              [initialPrompt as AgentMessage],
-              { systemPrompt, messages: [], tools: piTools },
-              loopConfig,
-              sink as (e: PiEvent) => void,
-              abortController.signal,
-            );
-          }
-        } catch (err) {
-          loopError = err as Error;
+    // Final message list — captured so a `postSuccess` lifecycle can continue
+    // the loop from exactly where the agent stopped.
+    let finalMessages: AgentMessage[] = [];
+    yield* Effect.promise(async (): Promise<void> => {
+      try {
+        if (isResume) {
+          finalMessages = await runAgentLoopContinue(
+            {
+              systemPrompt,
+              messages: [...(resumeFrom!.messages as ReadonlyArray<AgentMessage>)],
+              tools: piTools,
+            },
+            loopConfig,
+            sink as (e: PiEvent) => void,
+            abortController.signal,
+          );
+        } else {
+          finalMessages = await runAgentLoop(
+            [initialPrompt as AgentMessage],
+            { systemPrompt, messages: [], tools: piTools },
+            loopConfig,
+            sink as (e: PiEvent) => void,
+            abortController.signal,
+          );
         }
-      });
-    } finally {
-      if (timeoutHandle) clearTimeout(timeoutHandle);
-      ctx.signal.removeEventListener("abort", onParentAbort);
-    }
+      } catch (err) {
+        loopError = err as Error;
+      }
+    });
 
     // Aggregate usage.
     usage.inputTokens = lastUsage.value.inputTokens;
@@ -655,6 +740,90 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       }
     }
 
+    // Deterministic `postSuccess` lifecycle — on a clean natural success,
+    // append a closing turn and let the agent execute it with its tools.
+    // The output was captured above, so these turns can't change it; they
+    // are post-processing (lint, commit, …).
+    if (
+      status === "success" &&
+      spec.lifecycle?.postSuccess &&
+      spec.lifecycle.postSuccess.length > 0 &&
+      finalMessages.length > 0
+    ) {
+      const postBlocks = yield* Effect.either(
+        Effect.tryPromise({
+          try: (): Promise<string[]> =>
+            runLifecycleSteps({
+              phase: "postSuccess",
+              steps: spec.lifecycle!.postSuccess!,
+              runId: ctx.runId,
+              allowedCommands: spec.commands ?? [],
+              allowedSkills: spec.skills ?? [],
+              allowedMcpServers: spec.mcpServers ?? [],
+              deps,
+              engine: promptEngine,
+              scope: lifecycleScope,
+            }),
+          catch: (err): LifecycleError =>
+            err instanceof LifecycleError
+              ? err
+              : new LifecycleError({
+                  runId: ctx.runId,
+                  phase: "postSuccess",
+                  step: "_",
+                  message: (err as Error).message,
+                }),
+        }),
+      );
+      if (postBlocks._tag === "Left") {
+        status = "error";
+        errorOut = { tag: postBlocks.left._tag, message: postBlocks.left.message };
+      } else if (postBlocks.right.length > 0) {
+        const postMsg: UserMessage = {
+          role: "user",
+          content: postBlocks.right.join("\n\n"),
+          timestamp: Date.now(),
+        };
+        // The run output is already captured and validated. Strip
+        // `getFollowUpMessages` (output-schema self-correction) for the
+        // continuation so a plain post-processing reply — a lint/commit
+        // summary — can't fail the original schema and trigger correction
+        // prompts inside the post-processing phase.
+        const postLoopConfig: AgentLoopConfig = {
+          ...loopConfig,
+          getFollowUpMessages: async (): Promise<UserMessage[]> => [],
+        };
+        yield* Effect.promise(async (): Promise<void> => {
+          try {
+            await runAgentLoopContinue(
+              {
+                systemPrompt,
+                messages: [...finalMessages, postMsg as AgentMessage],
+                tools: piTools,
+              },
+              postLoopConfig,
+              sink as (e: PiEvent) => void,
+              abortController.signal,
+            );
+          } catch (err) {
+            loopError = err as Error;
+          }
+        });
+        if (loopError) {
+          status = "error";
+          errorOut = { tag: "LoopError", message: (loopError as Error).message };
+        }
+        // Re-aggregate usage — the `postSuccess` turns consumed tokens too.
+        usage.inputTokens = lastUsage.value.inputTokens;
+        usage.outputTokens = lastUsage.value.outputTokens;
+        if (lastUsage.value.costUsd !== undefined) usage.costUsd = lastUsage.value.costUsd;
+      }
+    }
+
+    // Wall-clock budget covered `init` + loop + `postSuccess`; safe to
+    // disarm now. Idempotent — terminal paths below won't double-clear.
+    cleanupAbort();
+
     // Success at the turn cap is still success — the cap is a budget,
     // not a tripwire on the happy path. Only convert no-output runs at
     // the cap into MaxTurnsError (that path was handled above).
@@ -695,6 +864,15 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     };
     if (output !== undefined) result.output = output;
     if (errorOut) result.error = errorOut;
+
+    // Run-level lifecycle: fire `onRunEnd` once, after the loop +
+    // `postSuccess` and terminal resolution. Observation only — failures and
+    // defects are swallowed (and async effects awaited).
+    for (const p of plugins) {
+      if (!p.onRunEnd) continue;
+      yield* p.onRunEnd(result, ctx).pipe(Effect.catchAllCause(() => Effect.void));
+    }
+
     return result;
   });
 }
@@ -883,15 +1061,14 @@ export function hashSpec(spec: AgentSpec): string {
     tools: spec.tools,
     skills: spec.skills,
     mcpServers: spec.mcpServers,
+    commands: spec.commands,
     model: spec.model,
     // For fn-valued prompts, hash `Function.toString()` so source-level
     // edits produce a different hash. Doesn't catch drift via closed-over
     // variables — document that constraint. Prefer string prompts on
     // resumable agents.
     systemPrompt:
-      typeof spec.systemPrompt === "string"
-        ? spec.systemPrompt
-        : spec.systemPrompt.toString(),
+      typeof spec.systemPrompt === "string" ? spec.systemPrompt : spec.systemPrompt.toString(),
     inputSchema: spec.inputSchema,
     outputSchema: spec.outputSchema,
     subagents: spec.subagents,
@@ -902,6 +1079,7 @@ export function hashSpec(spec: AgentSpec): string {
     memory: spec.memory ?? null,
     instructionFiles: spec.instructionFiles ?? null,
     promptTemplate: spec.promptTemplate ?? null,
+    lifecycle: spec.lifecycle ?? null,
   });
   for (let i = 0; i < s.length; i++) {
     h = (h * 31 + s.charCodeAt(i)) | 0;

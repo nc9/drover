@@ -55,6 +55,11 @@ export interface RunOptions {
    */
   mcpRuntime?: HarnessDeps["mcpRuntime"];
   /**
+   * Command registry. Consumed by the spec's `lifecycle` steps of kind
+   * `command`; `spec.commands` is the per-agent allowlist.
+   */
+  commands?: HarnessDeps["commands"];
+  /**
    * Memory adapter. When supplied AND `spec.memory?.enabled === true`,
    * the harness auto-injects `remember` / `recall` (and `forget` if
    * `spec.memory.allowForget`), appends a scoped index to the system
@@ -134,6 +139,7 @@ export function runAgent<S extends AgentSpec<TSchema, TSchema>>(
     ...(options?.storage ? { storage: options.storage } : {}),
     ...(options?.skills ? { skills: options.skills } : {}),
     ...(options?.mcpRuntime ? { mcpRuntime: options.mcpRuntime } : {}),
+    ...(options?.commands ? { commands: options.commands } : {}),
     ...(options?.memory ? { memory: options.memory } : {}),
   };
 
@@ -254,6 +260,7 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
     ...(options.agentRegistry ? { agentRegistry: options.agentRegistry } : {}),
     ...(options.skills ? { skills: options.skills } : {}),
     ...(options.mcpRuntime ? { mcpRuntime: options.mcpRuntime } : {}),
+    ...(options.commands ? { commands: options.commands } : {}),
     ...(options.memory ? { memory: options.memory } : {}),
   };
 

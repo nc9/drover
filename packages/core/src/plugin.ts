@@ -3,6 +3,7 @@ import type { Effect } from "effect";
 import type { RunContext } from "./context.ts";
 import type { HarnessEvent, ToolResult } from "./events.ts";
 import type { HarnessError } from "./errors.ts";
+import type { RunResult } from "./result.ts";
 import type { AnyToolDef } from "./tool.ts";
 
 /**
@@ -16,9 +17,7 @@ import type { AnyToolDef } from "./tool.ts";
  * If you need to rewrite a tool's input, use `wrapTool` instead (the
  * plugin wraps the tool and transforms args before delegating).
  */
-export type ToolDecision =
-  | { kind: "allow" }
-  | { kind: "deny"; reason: string };
+export type ToolDecision = { kind: "allow" } | { kind: "deny"; reason: string };
 
 /**
  * Recovery returned by `onError`. Lets plugins decide whether a thrown
@@ -88,8 +87,20 @@ export interface HarnessPlugin {
    */
   onEvent?: (event: HarnessEvent, ctx: RunContext) => Effect.Effect<void, never, never>;
 
-  onError?: (
-    error: HarnessError,
-    ctx: RunContext,
-  ) => Effect.Effect<ErrorRecovery, never, never>;
+  /**
+   * Run-level lifecycle. Fired once after context assembly + `init`,
+   * before the first model call. Observation only — for metrics,
+   * webhooks, and similar side effects. Async effects are awaited;
+   * failures and defects are swallowed.
+   */
+  onRunStart?: (ctx: RunContext) => Effect.Effect<void, never, never>;
+
+  /**
+   * Run-level lifecycle. Fired once after the loop + `postSuccess` finish
+   * and the terminal status is resolved. Observation only; async effects
+   * are awaited, failures and defects swallowed.
+   */
+  onRunEnd?: (result: RunResult, ctx: RunContext) => Effect.Effect<void, never, never>;
+
+  onError?: (error: HarnessError, ctx: RunContext) => Effect.Effect<ErrorRecovery, never, never>;
 }

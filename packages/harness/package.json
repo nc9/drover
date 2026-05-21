@@ -12,6 +12,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@drover/commands": "workspace:*",
     "@drover/core": "workspace:*",
     "@drover/mcp": "workspace:*",
     "@drover/memory": "workspace:*",
