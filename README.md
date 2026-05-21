@@ -4,6 +4,8 @@ A declarative, strongly-typed, Effect-native agent harness library for TypeScrip
 
 Define agents as JSON-serialisable specs. The API surface is Effect-first, with a `Promise`/`AsyncIterable` facade as a fallback for non-Effect consumers. TypeBox schemas, `pi-agent-core` underneath. Headless — no TUI.
 
+**Docs:** https://nc9.github.io/drover/
+
 ## Features
 
 - **Declarative agent specs** — `defineAgent({...})` returns a JSON-serialisable, TypeBox-typed `AgentSpec`; dynamic agents use the same shape.
