@@ -126,7 +126,6 @@ export interface RunArgs<S extends AgentSpec<TSchema, TSchema>> {
   pauseFlag?: { requested: boolean };
 }
 
-const DEFAULT_MAX_TURNS = 30;
 const DEFAULT_OUTPUT_RETRIES = 2;
 
 /** Which run budget tripped, with its configured ceiling and the breaching value. */
@@ -444,7 +443,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     let retriesUsed = resumeFrom ? resumeFrom.retriesUsed : 0;
     const outputRetries = spec.outputRetries ?? DEFAULT_OUTPUT_RETRIES;
     const quota = spec.quota ?? {};
-    const maxTurns = quota.maxTurns ?? DEFAULT_MAX_TURNS;
+    // No default turn cap — turns are unbounded unless `quota.maxTurns` is
+    // set explicitly. Duration / cost budgets remain the ambient backstops.
+    const maxTurns = quota.maxTurns;
 
     // Why a run budget was exhausted. Set once (first breach wins) by the
     // duration timer or the in-`sink` turn/cost checks; read in the
@@ -523,7 +524,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         // Turn budget — abort the *next* turn from starting. The turn that
         // just completed keeps its output: the cap is a budget, not a
         // tripwire on a turn that produced a valid answer.
-        if (turn >= maxTurns) {
+        if (maxTurns !== undefined && turn >= maxTurns) {
           tripQuota({ dimension: "turns", limit: maxTurns, observed: turn });
         }
       }

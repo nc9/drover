@@ -142,7 +142,7 @@ export interface LifecycleConfig {
  * dimension unbounded.
  */
 export interface RunQuota {
-  /** Hard turn budget. The loop is aborted once this many turns complete. Default 30. */
+  /** Hard turn budget. The loop is aborted once this many turns complete. Unbounded when omitted. */
   maxTurns?: number;
   /** Wall-clock budget (ms) for the whole run — `init` + loop + `postSuccess`. */
   maxDurationMs?: number;
