@@ -793,13 +793,15 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       } else if (loopError) {
         status = "error";
         errorOut = { tag: "LoopError", message: (loopError as Error).message };
+      } else if (isOpenSchema(spec.outputSchema)) {
+        // No structured-output contract — the run succeeds on a clean natural
+        // end. `finalText` may be empty (the agent's last act was a tool call
+        // with no trailing prose); `output` stays undefined either way.
+        safeEmit({ kind: "output_validated", runId: ctx.runId, ts: Date.now() });
       } else if (!finalText || finalText.trim().length === 0) {
+        // Schema-bearing agent with nothing to decode.
         status = "error";
         errorOut = { tag: "OutputValidationError", message: "no final assistant text" };
-      } else if (isOpenSchema(spec.outputSchema)) {
-        // No structured-output contract — any non-empty final text succeeds;
-        // `output` stays undefined and the caller reads `finalText`.
-        safeEmit({ kind: "output_validated", runId: ctx.runId, ts: Date.now() });
       } else {
         const decoded = tryDecode(spec.outputSchema, finalText);
         if (decoded.ok) {
