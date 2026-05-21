@@ -87,14 +87,32 @@ function readApiKey(provider: string, env: Readonly<Record<string, string | unde
   return null;
 }
 
+/**
+ * An already-constructed model + key. A host with its own role resolver
+ * (provider connections, encrypted credentials) injects these so drover
+ * skips alias / slug / builtin lookup and env-var key reading entirely.
+ */
+export interface PreResolvedModel {
+  model: Model<KnownApi>;
+  apiKey: string;
+}
+
 export interface ResolveOptions {
   runId: string;
   aliases?: Readonly<Record<string, AliasEntry>>;
   env?: Readonly<Record<string, string | undefined>>;
+  /**
+   * Pre-resolved models keyed by spec name (the name part of `ModelSpec`,
+   * with any `:reasoning` suffix stripped). Checked BEFORE the alias /
+   * slug / builtin lookup. Per-call `reasoning` / `temperature` / etc.
+   * from the spec still apply on top of the injected model.
+   */
+  preResolved?: ReadonlyMap<string, PreResolvedModel>;
 }
 
 /**
  * Effectful resolver. Lookup order:
+ *   0. Pre-resolved map (host-injected models) — see `ResolveOptions.preResolved`
  *   1. Alias map (defaults ∪ per-call override)
  *   2. Provider-prefixed slug:   "openrouter:google/gemini-2.5-flash-lite"
  *   3. Global pi-ai model id:    "google/gemini-2.5-flash-lite"
@@ -107,6 +125,17 @@ export function resolveModel(
 ): Effect.Effect<ResolvedModel, ModelError, never> {
   return Effect.gen(function* () {
     const norm = parseSpec(spec);
+
+    const pre = opts.preResolved?.get(norm.name);
+    if (pre) {
+      const result: ResolvedModel = { model: pre.model, apiKey: pre.apiKey };
+      if (norm.reasoning) result.reasoning = norm.reasoning;
+      if (norm.temperature !== undefined) result.temperature = norm.temperature;
+      if (norm.maxTokens !== undefined) result.maxTokens = norm.maxTokens;
+      if (norm.cacheRetention) result.cacheRetention = norm.cacheRetention;
+      return result;
+    }
+
     const aliases = opts.aliases ?? DEFAULT_ALIASES;
     const env = opts.env ?? (process.env as Record<string, string | undefined>);
 

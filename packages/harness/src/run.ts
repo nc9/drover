@@ -63,6 +63,12 @@ export interface HarnessDeps {
   /** Override the environment seen by the model resolver. */
   env?: ResolveOptions["env"];
   /**
+   * Host-injected, already-resolved models keyed by spec name. Checked
+   * before alias / slug / builtin lookup — lets a host with its own role
+   * resolver supply a constructed pi-ai model + key directly.
+   */
+  preResolvedModels?: ResolveOptions["preResolved"];
+  /**
    * Registry for spawning subagents via the auto-injected `task` tool.
    * Required when any spec in the run tree uses `subagents`.
    */
@@ -274,6 +280,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       runId: ctx.runId,
       ...(deps.modelAliases ? { aliases: deps.modelAliases } : {}),
       ...(deps.env ? { env: deps.env } : {}),
+      ...(deps.preResolvedModels ? { preResolved: deps.preResolvedModels } : {}),
     });
 
     const tools = composeTools(spec, deps, plugins, safeEmit, ctx.runId);
@@ -555,13 +562,18 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // able to short-circuit policy.
     const beforeToolCall = plugins.some((p) => p.beforeToolCall)
       ? async (pCtx: {
-          toolCall: { name: string };
+          toolCall: { name: string; id?: string };
           args: unknown;
         }): Promise<{ block?: boolean; reason?: string }> => {
+          const matchedTool = tools.find((t) => t.id === pCtx.toolCall.name);
+          const meta = {
+            ...(matchedTool ? { tool: matchedTool } : {}),
+            ...(pCtx.toolCall.id !== undefined ? { toolUseId: pCtx.toolCall.id } : {}),
+          };
           for (const p of plugins) {
             if (!p.beforeToolCall) continue;
             const decision = await Effect.runPromise(
-              Effect.either(p.beforeToolCall(pCtx.toolCall.name, pCtx.args, ctx)),
+              Effect.either(p.beforeToolCall(pCtx.toolCall.name, pCtx.args, ctx, meta)),
             );
             if (decision._tag === "Left") {
               return {

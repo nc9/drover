@@ -5,4 +5,6 @@ export * from "./circuit-breaker.ts";
 export * from "./write-policy.ts";
 export * from "./phase-recorder.ts";
 export * from "./confirm-gate.ts";
+export * from "./dedup.ts";
 export * from "./output-validate.ts";
+export * from "./truncate.ts";

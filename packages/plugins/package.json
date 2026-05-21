@@ -13,7 +13,9 @@
     "./write-policy": "./src/write-policy.ts",
     "./phase-recorder": "./src/phase-recorder.ts",
     "./confirm-gate": "./src/confirm-gate.ts",
-    "./output-validate": "./src/output-validate.ts"
+    "./dedup": "./src/dedup.ts",
+    "./output-validate": "./src/output-validate.ts",
+    "./truncate": "./src/truncate.ts"
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",

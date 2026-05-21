@@ -30,6 +30,19 @@ export type ErrorRecovery =
   | { kind: "continue_with_message"; message: string };
 
 /**
+ * Optional out-of-band context handed to `beforeToolCall`. Lets a gate
+ * inspect the resolved tool definition (e.g. its `destructive` flag) or
+ * key a pending decision by the invocation id, without changing the
+ * positional `toolName` / `input` / `ctx` contract.
+ */
+export interface BeforeToolCallMeta {
+  /** The resolved tool definition for `toolName`, when the harness can find it. */
+  tool?: AnyToolDef;
+  /** pi-agent-core's id for this specific tool invocation. */
+  toolUseId?: string;
+}
+
+/**
  * Per-message transcript shape passed to `beforeCompaction`. Plugins
  * may rewrite the history (e.g. strip large tool outputs) before the
  * compaction summariser runs.
@@ -67,6 +80,7 @@ export interface HarnessPlugin {
     toolName: string,
     input: unknown,
     ctx: RunContext,
+    meta?: BeforeToolCallMeta,
   ) => Effect.Effect<ToolDecision, HarnessError, never>;
 
   afterToolCall?: (
