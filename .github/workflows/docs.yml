@@ -26,7 +26,7 @@ jobs:
         with:
           bun-version: latest
       - name: Build docs
-        run: bun x tangly build --root docs --out dist --base /drover
+        run: bun x tangly build --root docs --out dist --base /drover/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
