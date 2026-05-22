@@ -3,11 +3,21 @@ import { Type } from "@sinclair/typebox";
 import { defineAgent, type RunContext } from "@drover/core";
 import { createInMemoryMemory, type InstructionFile } from "@drover/memory";
 import { createPromptEngine } from "@drover/prompt";
+import type { McpRuntime } from "@drover/mcp";
 import { createSkillRegistry, type SkillSpec } from "@drover/skills";
 import { createNoneSandbox } from "@drover/sandbox";
 import { Effect } from "effect";
 
 import { buildPromptScope } from "../src/run.ts";
+
+/** Minimal MCP runtime — one server, one tool. */
+const stubMcp: McpRuntime = {
+  servers: () => [{ id: "github", transport: "stdio", toolCount: 1 }],
+  tools: (allowed) =>
+    !allowed || allowed.includes("github") ? [{ id: "github__create_issue" } as never] : [],
+  callTool: async () => "",
+  close: async () => {},
+};
 
 const ctx: RunContext = {
   runId: "run-1",
@@ -87,6 +97,60 @@ describe("buildPromptScope", () => {
     expect(scope.skills).toBeUndefined();
     expect(scope.memory).toBeUndefined();
     expect(scope.instructions).toBeUndefined();
+  });
+
+  test("populates subagents when the spec declares them + a registry is wired", () => {
+    const child = mkSpec({ id: "researcher", description: "digs up facts" });
+    const scope = buildPromptScope({
+      spec: mkSpec({ subagents: { allowed: ["researcher"] } }),
+      ctx,
+      deps: {
+        sandbox: createNoneSandbox(),
+        agentRegistry: { resolve: (id) => (id === "researcher" ? child : undefined) },
+      },
+      modelId: "m",
+      toolIds: [],
+      instructionFiles: [],
+    });
+    expect(scope.subagents?.allowed).toEqual([{ id: "researcher", description: "digs up facts" }]);
+    expect(scope.subagents?.maxDepth).toBe(2);
+    expect(scope.subagents?.fanOut).toBe(3);
+  });
+
+  test("omits subagents when no registry is wired", () => {
+    const scope = buildPromptScope({
+      spec: mkSpec({ subagents: { allowed: ["researcher"] } }),
+      ctx,
+      deps: { sandbox: createNoneSandbox() },
+      modelId: "m",
+      toolIds: [],
+      instructionFiles: [],
+    });
+    expect(scope.subagents).toBeUndefined();
+  });
+
+  test("populates mcp from the runtime, filtered to declared servers", () => {
+    const scope = buildPromptScope({
+      spec: mkSpec({ mcpServers: ["github"] }),
+      ctx,
+      deps: { sandbox: createNoneSandbox(), mcpRuntime: stubMcp },
+      modelId: "m",
+      toolIds: [],
+      instructionFiles: [],
+    });
+    expect(scope.mcp?.servers).toEqual([{ id: "github", tools: ["github__create_issue"] }]);
+  });
+
+  test("always sets environment.sandboxId", () => {
+    const scope = buildPromptScope({
+      spec: mkSpec(),
+      ctx,
+      deps: { sandbox: createNoneSandbox() },
+      modelId: "m",
+      toolIds: [],
+      instructionFiles: [],
+    });
+    expect(scope.environment?.sandboxId).toBe("none");
   });
 });
 

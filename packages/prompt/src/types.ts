@@ -33,6 +33,23 @@ export interface PromptScope {
   skills?: { registry: SkillRegistry; allowed: readonly string[] };
   /** Memory adapter + the agent id memory is scoped to. */
   memory?: { adapter: MemoryAdapter; agentId: string; maxEntries?: number };
+  /**
+   * Spawnable subagents — populated only when the spec declares
+   * `subagents` and an agent registry is wired. Drives the `{% subagents %}`
+   * capability fragment.
+   */
+  subagents?: {
+    allowed: readonly { id: string; description?: string }[];
+    maxDepth: number;
+    fanOut: number;
+  };
+  /**
+   * Connected MCP servers and their prefixed tool ids — populated when the
+   * spec declares `mcpServers` and a runtime is wired. Drives `{% mcp %}`.
+   */
+  mcp?: { servers: readonly { id: string; tools: readonly string[] }[] };
+  /** Execution environment — sandbox id (cwd/model already live on `run`/`model`). */
+  environment?: { sandboxId: string };
   /** Dev-supplied values for `{{ }}` output slots. */
   vars?: Readonly<Record<string, string | number | boolean>>;
 }

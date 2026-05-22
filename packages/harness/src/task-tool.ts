@@ -48,8 +48,10 @@ export interface TaskToolOptions {
   parentEmit?: (event: import("@drover/core").HarnessEvent) => void;
 }
 
-const DEFAULT_MAX_DEPTH = 2;
-const DEFAULT_FAN_OUT = 3;
+/** Default subagent nesting depth — also surfaced in the `subagents` prompt fragment. */
+export const DEFAULT_MAX_DEPTH = 2;
+/** Default concurrent-children cap — also surfaced in the `subagents` prompt fragment. */
+export const DEFAULT_FAN_OUT = 3;
 
 const TaskInputSchema = Type.Object({
   agent_type: Type.String({ description: "id of the agent spec to spawn" }),

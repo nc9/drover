@@ -15,35 +15,33 @@ import {
   type ToolExecutionContext,
   type Usage,
 } from "@drover/core";
-import type { CommandRegistry } from "@drover/commands";
-import type { McpRuntime } from "@drover/mcp";
-import { resolveModel, type ResolveOptions } from "@drover/model";
-import type { SandboxAdapter } from "@drover/sandbox";
+import { resolveModel } from "@drover/model";
 import {
   forgetTool,
   loadInstructionFiles,
   memoryRateLimitPlugin,
   recallTool,
   rememberTool,
-  renderInstructionsBlock,
-  renderMemoryIndex,
   seedInstructionFiles,
   type InstructionFile,
-  type MemoryAdapter,
 } from "@drover/memory";
-import { createPromptEngine, loadPromptFile, type PromptScope } from "@drover/prompt";
 import {
-  renderSkillsBlock,
-  skillLoadTool,
-  skillResourceTool,
-  type SkillRegistry,
-} from "@drover/skills";
-import type { CheckpointRow, StorageAdapter } from "@drover/storage";
+  type CacheReport,
+  createPromptEngine,
+  DEFAULT_PROMPT_TEMPLATE,
+  getBuiltin,
+  loadPromptFile,
+  type PromptScope,
+} from "@drover/prompt";
+import { skillLoadTool, skillResourceTool } from "@drover/skills";
+import type { CheckpointRow } from "@drover/storage";
 import { builtinsById, type BuiltinToolId } from "@drover/tools";
 import { Effect } from "effect";
 import { runAgentLoop, runAgentLoopContinue } from "@mariozechner/pi-agent-core";
-import { taskTool } from "./task-tool.ts";
+import { taskTool, DEFAULT_MAX_DEPTH, DEFAULT_FAN_OUT } from "./task-tool.ts";
 import { runLifecycleSteps } from "./lifecycle.ts";
+import type { HarnessDeps } from "./deps.ts";
+import { mcpActive, memoryActive, skillsActive, subagentsActive } from "./capability-gates.ts";
 import type { AgentLoopConfig, AgentMessage } from "@mariozechner/pi-agent-core";
 import type { KnownApi, Message, UserMessage } from "@mariozechner/pi-ai";
 import { Value } from "@sinclair/typebox/value";
@@ -55,55 +53,7 @@ import { createTranslator, toPiTool, type PiEvent } from "./translate.ts";
 /** Caller-provided emit hook. Errors thrown inside are swallowed (logged below). */
 export type EventEmitter = (event: HarnessEvent) => void;
 
-/** Per-run dependencies the harness needs. */
-export interface HarnessDeps {
-  sandbox: SandboxAdapter;
-  /** Override the default alias map. */
-  modelAliases?: ResolveOptions["aliases"];
-  /** Override the environment seen by the model resolver. */
-  env?: ResolveOptions["env"];
-  /**
-   * Host-injected, already-resolved models keyed by spec name. Checked
-   * before alias / slug / builtin lookup — lets a host with its own role
-   * resolver supply a constructed pi-ai model + key directly.
-   */
-  preResolvedModels?: ResolveOptions["preResolved"];
-  /**
-   * Registry for spawning subagents via the auto-injected `task` tool.
-   * Required when any spec in the run tree uses `subagents`.
-   */
-  agentRegistry?: import("./task-tool.ts").AgentRegistry;
-  /**
-   * Optional persistence. When provided, the harness persists run row +
-   * events + post-turn checkpoints. Storage errors are logged but never
-   * crash the run — observability shouldn't break execution.
-   */
-  storage?: StorageAdapter;
-  /**
-   * Skill registry. When provided AND the spec declares `skills`, the
-   * harness auto-injects a `skill_load` tool gated by the spec's allowlist
-   * and appends an "Available skills" section to the system prompt.
-   */
-  skills?: SkillRegistry;
-  /**
-   * Memory adapter. When provided AND `spec.memory?.enabled === true`, the
-   * harness auto-injects `remember` / `recall` (and optionally `forget`),
-   * appends a scoped memory index to the system prompt, and applies the
-   * rate-limit plugin if `writesPerTurn > 0`.
-   */
-  memory?: MemoryAdapter;
-  /**
-   * Connected MCP runtime. When provided AND the spec declares
-   * `mcpServers`, every tool from the allowlisted servers is composed
-   * into the agent's toolset with `<serverId>__<toolName>` prefixing.
-   */
-  mcpRuntime?: McpRuntime;
-  /**
-   * Command registry. Consumed by `spec.lifecycle` steps of kind
-   * `command`; the spec's `commands` array is the per-agent allowlist.
-   */
-  commands?: CommandRegistry;
-}
+export type { HarnessDeps } from "./deps.ts";
 
 export interface RunArgs<S extends AgentSpec<TSchema, TSchema>> {
   spec: S;
@@ -157,19 +107,102 @@ export function buildPromptScope(args: {
     run: { runId: ctx.runId, cwd: ctx.cwd },
     model: modelId,
     tools: toolIds,
+    environment: { sandboxId: deps.sandbox.id },
     ...(instructionFiles.length > 0 ? { instructions: instructionFiles } : {}),
-    ...(deps.skills && spec.skills && spec.skills.length > 0
-      ? { skills: { registry: deps.skills, allowed: spec.skills } }
+    ...(skillsActive(spec, deps)
+      ? { skills: { registry: deps.skills!, allowed: spec.skills! } }
       : {}),
-    ...(deps.memory && spec.memory?.enabled
+    ...(memoryActive(spec, deps)
       ? {
           memory: {
-            adapter: deps.memory,
+            adapter: deps.memory!,
             agentId: spec.id,
-            maxEntries: spec.memory.maxIndexEntries ?? 30,
+            maxEntries: spec.memory!.maxIndexEntries ?? 30,
           },
         }
       : {}),
+    ...(subagentsActive(spec, deps)
+      ? {
+          subagents: {
+            allowed: spec.subagents!.allowed.map((id) => {
+              const child = deps.agentRegistry!.resolve(id);
+              return child?.description ? { id, description: child.description } : { id };
+            }),
+            maxDepth: spec.subagents!.depth ?? DEFAULT_MAX_DEPTH,
+            fanOut: spec.subagents!.fanOut ?? DEFAULT_FAN_OUT,
+          },
+        }
+      : {}),
+    ...(mcpActive(spec, deps)
+      ? {
+          mcp: {
+            servers: deps
+              .mcpRuntime!.servers()
+              .filter((s) => spec.mcpServers!.includes(s.id))
+              .map((s) => ({
+                id: s.id,
+                tools: deps.mcpRuntime!.tools([s.id]).map((t) => t.id),
+              })),
+          },
+        }
+      : {}),
+  };
+}
+
+/**
+ * Static-only variant of {@link DEFAULT_PROMPT_TEMPLATE} — volatile tags
+ * dropped. Derived once from the single template source (so adding a tag
+ * cannot desync the two) and used to measure the cacheable prefix of the
+ * final assembled prompt.
+ */
+const STATIC_DEFAULT_PROMPT_TEMPLATE: string = DEFAULT_PROMPT_TEMPLATE.split("\n\n")
+  .filter((seg) => {
+    const m = seg.match(/\{%\s*(\w+)\s*%\}/);
+    return !m || getBuiltin(m[1]!)?.volatility !== "volatile";
+  })
+  .join("\n\n");
+
+const normalizeFragments = (s: string): string => s.replace(/\n{3,}/g, "\n\n").trim();
+const joinPrompt = (parts: ReadonlyArray<string>): string =>
+  parts.filter((s) => s.length > 0).join("\n\n");
+
+/**
+ * Default-path system-prompt assembly. The author's `basePrompt` is opaque
+ * plain text (never Liquid-parsed — author prompts may contain `{%`/`{{`);
+ * {@link DEFAULT_PROMPT_TEMPLATE} is rendered through the same engine the
+ * template path uses, so every capability fragment is defined exactly once.
+ * Empty builtins leave blank-line runs; those are collapsed and the result
+ * trimmed before joining. Exported for testing the unified path without a
+ * model round-trip.
+ *
+ * The returned `cache` describes the FINAL assembled prompt, not the bare
+ * fragment render: `totalChars` counts `basePrompt`, and `cacheablePrefix`
+ * spans `basePrompt` (author-owned static text) plus the static fragment
+ * run — DEFAULT_PROMPT_TEMPLATE is static-tags-first, so re-rendering the
+ * static-only variant yields exactly that prefix.
+ */
+export async function assembleDefaultPrompt(
+  basePrompt: string,
+  scope: PromptScope,
+): Promise<{ text: string; cache: CacheReport }> {
+  const rendered = await promptEngine.render(DEFAULT_PROMPT_TEMPLATE, scope, {
+    autoReorder: false,
+  });
+  const text = joinPrompt([basePrompt, normalizeFragments(rendered.text)]);
+
+  const staticRendered = await promptEngine.render(STATIC_DEFAULT_PROMPT_TEMPLATE, scope, {
+    autoReorder: false,
+  });
+  const cacheablePrefix = joinPrompt([basePrompt, normalizeFragments(staticRendered.text)]);
+
+  return {
+    text,
+    cache: {
+      cacheablePrefixChars: cacheablePrefix.length,
+      totalChars: text.length,
+      warnings: rendered.cache.warnings,
+      reordered: rendered.cache.reordered,
+    },
   };
 }
 
@@ -349,27 +382,40 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         ts: Date.now(),
       });
     } else {
-      // Default assembly: base prompt + auto-blocks (instructions, skills,
-      // memory index) joined. Each block renderer returns "" when empty.
+      // Default assembly: the author's `systemPrompt` as opaque plain text
+      // (never Liquid-parsed), then the harness's builtin-tag template
+      // rendered through the same engine the template path uses — so every
+      // capability fragment is defined exactly once. Each builtin renders
+      // "" when its mechanism is absent; the blank-line runs that leaves
+      // are normalised away below.
       const promptSource = spec.systemPrompt;
       const basePrompt: string =
         typeof promptSource === "string"
           ? promptSource
           : yield* Effect.promise(async (): Promise<string> => await promptSource(ctx));
-      const skillsBlock =
-        spec.skills && spec.skills.length > 0 && deps.skills
-          ? renderSkillsBlock(deps.skills, spec.skills)
-          : "";
-      const instructionsBlock = renderInstructionsBlock(instructionFilesList);
-      const memoryBlock =
-        spec.memory?.enabled && spec.memory.includeIndex !== false && deps.memory
-          ? yield* renderMemoryIndex(deps.memory, spec.id, {
-              maxEntries: spec.memory.maxIndexEntries ?? 30,
-            })
-          : "";
-      systemPrompt = [basePrompt, instructionsBlock, skillsBlock, memoryBlock]
-        .filter((s) => s.length > 0)
-        .join("\n");
+      const promptScope = buildPromptScope({
+        spec,
+        ctx,
+        deps,
+        modelId: resolved.model.id,
+        toolIds: tools.map((t) => t.id),
+        instructionFiles: instructionFilesList,
+      });
+      // `includeIndex: false` suppresses only the auto-injected memory
+      // index, not the memory tools — drop the scope field so the
+      // `{% memory %}` builtin renders "".
+      if (spec.memory?.includeIndex === false) delete promptScope.memory;
+      const assembled = yield* Effect.promise(() => assembleDefaultPrompt(basePrompt, promptScope));
+      systemPrompt = assembled.text;
+      safeEmit({
+        kind: "prompt_rendered",
+        runId: ctx.runId,
+        cacheablePrefixChars: assembled.cache.cacheablePrefixChars,
+        totalChars: assembled.cache.totalChars,
+        reordered: assembled.cache.reordered,
+        warnings: assembled.cache.warnings.map((w) => w.message),
+        ts: Date.now(),
+      });
     }
 
     // Scope for deterministic lifecycle steps (commands render against it).
@@ -984,12 +1030,13 @@ function composeTools(
   // Auto-inject `task` tool when the spec declares subagents and the
   // caller supplied a registry. Spec keeps `subagents` declarative;
   // wiring lives here.
-  if (spec.subagents && deps.agentRegistry) {
+  if (subagentsActive(spec, deps)) {
+    const subagents = spec.subagents!;
     const subagentOpts: import("./task-tool.ts").TaskToolOptions = {
-      registry: deps.agentRegistry,
-      allowedAgents: spec.subagents.allowed,
-      ...(spec.subagents.depth !== undefined ? { maxDepth: spec.subagents.depth } : {}),
-      ...(spec.subagents.fanOut !== undefined ? { fanOut: spec.subagents.fanOut } : {}),
+      registry: deps.agentRegistry!,
+      allowedAgents: subagents.allowed,
+      ...(subagents.depth !== undefined ? { maxDepth: subagents.depth } : {}),
+      ...(subagents.fanOut !== undefined ? { fanOut: subagents.fanOut } : {}),
       deps,
       parentEmit,
     };
@@ -1000,16 +1047,17 @@ function composeTools(
   // skills + the caller supplied a registry. Allowlist is the spec's
   // declared skill names. Progressive disclosure: names in the system
   // prompt → body via skill_load → supporting files via skill_resource.
-  if (spec.skills && spec.skills.length > 0 && deps.skills) {
-    out.push(skillLoadTool({ registry: deps.skills, allowed: spec.skills }));
-    out.push(skillResourceTool({ registry: deps.skills, allowed: spec.skills }));
+  if (skillsActive(spec, deps)) {
+    out.push(skillLoadTool({ registry: deps.skills!, allowed: spec.skills! }));
+    out.push(skillResourceTool({ registry: deps.skills!, allowed: spec.skills! }));
   }
 
   // Auto-inject memory tools when the spec opts in + adapter is wired.
-  if (spec.memory?.enabled && deps.memory) {
+  if (memoryActive(spec, deps)) {
+    const memory = deps.memory!;
     out.push(
       rememberTool({
-        adapter: deps.memory,
+        adapter: memory,
         agentId: spec.id,
         runId,
         emit: parentEmit,
@@ -1017,22 +1065,22 @@ function composeTools(
     );
     out.push(
       recallTool({
-        adapter: deps.memory,
+        adapter: memory,
         agentId: spec.id,
         runId,
         emit: parentEmit,
       }),
     );
-    if (spec.memory.allowForget) {
-      out.push(forgetTool({ adapter: deps.memory, agentId: spec.id }));
+    if (spec.memory!.allowForget) {
+      out.push(forgetTool({ adapter: memory, agentId: spec.id }));
     }
   }
 
   // Inject MCP tools from allowed servers. Tool names are already
   // prefixed (`<server>__<tool>`) by the runtime, so collisions across
   // servers are impossible.
-  if (spec.mcpServers && spec.mcpServers.length > 0 && deps.mcpRuntime) {
-    for (const t of deps.mcpRuntime.tools(spec.mcpServers)) out.push(t);
+  if (mcpActive(spec, deps)) {
+    for (const t of deps.mcpRuntime!.tools(spec.mcpServers!)) out.push(t);
   }
 
   // Plugin-contributed tools.
@@ -1151,6 +1199,7 @@ export function hashSpec(spec: AgentSpec): string {
   let h = 0;
   const s = JSON.stringify({
     id: spec.id,
+    description: spec.description ?? null,
     tools: spec.tools,
     skills: spec.skills,
     mcpServers: spec.mcpServers,

@@ -37,13 +37,22 @@ Today is {% date %}.
 |---|---|---|
 | `{% instructions %}` | static | `AGENTS.md` / `CLAUDE.md` block |
 | `{% skills %}` | static | available-skills block |
+| `{% subagents %}` | static | spawnable-agents block (`task` tool + caps) |
+| `{% mcp %}` | static | connected MCP servers + their prefixed tools |
 | `{% memory %}` | volatile | recalled-memory index |
+| `{% environment %}` | volatile | cwd / model / sandbox / date facts |
 | `{% agent %}` | static | agent id (`field: "name"` → name) |
 | `{% cwd %}` | static | run working directory |
 | `{% runId %}` | volatile | run id |
 | `{% model %}` | static | resolved model id |
 | `{% tools %}` | static | composed tool ids (`sep:` joins) |
 | `{% date %}` / `{% time %}` | volatile | current date / time (`format:` arg) |
+
+The `{% subagents %}`, `{% mcp %}`, `{% memory %}`, `{% skills %}`, and
+`{% instructions %}` tags are **capability fragments** — each describes a
+mechanism drover auto-wires. On the default (no-template) assembly path they
+are injected automatically via the harness's `DEFAULT_PROMPT_TEMPLATE`; a
+custom template opts into whichever it wants.
 
 A builtin whose backing run state is absent renders an empty string — drop
 `{% memory %}` into any template without guarding it. *Volatility* drives the

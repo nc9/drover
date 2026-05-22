@@ -146,4 +146,14 @@ describe("hashSpec", () => {
     const b = { ...baseSpec, lifecycle: { init: [{ kind: "prompt", text: "y" } as const] } };
     expect(hashSpec(a)).not.toBe(hashSpec(b));
   });
+
+  test("adding a description changes the hash", () => {
+    expect(hashSpec({ ...baseSpec, description: "a role" })).not.toBe(hashSpec(baseSpec));
+  });
+
+  test("description drift produces different hash", () => {
+    const a = { ...baseSpec, description: "role A" };
+    const b = { ...baseSpec, description: "role B" };
+    expect(hashSpec(a)).not.toBe(hashSpec(b));
+  });
 });

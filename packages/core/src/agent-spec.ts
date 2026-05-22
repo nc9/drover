@@ -159,6 +159,13 @@ export interface RunQuota {
  */
 export interface AgentSpec<ISchema extends TSchema = TSchema, OSchema extends TSchema = TSchema> {
   id: string;
+  /**
+   * Human-readable role summary. Optional. Surfaced in a parent agent's
+   * `subagents` capability fragment (one line per spawnable agent) so the
+   * model can pick a sensible `agent_type` for the `task` tool. Folded into
+   * `hashSpec`, so editing it invalidates resumed runs.
+   */
+  description?: string;
   systemPrompt: string | SystemPromptFn;
   inputSchema: ISchema;
   outputSchema: OSchema;
