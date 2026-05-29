@@ -1,4 +1,4 @@
-import { SandboxError } from "@drover/core";
+import { SandboxError } from "@droveragent/core";
 import type { Effect } from "effect";
 
 export interface ExecOptions {

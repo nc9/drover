@@ -1,8 +1,8 @@
-import { LifecycleError, type LifecycleStep } from "@drover/core";
-import { type CommandRegistry, renderCommand } from "@drover/commands";
-import type { McpRuntime } from "@drover/mcp";
-import type { PromptEngine, PromptScope } from "@drover/prompt";
-import type { SkillRegistry } from "@drover/skills";
+import { LifecycleError, type LifecycleStep } from "@droveragent/core";
+import { type CommandRegistry, renderCommand } from "@droveragent/commands";
+import type { McpRuntime } from "@droveragent/mcp";
+import type { PromptEngine, PromptScope } from "@droveragent/prompt";
+import type { SkillRegistry } from "@droveragent/skills";
 
 /** Registries a lifecycle step may resolve against. */
 export interface LifecycleStepDeps {

@@ -1,4 +1,4 @@
-import { MemoryError } from "@drover/core";
+import { MemoryError } from "@droveragent/core";
 import { Effect } from "effect";
 
 import type {

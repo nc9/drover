@@ -1,5 +1,5 @@
-import type { HarnessEvent, RunStatus, Usage } from "@drover/core";
-import { StorageError } from "@drover/core";
+import type { HarnessEvent, RunStatus, Usage } from "@droveragent/core";
+import { StorageError } from "@droveragent/core";
 import type { Effect } from "effect";
 
 /** Persisted run record. Mirrors the `runs` table. */

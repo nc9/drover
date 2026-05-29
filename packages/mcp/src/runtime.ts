@@ -1,5 +1,5 @@
 import { Type, type TSchema } from "@sinclair/typebox";
-import { type AnyToolDef, defineTool, SandboxError, type ToolResult } from "@drover/core";
+import { type AnyToolDef, defineTool, SandboxError, type ToolResult } from "@droveragent/core";
 import { Effect } from "effect";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";

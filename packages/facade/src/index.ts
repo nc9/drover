@@ -10,10 +10,10 @@ import type {
   HarnessPlugin,
   RunContext,
   RunResult,
-} from "@drover/core";
-import { hashSpec, runAgentEffect, type HarnessDeps } from "@drover/harness";
-import type { SandboxAdapter } from "@drover/sandbox";
-import { createJustBashSandbox } from "@drover/sandbox-just-bash";
+} from "@droveragent/core";
+import { hashSpec, runAgentEffect, type HarnessDeps } from "@droveragent/harness";
+import type { SandboxAdapter } from "@droveragent/sandbox";
+import { createJustBashSandbox } from "@droveragent/sandbox-just-bash";
 
 export interface RunOptions {
   runId?: string;
@@ -432,5 +432,5 @@ function createEventStream(): {
   };
 }
 
-export type { AgentSpec, AgentInput, AgentOutput, HarnessEvent, RunResult } from "@drover/core";
-export { staticRegistry, type AgentRegistry } from "@drover/harness";
+export type { AgentSpec, AgentInput, AgentOutput, HarnessEvent, RunResult } from "@droveragent/core";
+export { staticRegistry, type AgentRegistry } from "@droveragent/harness";

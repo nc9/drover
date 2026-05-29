@@ -1,4 +1,4 @@
-import type { HarnessEvent, HarnessPlugin } from "@drover/core";
+import type { HarnessEvent, HarnessPlugin } from "@droveragent/core";
 import { Effect } from "effect";
 
 /**

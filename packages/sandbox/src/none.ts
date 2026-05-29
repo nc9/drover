@@ -1,4 +1,4 @@
-import { SandboxError } from "@drover/core";
+import { SandboxError } from "@droveragent/core";
 import { Effect } from "effect";
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";

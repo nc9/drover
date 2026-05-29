@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { LifecycleError, type LifecycleStep } from "@drover/core";
-import { type CommandSpec, createCommandRegistry } from "@drover/commands";
-import { createPromptEngine } from "@drover/prompt";
-import { createSkillRegistry, type SkillSpec } from "@drover/skills";
-import type { McpRuntime } from "@drover/mcp";
+import { LifecycleError, type LifecycleStep } from "@droveragent/core";
+import { type CommandSpec, createCommandRegistry } from "@droveragent/commands";
+import { createPromptEngine } from "@droveragent/prompt";
+import { createSkillRegistry, type SkillSpec } from "@droveragent/skills";
+import type { McpRuntime } from "@droveragent/mcp";
 
 import { runLifecycleSteps, type RunLifecycleArgs } from "../src/lifecycle.ts";
 

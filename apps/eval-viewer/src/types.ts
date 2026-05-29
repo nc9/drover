@@ -1,4 +1,4 @@
-import type { HarnessEvent, RunResult } from "@drover/core";
+import type { HarnessEvent, RunResult } from "@droveragent/core";
 
 export interface RunsetSummary {
   id: string;

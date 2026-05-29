@@ -4,7 +4,7 @@ import {
   type HarnessEvent,
   type ToolDef,
   type ToolResult,
-} from "@drover/core";
+} from "@droveragent/core";
 import { Effect } from "effect";
 
 import type { MemoryAdapter, MemoryHit, MemoryKind, MemoryScope } from "./adapter.ts";

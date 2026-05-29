@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { Effect } from "effect";
-import type { HarnessEvent, ToolResult } from "@drover/core";
+import type { HarnessEvent, ToolResult } from "@droveragent/core";
 
 import { createInMemoryMemory } from "../src/memory.ts";
 import { forgetTool, recallTool, rememberTool } from "../src/tools.ts";

@@ -3,7 +3,7 @@ import {
   defineTool,
   type ToolDef,
   type ToolResult,
-} from "@drover/core";
+} from "@droveragent/core";
 import { Effect } from "effect";
 
 import { listSkillResources } from "./loader.ts";

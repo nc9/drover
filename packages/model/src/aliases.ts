@@ -1,4 +1,4 @@
-import type { ReasoningLevel } from "@drover/core";
+import type { ReasoningLevel } from "@droveragent/core";
 
 /**
  * Resolved entry the resolver returns. Pi-ai's `getModel(provider, modelId)`

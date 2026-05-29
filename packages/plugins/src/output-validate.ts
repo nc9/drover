@@ -1,4 +1,4 @@
-import type { HarnessEvent, HarnessPlugin } from "@drover/core";
+import type { HarnessEvent, HarnessPlugin } from "@droveragent/core";
 import { Effect } from "effect";
 
 export interface OutputValidateTrace {
@@ -19,7 +19,7 @@ export interface OutputValidateRecorder {
  * harnesses and dashboards that want to surface validation churn
  * without parsing the full event stream.
  *
- * The validation/retry logic itself lives in `@drover/harness`
+ * The validation/retry logic itself lives in `@droveragent/harness`
  * (it's load-bearing — the harness's `outputRetries` budget feeds
  * back corrective messages to the model). This plugin only observes.
  */

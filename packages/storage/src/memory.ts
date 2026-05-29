@@ -1,4 +1,4 @@
-import { StorageError } from "@drover/core";
+import { StorageError } from "@droveragent/core";
 import { Effect } from "effect";
 
 import type {

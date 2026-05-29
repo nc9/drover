@@ -2,7 +2,7 @@ import { api, useFetch, type StorageRunDetail } from "../lib/api.ts";
 import { navigate } from "../lib/route.ts";
 import { cn, formatMs, formatTokens, formatUsd } from "../lib/format.ts";
 import { EventTimeline } from "../components/event-timeline.tsx";
-import type { HarnessEvent } from "@drover/core";
+import type { HarnessEvent } from "@droveragent/core";
 
 export function StorageRunPage({ runId }: { runId: string }): React.ReactElement {
   const { data, loading, error } = useFetch<StorageRunDetail>(api.storageRun(runId));

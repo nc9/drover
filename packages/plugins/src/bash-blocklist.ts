@@ -1,4 +1,4 @@
-import type { HarnessPlugin, ToolDecision } from "@drover/core";
+import type { HarnessPlugin, ToolDecision } from "@droveragent/core";
 import { Effect } from "effect";
 
 export interface BashBlocklistOptions {

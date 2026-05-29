@@ -1,4 +1,4 @@
-import type { HarnessPlugin } from "@drover/core";
+import type { HarnessPlugin } from "@droveragent/core";
 import { Effect } from "effect";
 import * as path from "node:path";
 

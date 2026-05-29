@@ -1,5 +1,5 @@
 {
-  "name": "@drover/model",
+  "name": "@droveragent/model",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,7 +12,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@drover/core": "workspace:*",
+    "@droveragent/core": "workspace:*",
     "@mariozechner/pi-ai": "^0.70",
     "effect": "^3.10.0"
   }

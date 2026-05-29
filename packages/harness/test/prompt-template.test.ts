@@ -1,11 +1,11 @@
 import { describe, test, expect } from "bun:test";
 import { Type } from "@sinclair/typebox";
-import { defineAgent, type RunContext } from "@drover/core";
-import { createInMemoryMemory, type InstructionFile } from "@drover/memory";
-import { createPromptEngine } from "@drover/prompt";
-import type { McpRuntime } from "@drover/mcp";
-import { createSkillRegistry, type SkillSpec } from "@drover/skills";
-import { createNoneSandbox } from "@drover/sandbox";
+import { defineAgent, type RunContext } from "@droveragent/core";
+import { createInMemoryMemory, type InstructionFile } from "@droveragent/memory";
+import { createPromptEngine } from "@droveragent/prompt";
+import type { McpRuntime } from "@droveragent/mcp";
+import { createSkillRegistry, type SkillSpec } from "@droveragent/skills";
+import { createNoneSandbox } from "@droveragent/sandbox";
 import { Effect } from "effect";
 
 import { buildPromptScope } from "../src/run.ts";

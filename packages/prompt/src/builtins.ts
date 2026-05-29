@@ -1,5 +1,5 @@
-import { renderInstructionsBlock, renderMemoryIndex } from "@drover/memory";
-import { renderSkillsBlock } from "@drover/skills";
+import { renderInstructionsBlock, renderMemoryIndex } from "@droveragent/memory";
+import { renderSkillsBlock } from "@droveragent/skills";
 import { Effect } from "effect";
 
 import type { Builtin } from "./types.ts";

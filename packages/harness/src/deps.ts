@@ -1,10 +1,10 @@
-import type { CommandRegistry } from "@drover/commands";
-import type { McpRuntime } from "@drover/mcp";
-import type { ResolveOptions } from "@drover/model";
-import type { SandboxAdapter } from "@drover/sandbox";
-import type { MemoryAdapter } from "@drover/memory";
-import type { SkillRegistry } from "@drover/skills";
-import type { StorageAdapter } from "@drover/storage";
+import type { CommandRegistry } from "@droveragent/commands";
+import type { McpRuntime } from "@droveragent/mcp";
+import type { ResolveOptions } from "@droveragent/model";
+import type { SandboxAdapter } from "@droveragent/sandbox";
+import type { MemoryAdapter } from "@droveragent/memory";
+import type { SkillRegistry } from "@droveragent/skills";
+import type { StorageAdapter } from "@droveragent/storage";
 
 /**
  * Per-run dependencies the harness needs. Extracted into its own module so

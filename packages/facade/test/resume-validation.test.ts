@@ -1,8 +1,8 @@
 import { describe, test, expect } from "bun:test";
 import { Type } from "@sinclair/typebox";
 import { Effect } from "effect";
-import { defineAgent } from "@drover/core";
-import { createLibsqlStorage } from "@drover/storage";
+import { defineAgent } from "@droveragent/core";
+import { createLibsqlStorage } from "@droveragent/storage";
 
 import { resumeAgent } from "../src/index.ts";
 

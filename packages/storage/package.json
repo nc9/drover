@@ -1,5 +1,5 @@
 {
-  "name": "@drover/storage",
+  "name": "@droveragent/storage",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -14,7 +14,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@drover/core": "workspace:*",
+    "@droveragent/core": "workspace:*",
     "@libsql/client": "^0.17.3",
     "effect": "^3.10.0"
   }

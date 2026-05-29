@@ -1,4 +1,4 @@
-import { MemoryError } from "@drover/core";
+import { MemoryError } from "@droveragent/core";
 import type { Effect } from "effect";
 
 /** Three durable scopes. */

@@ -1,5 +1,5 @@
 {
-  "name": "@drover/prompt",
+  "name": "@droveragent/prompt",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,8 +12,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@drover/memory": "workspace:*",
-    "@drover/skills": "workspace:*",
+    "@droveragent/memory": "workspace:*",
+    "@droveragent/skills": "workspace:*",
     "effect": "^3.10.0",
     "liquidjs": "^10.0.0"
   }

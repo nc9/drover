@@ -1,5 +1,5 @@
 {
-  "name": "@drover/facade",
+  "name": "@droveragent/facade",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,11 +12,11 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@drover/core": "workspace:*",
-    "@drover/harness": "workspace:*",
-    "@drover/sandbox": "workspace:*",
-    "@drover/sandbox-just-bash": "workspace:*",
-    "@drover/storage": "workspace:*",
+    "@droveragent/core": "workspace:*",
+    "@droveragent/harness": "workspace:*",
+    "@droveragent/sandbox": "workspace:*",
+    "@droveragent/sandbox-just-bash": "workspace:*",
+    "@droveragent/storage": "workspace:*",
     "effect": "^3.10.0",
     "@sinclair/typebox": "^0.34.0"
   }

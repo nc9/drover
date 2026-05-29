@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
-import { defineAgent, defineTool, type ToolResult } from "@drover/core";
-import { loopDetectPlugin } from "@drover/plugins";
+import { defineAgent, defineTool, type ToolResult } from "@droveragent/core";
+import { loopDetectPlugin } from "@droveragent/plugins";
 import { Effect } from "effect";
 import type { Scenario } from "./types.ts";
 

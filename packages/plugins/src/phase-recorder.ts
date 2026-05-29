@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { defineTool, type HarnessPlugin } from "@drover/core";
+import { defineTool, type HarnessPlugin } from "@droveragent/core";
 import { Effect } from "effect";
 
 /**

@@ -1,6 +1,6 @@
 import { Effect } from "effect";
 import { createClient, type Client, type Config, type Row } from "@libsql/client";
-import type { RunStatus } from "@drover/core";
+import type { RunStatus } from "@droveragent/core";
 
 import {
   type ClaimedJob,

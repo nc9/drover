@@ -9,7 +9,7 @@
 // it as deps.memory) rather than the standard runner path.
 
 import { Type } from "@sinclair/typebox";
-import { defineAgent } from "@drover/core";
+import { defineAgent } from "@droveragent/core";
 
 export const memoryAgent = defineAgent({
   id: "memory-self-learn",

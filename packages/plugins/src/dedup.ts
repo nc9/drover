@@ -20,7 +20,7 @@
  * distinct run ids) never collide. Each run's cache is dropped on `onRunEnd`.
  */
 import { createHash } from "node:crypto";
-import type { AnyToolDef, HarnessPlugin, ToolResult } from "@drover/core";
+import type { AnyToolDef, HarnessPlugin, ToolResult } from "@droveragent/core";
 import { Effect } from "effect";
 
 import { canonicalJsonStringify } from "./internal/canonical-json.ts";

@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
-import { defineTool, SandboxError, type ToolDef } from "@drover/core";
-import type { SandboxAdapter } from "@drover/sandbox";
+import { defineTool, SandboxError, type ToolDef } from "@droveragent/core";
+import type { SandboxAdapter } from "@droveragent/sandbox";
 import { Effect } from "effect";
 
 const InputSchema = Type.Object({

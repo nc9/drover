@@ -1,4 +1,4 @@
-import type { PromptEngine, PromptScope } from "@drover/prompt";
+import type { PromptEngine, PromptScope } from "@droveragent/prompt";
 import type { CommandSpec } from "./loader.ts";
 
 export interface RenderCommandOptions {

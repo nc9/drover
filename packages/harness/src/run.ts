@@ -14,8 +14,8 @@ import {
   type RunStatus,
   type ToolExecutionContext,
   type Usage,
-} from "@drover/core";
-import { resolveModel } from "@drover/model";
+} from "@droveragent/core";
+import { resolveModel } from "@droveragent/model";
 import {
   forgetTool,
   loadInstructionFiles,
@@ -24,7 +24,7 @@ import {
   rememberTool,
   seedInstructionFiles,
   type InstructionFile,
-} from "@drover/memory";
+} from "@droveragent/memory";
 import {
   type CacheReport,
   createPromptEngine,
@@ -32,10 +32,10 @@ import {
   getBuiltin,
   loadPromptFile,
   type PromptScope,
-} from "@drover/prompt";
-import { skillLoadTool, skillResourceTool } from "@drover/skills";
-import type { CheckpointRow } from "@drover/storage";
-import { builtinsById, type BuiltinToolId } from "@drover/tools";
+} from "@droveragent/prompt";
+import { skillLoadTool, skillResourceTool } from "@droveragent/skills";
+import type { CheckpointRow } from "@droveragent/storage";
+import { builtinsById, type BuiltinToolId } from "@droveragent/tools";
 import { Effect } from "effect";
 import { runAgentLoop, runAgentLoopContinue } from "@mariozechner/pi-agent-core";
 import { taskTool, DEFAULT_MAX_DEPTH, DEFAULT_FAN_OUT } from "./task-tool.ts";
@@ -225,14 +225,14 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     const usage: Usage = { inputTokens: 0, outputTokens: 0 };
     const toolCalls: string[] = resumeFrom ? [...resumeFrom.toolCalls] : [];
 
-    const explicitPlugins: ReadonlyArray<import("@drover/core").HarnessPlugin> = spec.plugins ?? [];
+    const explicitPlugins: ReadonlyArray<import("@droveragent/core").HarnessPlugin> = spec.plugins ?? [];
     // Auto-apply memory rate-limit when memory is enabled and writes-per-turn > 0.
     const writesPerTurn = spec.memory?.writesPerTurn ?? 1;
-    const autoMemoryPlugin: import("@drover/core").HarnessPlugin | null =
+    const autoMemoryPlugin: import("@droveragent/core").HarnessPlugin | null =
       spec.memory?.enabled && deps.memory && writesPerTurn > 0
         ? memoryRateLimitPlugin({ writesPerTurn })
         : null;
-    const plugins: ReadonlyArray<import("@drover/core").HarnessPlugin> = autoMemoryPlugin
+    const plugins: ReadonlyArray<import("@droveragent/core").HarnessPlugin> = autoMemoryPlugin
       ? [...explicitPlugins, autoMemoryPlugin]
       : explicitPlugins;
     const storage = deps.storage;
@@ -651,7 +651,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           details?: unknown;
           isError?: boolean;
         }> => {
-          let current: import("@drover/core").ToolResult = {
+          let current: import("@droveragent/core").ToolResult = {
             content: (aCtx.result.content ?? [])
               .map((c) => (typeof c.text === "string" ? c.text : ""))
               .join(""),
@@ -1009,7 +1009,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
 function composeTools(
   spec: AgentSpec,
   deps: HarnessDeps,
-  plugins: ReadonlyArray<import("@drover/core").HarnessPlugin>,
+  plugins: ReadonlyArray<import("@droveragent/core").HarnessPlugin>,
   parentEmit: (event: HarnessEvent) => void,
   runId: string,
 ): ReadonlyArray<AnyToolDef> {

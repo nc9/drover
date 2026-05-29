@@ -1,8 +1,8 @@
 import { describe, test, expect } from "bun:test";
 import { Type } from "@sinclair/typebox";
-import { defineAgent, type RunContext } from "@drover/core";
-import type { McpRuntime } from "@drover/mcp";
-import { createNoneSandbox } from "@drover/sandbox";
+import { defineAgent, type RunContext } from "@droveragent/core";
+import type { McpRuntime } from "@droveragent/mcp";
+import { createNoneSandbox } from "@droveragent/sandbox";
 
 import { assembleDefaultPrompt, buildPromptScope } from "../src/run.ts";
 

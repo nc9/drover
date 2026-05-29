@@ -15,7 +15,7 @@
  * on cache hits).
  */
 import { type Static, Type } from "@sinclair/typebox";
-import { defineTool, type AnyToolDef, type HarnessPlugin, type ToolDef } from "@drover/core";
+import { defineTool, type AnyToolDef, type HarnessPlugin, type ToolDef } from "@droveragent/core";
 import { Effect } from "effect";
 
 export const MAX_RESULT_BYTES = 8192;

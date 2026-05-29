@@ -1,5 +1,5 @@
 {
-  "name": "@drover/commands",
+  "name": "@droveragent/commands",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,7 +12,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@drover/prompt": "workspace:*",
+    "@droveragent/prompt": "workspace:*",
     "yaml": "^2.6.0"
   }
 }

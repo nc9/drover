@@ -8,7 +8,7 @@
 // path runs a single `runAgent` per scenario.
 
 import { Type } from "@sinclair/typebox";
-import { defineAgent } from "@drover/core";
+import { defineAgent } from "@droveragent/core";
 
 export const runtimeAgent = defineAgent({
   id: "runtime-echo",

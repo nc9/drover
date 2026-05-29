@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { defineTool, type ToolDef, type ToolResult } from "@drover/core";
+import { defineTool, type ToolDef, type ToolResult } from "@droveragent/core";
 import { Effect } from "effect";
 
 import { listSkillResources, readSkillResource } from "./loader.ts";

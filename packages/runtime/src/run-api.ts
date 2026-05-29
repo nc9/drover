@@ -1,8 +1,8 @@
 import { Effect } from "effect";
-import type { RunResult } from "@drover/core";
-import { resumeAgent, type AgentRegistry } from "@drover/facade";
-import type { SandboxAdapter } from "@drover/sandbox";
-import type { RunRow, StorageAdapter } from "@drover/storage";
+import type { RunResult } from "@droveragent/core";
+import { resumeAgent, type AgentRegistry } from "@droveragent/facade";
+import type { SandboxAdapter } from "@droveragent/sandbox";
+import type { RunRow, StorageAdapter } from "@droveragent/storage";
 
 import type { QueueAdapter, QueueJob, EnqueueInput } from "./queue/adapter.ts";
 
@@ -50,7 +50,7 @@ export interface RunApiDeps {
    * resume produces a spec-hash mismatch and rejects the resume. Mirror
    * your `WorkerPoolDeps.plugins` value here.
    */
-  plugins?: ReadonlyArray<import("@drover/core").HarnessPlugin>;
+  plugins?: ReadonlyArray<import("@droveragent/core").HarnessPlugin>;
 }
 
 const TERMINAL_QUEUE: ReadonlySet<QueueJob["status"]> = new Set([

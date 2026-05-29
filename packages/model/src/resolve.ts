@@ -1,5 +1,5 @@
-import type { CacheRetention, ModelSpec, ReasoningLevel } from "@drover/core";
-import { ModelError } from "@drover/core";
+import type { CacheRetention, ModelSpec, ReasoningLevel } from "@droveragent/core";
+import { ModelError } from "@droveragent/core";
 import { Effect } from "effect";
 import { getModel, getProviders, getModels } from "@mariozechner/pi-ai";
 import type { KnownApi, Model } from "@mariozechner/pi-ai";

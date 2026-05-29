@@ -1,5 +1,5 @@
 {
-  "name": "@drover/eval-viewer",
+  "name": "@droveragent/eval-viewer",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,8 +10,8 @@
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
-    "@drover/core": "workspace:*",
-    "@drover/storage": "workspace:*",
+    "@droveragent/core": "workspace:*",
+    "@droveragent/storage": "workspace:*",
     "effect": "^3.10.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

@@ -1,5 +1,5 @@
 {
-  "name": "@drover/sandbox-just-bash",
+  "name": "@droveragent/sandbox-just-bash",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -12,8 +12,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@drover/core": "workspace:*",
-    "@drover/sandbox": "workspace:*",
+    "@droveragent/core": "workspace:*",
+    "@droveragent/sandbox": "workspace:*",
     "effect": "^3.10.0",
     "just-bash": "^3.0.1"
   }

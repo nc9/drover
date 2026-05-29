@@ -1,6 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { Type } from "@sinclair/typebox";
-import { defineAgent } from "@drover/core";
+import { defineAgent } from "@droveragent/core";
 
 import { hashSpec } from "../src/index.ts";
 

@@ -1,4 +1,4 @@
-import type { RunStatus } from "@drover/core";
+import type { RunStatus } from "@droveragent/core";
 import { Data } from "effect";
 import type { Effect } from "effect";
 

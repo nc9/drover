@@ -8,19 +8,19 @@
 
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import { runAgent, staticRegistry } from "@drover/facade";
-import { createMcpRuntime, type McpRuntime, type McpServerConfig } from "@drover/mcp";
-import { createMemoryQueue, createRunApi, createWorkerPool } from "@drover/runtime";
-import { createNoneSandbox } from "@drover/sandbox";
-import { stepTracerPlugin } from "@drover/plugins";
-import { createSkillRegistry, scanSkillDirs } from "@drover/skills";
-import { createLibsqlStorage } from "@drover/storage";
-import type { HarnessEvent, RunResult, AgentSpec } from "@drover/core";
+import { runAgent, staticRegistry } from "@droveragent/facade";
+import { createMcpRuntime, type McpRuntime, type McpServerConfig } from "@droveragent/mcp";
+import { createMemoryQueue, createRunApi, createWorkerPool } from "@droveragent/runtime";
+import { createNoneSandbox } from "@droveragent/sandbox";
+import { stepTracerPlugin } from "@droveragent/plugins";
+import { createSkillRegistry, scanSkillDirs } from "@droveragent/skills";
+import { createLibsqlStorage } from "@droveragent/storage";
+import type { HarnessEvent, RunResult, AgentSpec } from "@droveragent/core";
 
 import { ALL_SCENARIOS, SUBAGENT_REGISTRY, type Scenario } from "./scenarios/index.ts";
 import { RUNTIME_QUEUE_SCENARIO, runtimeAgent } from "./scenarios/runtime-queue.ts";
 import { MEMORY_SELF_LEARN_SCENARIO, memoryAgent } from "./scenarios/memory-self-learn.ts";
-import { createInMemoryMemory } from "@drover/memory";
+import { createInMemoryMemory } from "@droveragent/memory";
 
 const ROOT = path.dirname(new URL(import.meta.url).pathname);
 const RESULTS_ROOT = path.join(ROOT, "eval-results");

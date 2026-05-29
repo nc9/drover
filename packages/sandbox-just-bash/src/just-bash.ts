@@ -1,5 +1,5 @@
-import { SandboxError } from "@drover/core";
-import type { ExecOptions, ExecResult, SandboxAdapter } from "@drover/sandbox";
+import { SandboxError } from "@droveragent/core";
+import type { ExecOptions, ExecResult, SandboxAdapter } from "@droveragent/sandbox";
 import { Effect } from "effect";
 import { Bash, InMemoryFs, MountableFs, OverlayFs, ReadWriteFs } from "just-bash";
 import type {

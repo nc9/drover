@@ -1,8 +1,8 @@
 import { Effect } from "effect";
-import { runAgent, type AgentRegistry } from "@drover/facade";
-import type { AgentSpec, HarnessEvent, HarnessPlugin, RunResult } from "@drover/core";
-import type { SandboxAdapter } from "@drover/sandbox";
-import type { StorageAdapter } from "@drover/storage";
+import { runAgent, type AgentRegistry } from "@droveragent/facade";
+import type { AgentSpec, HarnessEvent, HarnessPlugin, RunResult } from "@droveragent/core";
+import type { SandboxAdapter } from "@droveragent/sandbox";
+import type { StorageAdapter } from "@droveragent/storage";
 
 import type { QueueAdapter, QueueJob } from "./queue/adapter.ts";
 

@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { defineAgent } from "@drover/core";
+import { defineAgent } from "@droveragent/core";
 import type { Scenario } from "./types.ts";
 
 // Child agent: a focused researcher that returns 3 talking points.

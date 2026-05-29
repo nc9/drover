@@ -1,4 +1,4 @@
-import type { AgentSpec, AgentInput } from "@drover/core";
+import type { AgentSpec, AgentInput } from "@droveragent/core";
 import type { TSchema } from "@sinclair/typebox";
 
 /** What every scenario file exports. */

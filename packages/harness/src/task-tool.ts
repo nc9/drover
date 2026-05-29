@@ -6,7 +6,7 @@ import {
   SubagentLimitError,
   type RunContext,
   type ToolResult,
-} from "@drover/core";
+} from "@droveragent/core";
 import { Effect } from "effect";
 
 import { runAgentEffect, type HarnessDeps } from "./run.ts";
@@ -45,7 +45,7 @@ export interface TaskToolOptions {
    * pair for the `task` invocation are enough to navigate to the child
    * run by `childRunId` in observers.
    */
-  parentEmit?: (event: import("@drover/core").HarnessEvent) => void;
+  parentEmit?: (event: import("@droveragent/core").HarnessEvent) => void;
 }
 
 /** Default subagent nesting depth — also surfaced in the `subagents` prompt fragment. */

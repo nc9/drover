@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
-import { defineAgent, defineTool, type ToolResult } from "@drover/core";
-import { circuitBreakerPlugin } from "@drover/plugins";
+import { defineAgent, defineTool, type ToolResult } from "@droveragent/core";
+import { circuitBreakerPlugin } from "@droveragent/plugins";
 import { Effect } from "effect";
 import type { Scenario } from "./types.ts";
 

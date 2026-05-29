@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
-import { defineTool, type ToolDef } from "@drover/core";
-import type { SandboxAdapter } from "@drover/sandbox";
+import { defineTool, type ToolDef } from "@droveragent/core";
+import type { SandboxAdapter } from "@droveragent/sandbox";
 import { Effect } from "effect";
 
 const InputSchema = Type.Object({
@@ -16,7 +16,7 @@ const InputSchema = Type.Object({
  * `allowedRoots` — once the shell runs, the agent can `cat /etc/passwd`,
  * `ls /`, or otherwise read/write absolute paths. Only compose `bash`
  * into agents you trust, or wire a real OS-level sandbox adapter
- * (seatbelt/docker/firejail/…). See `@drover/sandbox` README.
+ * (seatbelt/docker/firejail/…). See `@droveragent/sandbox` README.
  */
 export function bashTool(sandbox: SandboxAdapter): ToolDef<typeof InputSchema> {
   return defineTool({

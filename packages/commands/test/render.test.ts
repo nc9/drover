@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createPromptEngine } from "@drover/prompt";
+import { createPromptEngine } from "@droveragent/prompt";
 
 import { type CommandSpec, renderCommand } from "../src/index.ts";
 

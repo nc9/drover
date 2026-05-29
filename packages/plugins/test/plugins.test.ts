@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { Effect } from "effect";
 import { Type } from "@sinclair/typebox";
-import type { AnyToolDef, RunContext } from "@drover/core";
+import type { AnyToolDef, RunContext } from "@droveragent/core";
 
 import {
   bashBlocklistPlugin,

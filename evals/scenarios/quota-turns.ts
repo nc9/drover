@@ -1,5 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { defineAgent, defineTool, type ToolResult } from "@drover/core";
+import { defineAgent, defineTool, type ToolResult } from "@droveragent/core";
 import { Effect } from "effect";
 import type { Scenario } from "./types.ts";
 

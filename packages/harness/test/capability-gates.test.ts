@@ -1,9 +1,9 @@
 import { describe, test, expect } from "bun:test";
 import { Type } from "@sinclair/typebox";
-import { defineAgent } from "@drover/core";
-import { createInMemoryMemory } from "@drover/memory";
-import { createSkillRegistry } from "@drover/skills";
-import { createNoneSandbox } from "@drover/sandbox";
+import { defineAgent } from "@droveragent/core";
+import { createInMemoryMemory } from "@droveragent/memory";
+import { createSkillRegistry } from "@droveragent/skills";
+import { createNoneSandbox } from "@droveragent/sandbox";
 
 import { mcpActive, memoryActive, skillsActive, subagentsActive } from "../src/capability-gates.ts";
 import type { HarnessDeps } from "../src/deps.ts";

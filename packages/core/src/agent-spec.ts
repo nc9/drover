@@ -14,7 +14,7 @@ export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
  * `cacheRetention` stream option — `none` disables caching, `short`/`long`
  * select the breakpoint TTL. Drover cannot place a mid-prompt breakpoint
  * (pi sends the system prompt as one block), so the cache hit depends on
- * a byte-stable prefix — see `@drover/prompt`'s cache analyzer.
+ * a byte-stable prefix — see `@droveragent/prompt`'s cache analyzer.
  */
 export type CacheRetention = "none" | "short" | "long";
 
@@ -69,7 +69,7 @@ export interface InstructionFilesConfig {
 
 /**
  * Prompt-template config — opt in to assembling the system prompt from a
- * `.md.liquid` template (via `@drover/prompt`) instead of the harness's
+ * `.md.liquid` template (via `@droveragent/prompt`) instead of the harness's
  * default block join. The template renders drover builtins (`{% memory %}`,
  * `{% skills %}`, `{% instructions %}`, …) from run state. When active,
  * `spec.systemPrompt` is not used for assembly — the template owns layout.

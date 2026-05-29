@@ -6,7 +6,7 @@
 import { useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, FileText, Wrench, Sparkles, AlertCircle, Brain, Zap } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import type { HarnessEvent } from "@drover/core";
+import type { HarnessEvent } from "@droveragent/core";
 import { cn, formatUsd } from "../lib/format.ts";
 
 type ParsedRow =

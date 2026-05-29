@@ -1,5 +1,5 @@
 {
-  "name": "@drover/plugins",
+  "name": "@droveragent/plugins",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -22,7 +22,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@drover/core": "workspace:*",
+    "@droveragent/core": "workspace:*",
     "@sinclair/typebox": "^0.34.0",
     "effect": "^3.10.0"
   }

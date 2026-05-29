@@ -1,5 +1,5 @@
-import type { InstructionFile, MemoryAdapter } from "@drover/memory";
-import type { SkillRegistry } from "@drover/skills";
+import type { InstructionFile, MemoryAdapter } from "@droveragent/memory";
+import type { SkillRegistry } from "@droveragent/skills";
 
 /**
  * Cache-volatility class of a template segment.

@@ -4,7 +4,7 @@ import tailwind from "@tailwindcss/vite";
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import { Effect } from "effect";
-import { createLibsqlStorage, type StorageAdapter } from "@drover/storage";
+import { createLibsqlStorage, type StorageAdapter } from "@droveragent/storage";
 
 const EVAL_RESULTS = path.resolve(__dirname, "../../evals/eval-results");
 

@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import type { RunStatus } from "@drover/core";
+import type { RunStatus } from "@droveragent/core";
 
 import {
   type ClaimedJob,

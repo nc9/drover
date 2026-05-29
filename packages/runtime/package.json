@@ -1,5 +1,5 @@
 {
-  "name": "@drover/runtime",
+  "name": "@droveragent/runtime",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -14,11 +14,11 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@drover/core": "workspace:*",
-    "@drover/facade": "workspace:*",
-    "@drover/harness": "workspace:*",
-    "@drover/sandbox": "workspace:*",
-    "@drover/storage": "workspace:*",
+    "@droveragent/core": "workspace:*",
+    "@droveragent/facade": "workspace:*",
+    "@droveragent/harness": "workspace:*",
+    "@droveragent/sandbox": "workspace:*",
+    "@droveragent/storage": "workspace:*",
     "@libsql/client": "^0.17.3",
     "@sinclair/typebox": "^0.34.0",
     "effect": "^3.10.0"

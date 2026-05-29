@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
-import { defineAgent } from "@drover/core";
-import { bashBlocklistPlugin } from "@drover/plugins";
+import { defineAgent } from "@droveragent/core";
+import { bashBlocklistPlugin } from "@droveragent/plugins";
 import type { Scenario } from "./types.ts";
 
 const spec = defineAgent({

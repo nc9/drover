@@ -1,5 +1,5 @@
 {
-  "name": "@drover/eval",
+  "name": "@droveragent/eval",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,6 +11,6 @@
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
-    "@drover/core": "workspace:*"
+    "@droveragent/core": "workspace:*"
   }
 }

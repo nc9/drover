@@ -1,4 +1,4 @@
-import type { AgentSpec } from "@drover/core";
+import type { AgentSpec } from "@droveragent/core";
 
 import type { HarnessDeps } from "./deps.ts";
 

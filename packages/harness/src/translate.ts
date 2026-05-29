@@ -1,4 +1,4 @@
-import type { AnyToolDef, HarnessEvent, ToolResult } from "@drover/core";
+import type { AnyToolDef, HarnessEvent, ToolResult } from "@droveragent/core";
 import { Effect } from "effect";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import type { Static, TSchema } from "@sinclair/typebox";
@@ -15,7 +15,7 @@ export function toPiTool(
     cwd: string;
     env: Readonly<Record<string, string>>;
     signal: AbortSignal;
-    run: import("@drover/core").RunContext;
+    run: import("@droveragent/core").RunContext;
   },
 ): AgentTool<TSchema> {
   return {

@@ -1,5 +1,5 @@
-import type { AnyToolDef } from "@drover/core";
-import type { SandboxAdapter } from "@drover/sandbox";
+import type { AnyToolDef } from "@droveragent/core";
+import type { SandboxAdapter } from "@droveragent/sandbox";
 
 import { bashTool } from "./bash.ts";
 import { readTool } from "./read.ts";

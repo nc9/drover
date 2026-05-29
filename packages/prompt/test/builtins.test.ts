@@ -1,8 +1,8 @@
 import { describe, test, expect } from "bun:test";
-import { createInMemoryMemory } from "@drover/memory";
-import type { InstructionFile } from "@drover/memory";
-import { createSkillRegistry } from "@drover/skills";
-import type { SkillSpec } from "@drover/skills";
+import { createInMemoryMemory } from "@droveragent/memory";
+import type { InstructionFile } from "@droveragent/memory";
+import { createSkillRegistry } from "@droveragent/skills";
+import type { SkillSpec } from "@droveragent/skills";
 import { Effect } from "effect";
 
 import { createPromptEngine, DEFAULT_PROMPT_TEMPLATE, getBuiltin } from "../src/index.ts";
