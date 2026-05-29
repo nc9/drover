@@ -1,21 +1,40 @@
 {
   "name": "@droveragent/storage",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.0.1",
+  "private": false,
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./src/index.ts",
-    "./memory": "./src/memory.ts",
-    "./libsql": "./src/libsql.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./memory": {
+      "types": "./dist/memory.d.ts",
+      "import": "./dist/memory.js"
+    },
+    "./libsql": {
+      "types": "./dist/libsql.d.ts",
+      "import": "./dist/libsql.js"
+    }
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "build": "tsc -p tsconfig.build.json && bun run ../../scripts/postbuild-dts.ts",
+    "prepublishOnly": "tsc -p tsconfig.build.json && bun run ../../scripts/postbuild-dts.ts"
   },
   "dependencies": {
     "@droveragent/core": "workspace:*",
     "@libsql/client": "^0.17.3",
     "effect": "^3.10.0"
+  },
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }

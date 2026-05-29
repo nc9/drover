@@ -1,16 +1,29 @@
 {
   "name": "@droveragent/eval",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.0.1",
+  "private": false,
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
   "scripts": {
-    "typecheck": "tsgo --noEmit"
+    "typecheck": "tsgo --noEmit",
+    "build": "tsc -p tsconfig.build.json && bun run ../../scripts/postbuild-dts.ts",
+    "prepublishOnly": "tsc -p tsconfig.build.json && bun run ../../scripts/postbuild-dts.ts"
   },
   "dependencies": {
     "@droveragent/core": "workspace:*"
+  },
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }

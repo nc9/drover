@@ -1,17 +1,28 @@
 {
   "name": "@droveragent/runtime",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.0.1",
+  "private": false,
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./src/index.ts",
-    "./queue/memory": "./src/queue/memory.ts",
-    "./queue/libsql": "./src/queue/libsql.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./queue/memory": {
+      "types": "./dist/queue/memory.d.ts",
+      "import": "./dist/queue/memory.js"
+    },
+    "./queue/libsql": {
+      "types": "./dist/queue/libsql.d.ts",
+      "import": "./dist/queue/libsql.js"
+    }
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "build": "tsc -p tsconfig.build.json && bun run ../../scripts/postbuild-dts.ts",
+    "prepublishOnly": "tsc -p tsconfig.build.json && bun run ../../scripts/postbuild-dts.ts"
   },
   "dependencies": {
     "@droveragent/core": "workspace:*",
@@ -22,5 +33,13 @@
     "@libsql/client": "^0.17.3",
     "@sinclair/typebox": "^0.34.0",
     "effect": "^3.10.0"
+  },
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }

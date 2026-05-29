@@ -1,19 +1,36 @@
 {
   "name": "@droveragent/core",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.0.1",
+  "private": false,
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./src/index.ts",
-    "./events": "./src/events.ts",
-    "./errors": "./src/errors.ts",
-    "./agent-spec": "./src/agent-spec.ts",
-    "./context": "./src/context.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./events": {
+      "types": "./dist/events.d.ts",
+      "import": "./dist/events.js"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "import": "./dist/errors.js"
+    },
+    "./agent-spec": {
+      "types": "./dist/agent-spec.d.ts",
+      "import": "./dist/agent-spec.js"
+    },
+    "./context": {
+      "types": "./dist/context.d.ts",
+      "import": "./dist/context.js"
+    }
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "build": "tsc -p tsconfig.build.json && bun run ../../scripts/postbuild-dts.ts",
+    "prepublishOnly": "tsc -p tsconfig.build.json && bun run ../../scripts/postbuild-dts.ts"
   },
   "dependencies": {
     "@sinclair/typebox": "^0.34.0",
@@ -21,5 +38,13 @@
   },
   "devDependencies": {
     "@typescript/native-preview": "latest"
+  },
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }

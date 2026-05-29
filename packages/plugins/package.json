@@ -1,29 +1,72 @@
 {
   "name": "@droveragent/plugins",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.0.1",
+  "private": false,
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./src/index.ts",
-    "./loop-detect": "./src/loop-detect.ts",
-    "./step-tracer": "./src/step-tracer.ts",
-    "./bash-blocklist": "./src/bash-blocklist.ts",
-    "./circuit-breaker": "./src/circuit-breaker.ts",
-    "./write-policy": "./src/write-policy.ts",
-    "./phase-recorder": "./src/phase-recorder.ts",
-    "./confirm-gate": "./src/confirm-gate.ts",
-    "./dedup": "./src/dedup.ts",
-    "./output-validate": "./src/output-validate.ts",
-    "./truncate": "./src/truncate.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./loop-detect": {
+      "types": "./dist/loop-detect.d.ts",
+      "import": "./dist/loop-detect.js"
+    },
+    "./step-tracer": {
+      "types": "./dist/step-tracer.d.ts",
+      "import": "./dist/step-tracer.js"
+    },
+    "./bash-blocklist": {
+      "types": "./dist/bash-blocklist.d.ts",
+      "import": "./dist/bash-blocklist.js"
+    },
+    "./circuit-breaker": {
+      "types": "./dist/circuit-breaker.d.ts",
+      "import": "./dist/circuit-breaker.js"
+    },
+    "./write-policy": {
+      "types": "./dist/write-policy.d.ts",
+      "import": "./dist/write-policy.js"
+    },
+    "./phase-recorder": {
+      "types": "./dist/phase-recorder.d.ts",
+      "import": "./dist/phase-recorder.js"
+    },
+    "./confirm-gate": {
+      "types": "./dist/confirm-gate.d.ts",
+      "import": "./dist/confirm-gate.js"
+    },
+    "./dedup": {
+      "types": "./dist/dedup.d.ts",
+      "import": "./dist/dedup.js"
+    },
+    "./output-validate": {
+      "types": "./dist/output-validate.d.ts",
+      "import": "./dist/output-validate.js"
+    },
+    "./truncate": {
+      "types": "./dist/truncate.d.ts",
+      "import": "./dist/truncate.js"
+    }
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "build": "tsc -p tsconfig.build.json && bun run ../../scripts/postbuild-dts.ts",
+    "prepublishOnly": "tsc -p tsconfig.build.json && bun run ../../scripts/postbuild-dts.ts"
   },
   "dependencies": {
     "@droveragent/core": "workspace:*",
     "@sinclair/typebox": "^0.34.0",
     "effect": "^3.10.0"
+  },
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }
