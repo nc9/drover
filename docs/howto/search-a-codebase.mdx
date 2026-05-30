@@ -1,0 +1,189 @@
+---
+title: Read and Search a Codebase
+description: A read-only agent that greps and reads files in a mounted repo and reports what it found.
+---
+
+This recipe builds a code-investigation agent. Given a repo path and a
+question, it greps and reads files inside the repo, then returns a structured
+answer plus the list of files it consulted. The agent gets `read`, `grep`,
+`find`, `ls` — and nothing that writes.
+
+**Level 2 of 7.** This is your first taste of tools and sandboxes. It assumes
+[Level 1 — structured extraction](/howto/structured-extraction), where the
+agent had no tools. Here you add file tools and mount a repo **read-only**.
+
+## Scope the tools down
+
+The agent investigates; it never mutates. So you list exactly four tool ids:
+
+```ts
+tools: ["ls", "grep", "find", "read"]
+```
+
+No `write`, no `edit`, no `bash`. Two reasons:
+
+- **`bash` is unnecessary.** `grep`, `find`, `ls`, and `read` cover discovery
+  and reading. They run inside the sandbox and obey its mounts — you don't need
+  a shell to chain them.
+- **A smaller toolset is a smaller blast radius.** The model can only call what
+  you list. Omitting `write`/`edit` means a read-only task stays read-only by
+  construction, not by hoping the prompt holds.
+
+<Note>
+`bash` only composes when the sandbox advertises `capabilities.shell`. Under
+`just-bash` shell is always on — so leaving `"bash"` out of `tools` is what
+keeps the run shell-free here.
+</Note>
+
+## Define the agent
+
+```ts title="search-agent.ts"
+import { Type } from "@sinclair/typebox";
+import { defineAgent } from "@drover/core";
+
+export const codeSearch = defineAgent({
+  id: "code-search",
+  description: "Answer questions about a codebase by reading and grepping it.",
+  systemPrompt: [
+    "You investigate a code repository to answer a question.",
+    "Use grep/find/ls to locate relevant files, read to inspect them.",
+    "Cite every file you opened in files_consulted. Do not guess paths you",
+    "did not read. Return JSON matching the outputSchema, no prose.",
+  ].join(" "),
+  inputSchema: Type.Object({
+    repo_path: Type.String(),
+    question: Type.String(),
+  }),
+  outputSchema: Type.Object({
+    answer: Type.String(),
+    files_consulted: Type.Array(Type.String()),
+    snippets: Type.Optional(
+      Type.Array(
+        Type.Object({
+          file: Type.String(),
+          lines: Type.String(),
+          text: Type.String(),
+        }),
+      ),
+    ),
+  }),
+  model: "cheap",
+  tools: ["ls", "grep", "find", "read"],
+  quota: { maxTurns: 8 },
+});
+```
+
+`maxTurns: 8` gives the agent room for a few grep/read cycles before it must
+answer. Investigation is iterative — a flat-out cap of 2 would starve it.
+
+## Build the read-only sandbox
+
+By default `runAgent` mounts the run's cwd **read-write**. For investigation
+you want the opposite: mount the repo `readonly` so even a stray `write` (which
+isn't in the toolset anyway) could not reach disk.
+
+```ts title="search-agent.ts"
+import { createJustBashSandbox } from "@drover/sandbox-just-bash";
+
+function readonlyRepo(repoPath: string) {
+  return createJustBashSandbox({
+    mounts: [{ source: repoPath, target: repoPath, mode: "readonly" }],
+  });
+}
+```
+
+Mounting `source` and `target` at the same path means absolute paths the model
+emits resolve to the same place you'd see on the host. The agent **cannot
+escape the mount root** — no `..`, absolute-path, or symlink traversal reaches
+outside `repoPath`. Anything you didn't mount simply does not exist to the
+agent. Contrast the default:
+
+| Setup | Mount | What the agent can touch |
+| --- | --- | --- |
+| Default (`sandbox` omitted) | run cwd, `readwrite` | reads **and writes** under cwd |
+| This recipe | `repoPath`, `readonly` | reads under `repoPath`; writes fail |
+
+The file tools honour the mount. `read`, `grep`, `find`, `ls` all operate
+inside the sandbox namespace and gate user paths through the adapter — there is
+no path outside the mount for them to reach. See
+[Sandboxes](/guides/sandboxes) for the full boundary model.
+
+## Run it and watch the investigation
+
+Pass the sandbox and a `cwd` so relative paths the model uses resolve against
+the repo root:
+
+```ts title="search-agent.ts"
+import { runAgent } from "@drover/facade";
+
+const repoPath = process.argv[2] ?? process.cwd();
+
+const handle = runAgent(
+  codeSearch,
+  { repo_path: repoPath, question: "Where is the model alias map defined?" },
+  { sandbox: readonlyRepo(repoPath), cwd: repoPath },
+);
+
+for await (const e of handle.events) {
+  if (e.kind === "tool_call_start") console.log("→ calling", e.toolName);
+  if (e.kind === "tool_call_end") console.log("← done   ", e.toolName);
+  if (e.kind === "assistant_text") console.log("[reason]", e.text);
+}
+
+const result = await handle.result;
+console.log("status:", result.status);
+if (result.status === "success" && result.output) {
+  console.log("answer:", result.output.answer);
+  console.log("files:", result.output.files_consulted);
+}
+```
+
+The event stream is your window into the agent's reasoning loop:
+
+- **`tool_call_start`** / **`tool_call_end`** bracket each tool invocation —
+  watching them shows you the grep-then-read path the agent took.
+- **`assistant_text`** carries the model's between-call reasoning.
+
+A plausible run prints:
+
+```
+→ calling grep
+← done    grep
+[reason] Found DEFAULT_ALIASES in packages/model/src. Reading it.
+→ calling read
+← done    read
+status: success
+answer: Defined in @drover/model as DEFAULT_ALIASES (packages/model/src).
+files: [ "packages/model/src/aliases.ts" ]
+```
+
+<Warning>
+`result.output` is `undefined` unless `result.status === "success"`. The
+Promise never rejects — inspect `result.status` and `result.error` instead of
+wrapping the run in `try/catch`. If the agent hits the 8-turn cap mid-search,
+status is `quota`, not `error`.
+</Warning>
+
+## What you assembled
+
+- **Built-in tools** `ls`, `grep`, `find`, `read` from
+  [`@drover/tools`](/reference/tools) — discovery + reading, no mutation.
+- **`createJustBashSandbox`** with a single `readonly` mount — a real
+  filesystem boundary; the agent can't escape `repoPath`.
+- **`cwd`** in `RunOptions` so relative paths resolve against the repo root.
+- **`quota: { maxTurns: 8 }`** to bound the investigation loop.
+- An **event loop** filtering [`tool_call_start` / `tool_call_end` /
+  `assistant_text`](/concepts/events-and-streams) to trace each step.
+
+## Level up
+
+<CardGroup cols={2}>
+  <Card title="A coding agent that edits and tests" href="/howto/coding-agent" icon="pen-to-square">
+    Flip the mount to `readwrite`, add `write`/`edit`/`bash`, and let the agent
+    change code and run its tests.
+  </Card>
+  <Card title="Sandboxes in depth" href="/guides/sandboxes" icon="box">
+    Mounts, capabilities, and why `just-bash` is a boundary while `none` is
+    not.
+  </Card>
+</CardGroup>

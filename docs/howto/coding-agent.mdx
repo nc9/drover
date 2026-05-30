@@ -1,0 +1,252 @@
+---
+title: A Coding Agent That Edits and Tests
+description: Assemble a sandboxed agent that edits a repo, runs its test suite, and reports whether tests pass.
+---
+
+This recipe builds the canonical coding task: an agent that reads a repo, makes a
+small change, runs the test suite, and reports whether it passed. You mount the
+repo read-write under [`just-bash`](/guides/sandboxes), give the agent the full
+file + shell toolset, fence it with safety plugins, and bolt a
+[`postSuccess`](/guides/lifecycle) step that runs the tests after the agent
+finishes.
+
+**Level 3 of 7.** It assumes [Level 2 — Search a codebase](/howto/search-a-codebase),
+where the agent had read-only tools. Here you add write + shell, a real sandbox
+mount, run-level stateful plugins, and a closing test step.
+
+## The shape
+
+| Element | Choice |
+| --- | --- |
+| Sandbox | `just-bash`, repo mounted `readwrite` |
+| Tools | `ls`, `grep`, `read`, `edit`, `write`, `bash` |
+| Safety (stateless) | `bashBlocklistPlugin()` on `spec.plugins` |
+| Safety (stateful) | `loopDetectPlugin({ window: 3 })` per run via `options.plugins` |
+| Optional fence | `writePolicyPlugin({ scopedWritePaths })` |
+| Closing step | `lifecycle.postSuccess` → run the test suite |
+| Budget | `quota` — turns, cost, wall-clock |
+
+<Steps>
+
+<Step title="Define the spec">
+
+The output is the contract: which files changed, a summary, and the test result.
+The `postSuccess` step is a literal `prompt` block telling the agent to run the
+suite once it believes it is done.
+
+```ts title="coding-agent.ts"
+import { defineAgent } from "@drover/core";
+import { bashBlocklistPlugin } from "@drover/plugins";
+import { Type } from "@sinclair/typebox";
+
+export const codingAgent = defineAgent({
+  id: "coding-agent",
+  description: "Implements a small repo change and makes tests pass.",
+  systemPrompt: [
+    "You edit a code repository to satisfy a task.",
+    "Read before you write. Make the smallest change that works.",
+    "Use `bash` to run the project's tooling. Do not invent commands —",
+    "inspect package.json / Makefile / pyproject first.",
+  ].join("\n"),
+  inputSchema: Type.Object({
+    task: Type.String(),
+  }),
+  outputSchema: Type.Object({
+    changed_files: Type.Array(Type.String()),
+    summary: Type.String(),
+    tests_pass: Type.Boolean(),
+  }),
+  // Coding wants a stronger model than the rest of this ladder.
+  // `mini` works for trivial edits; reach for `sonnet` for real diffs.
+  model: "sonnet",
+  tools: ["ls", "grep", "read", "edit", "write", "bash"],
+  // Stateless → safe on the spec. Reused by reference across runs is fine.
+  plugins: [bashBlocklistPlugin()],
+  lifecycle: {
+    postSuccess: [
+      {
+        kind: "prompt",
+        text: [
+          "Run the project's test suite now.",
+          "Report the exact command you ran and whether it passed.",
+        ].join(" "),
+      },
+    ],
+  },
+  quota: { maxTurns: 25, maxCostUsd: 1, maxDurationMs: 300_000 },
+});
+```
+
+<Note>
+`bash` only composes when the sandbox advertises `capabilities.shell: true`.
+Under `just-bash` that is **always on**, so listing `"bash"` is enough. Under
+`none` you would need `createNoneSandbox({ allowShell: true })` or `bash` is
+silently dropped. See [Sandboxes](/guides/sandboxes).
+</Note>
+
+</Step>
+
+<Step title="Mount the repo read-write">
+
+The default sandbox already mounts the run's `cwd` read-write. Construct it
+explicitly when you want to mount a path other than `cwd`, fence the toolchain,
+or set a per-call timeout.
+
+```ts title="coding-agent.ts"
+import { createJustBashSandbox } from "@drover/sandbox-just-bash";
+
+const repo = "/work/my-project";
+
+const sandbox = createJustBashSandbox({
+  mounts: [{ source: repo, target: repo, mode: "readwrite" }],
+  timeoutMs: 120_000, // test runs can be slow
+});
+```
+
+Writes inside the mount hit disk. The agent cannot escape the mount root — no
+`..`, absolute, or symlink traversal reaches outside `source`. An unmounted path
+does not exist.
+
+</Step>
+
+<Step title="Construct stateful plugins per run">
+
+`loopDetectPlugin` keeps a per-run counter of consecutive identical tool calls.
+`stepTracerPlugin` accumulates a `steps` array. Both are **stateful**.
+
+<Warning>
+drover does NOT reconstruct plugins per run. A stateful plugin placed on
+`spec.plugins` keeps its closure state and **leaks it across runs** — a stale
+loop counter or a tracer holding a previous run's steps. Construct stateful
+plugins fresh per run and pass them through `options.plugins`.
+</Warning>
+
+`bashBlocklistPlugin` is config-only (no per-run accumulator), so it stays on
+`spec.plugins`. The loop detector and tracer are built inside the run function:
+
+```ts title="coding-agent.ts"
+import { runAgent } from "@drover/facade";
+import { loopDetectPlugin, stepTracerPlugin } from "@drover/plugins";
+
+export async function runCodingTask(task: string) {
+  // fresh state each call
+  const tracer = stepTracerPlugin();
+
+  const handle = runAgent(codingAgent, { task }, {
+    cwd: repo,
+    sandbox,
+    plugins: [
+      loopDetectPlugin({ window: 3 }), // deny after 3 identical calls
+      tracer.plugin,                   // observe every step
+    ],
+  });
+
+  const result = await handle.result;
+  return { result, steps: tracer.steps };
+}
+```
+
+Optionally fence writes tighter than the mount — useful when the mount is broad
+but the agent should only touch one subtree:
+
+```ts
+import { writePolicyPlugin } from "@drover/plugins";
+
+// write-policy is stateless → could live on spec.plugins,
+// or pass per run alongside the others:
+writePolicyPlugin({ scopedWritePaths: [`${repo}/src`, `${repo}/test`] });
+```
+
+</Step>
+
+<Step title="Run and read the result">
+
+The promise never rejects — inspect `result.status`. `output` is defined only on
+`success`. On `quota` the agent ran out of turns, cost, or wall-clock; on
+`error` a tool or lifecycle step failed.
+
+```ts title="coding-agent.ts"
+const { result, steps } = await runCodingTask(
+  "Add a `slugify` helper to src/strings.ts and a test for it.",
+);
+
+console.log(`status: ${result.status}`);
+console.log(`steps observed: ${steps.length}`);
+console.log(`turns: ${result.turns}  cost: $${result.usage.costUsd}`);
+
+if (result.status === "success" && result.output) {
+  const { changed_files, summary, tests_pass } = result.output;
+  console.log(`tests_pass: ${tests_pass}`);
+  console.log(`changed: ${changed_files.join(", ")}`);
+  console.log(summary);
+}
+```
+
+</Step>
+
+</Steps>
+
+## How postSuccess fits
+
+`postSuccess` runs **only when the terminal status is `success`** — skipped on
+`quota`, `cancelled`, `error`, `paused`. It is not an unconditional `finally`.
+
+Two consequences matter here:
+
+- **Output is captured before `postSuccess` runs.** The closing test turn cannot
+  rewrite `changed_files` / `summary` / `tests_pass` after the fact. For the
+  result to reflect the suite, the agent must run tests *during* the main loop
+  and set `tests_pass` from what it saw. Treat the `postSuccess` step as a
+  belt-and-braces re-run + report, not the source of truth.
+- **It shares `quota.maxDurationMs`.** The wall-clock timer stays armed across
+  `init`, the loop, and `postSuccess` — a slow suite can trip the budget.
+
+If you want the host to drive the exact test command (not trust the model to
+pick it), swap the `prompt` step for a `command` step and add the command id to
+`spec.commands`. See [Lifecycle](/guides/lifecycle) and [Commands](/guides/commands).
+
+## Observing the run
+
+`tracer.steps` gives a flat after-the-fact trace. For live progress, iterate
+`handle.events` — a discriminated union on `.kind`:
+
+```ts
+const handle = runAgent(codingAgent, { task }, { cwd: repo, sandbox, plugins });
+
+for await (const e of handle.events) {
+  if (e.kind === "tool_call_start") console.log(`→ ${e.toolName}`);
+  if (e.kind === "assistant_text") console.log(e.text);
+  if (e.kind === "error") console.error(e.message);
+}
+```
+
+See [Events and streams](/concepts/events-and-streams) for the full kind list.
+
+## What you assembled
+
+- **`just-bash` sandbox, `readwrite` mount** — a real boundary; the agent reaches
+  only the mounted repo. `capabilities.shell: true` means `bash` composes with no
+  opt-in.
+- **`ls` / `grep` / `read` / `edit` / `write` / `bash`** — the full read + write +
+  shell toolset a coding task needs.
+- **`bashBlocklistPlugin()` on `spec.plugins`** — stateless, denies `rm -rf /`,
+  `sudo`, `curl|sh`, fork bombs.
+- **`loopDetectPlugin({ window: 3 })` per run** — stateful; built fresh in
+  `options.plugins` so its counter never leaks between runs.
+- **`stepTracerPlugin()` per run** — stateful; collects `steps` for observability.
+- **`writePolicyPlugin` (optional)** — fences writes tighter than the mount.
+- **`lifecycle.postSuccess` prompt step** — re-runs the suite and reports, only on
+  success, before output is locked, inside the duration budget.
+- **`quota`** — `maxTurns: 25`, `maxCostUsd: 1`, `maxDurationMs`. A coding loop is
+  the most expensive recipe on this ladder; cap it.
+
+## Level up
+
+<CardGroup cols={2}>
+  <Card title="Enrich a single lead" href="/howto/lead-enrichment" icon="user-plus">
+    Level 4 — wire an MCP server and a custom tool to fetch and enrich one record.
+  </Card>
+  <Card title="Plugins deep dive" href="/guides/plugins" icon="plug">
+    The decision contract, ordering, and the per-run state pattern in full.
+  </Card>
+</CardGroup>

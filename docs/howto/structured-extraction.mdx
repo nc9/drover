@@ -1,0 +1,227 @@
+---
+title: Classify and Extract Structured Data
+description: Turn free text into a typed, validated record with a schema, a cheap model, and a turn quota.
+---
+
+The simplest real task: feed a free-text support ticket in, get a typed triage
+record out. No tools, no files, no subagents — a typed input/output schema, a
+cheap model, and a turn quota. The schema is the contract: drover validates the
+input before the model runs and decodes the output after, self-correcting on
+mismatch.
+
+**Level 1 of 7.** This is the foundation every later recipe builds on. It
+assumes only [the quickstart](/guides/quickstart): a Bun runtime and
+`OPENROUTER_API_KEY` set. No prior recipe needed.
+
+## The build
+
+<Steps>
+  <Step title="Model the contract with TypeBox">
+    `inputSchema` and `outputSchema` are required `TSchema`s. Enums are a
+    `Type.Union` of `Type.Literal`s — the model must return one of the listed
+    values or the decode fails. Bound free-text with `maxLength` so `summary`
+    can't run away.
+
+    ```ts title="triage.ts"
+    import { Type } from "@sinclair/typebox";
+
+    const TicketIn = Type.Object({
+      ticket: Type.String(),
+    });
+
+    const Triage = Type.Object({
+      category: Type.Union([
+        Type.Literal("billing"),
+        Type.Literal("bug"),
+        Type.Literal("feature-request"),
+        Type.Literal("other"),
+      ]),
+      priority: Type.Union([
+        Type.Literal("P0"),
+        Type.Literal("P1"),
+        Type.Literal("P2"),
+        Type.Literal("P3"),
+      ]),
+      sentiment: Type.Union([
+        Type.Literal("angry"),
+        Type.Literal("neutral"),
+        Type.Literal("happy"),
+      ]),
+      summary: Type.String({ maxLength: 200 }),
+    });
+    ```
+  </Step>
+
+  <Step title="Define the agent">
+    `defineAgent` is an identity builder — no runtime work, just TS inference.
+    `model: "cheap"` resolves through the default alias map to
+    `google/gemini-3.1-flash-lite-preview`. `tools: []` means a pure
+    text-to-JSON turn. `quota.maxTurns: 2` caps the loop — one turn to answer,
+    one spare for an output-retry.
+
+    ```ts title="triage.ts"
+    import { defineAgent } from "@drover/core";
+
+    const triageAgent = defineAgent({
+      id: "ticket-triage",
+      description: "Classify a support ticket into a triage record.",
+      systemPrompt:
+        "You triage support tickets. Read the ticket and return a JSON " +
+        "object matching the output schema. Pick the closest category, " +
+        "priority, and sentiment. Keep summary under 200 characters. No prose.",
+      inputSchema: TicketIn,
+      outputSchema: Triage,
+      model: "cheap",
+      tools: [],
+      quota: { maxTurns: 2 },
+    });
+    ```
+  </Step>
+
+  <Step title="Run it and stream events">
+    `runAgent` returns a `RunHandle`: an `events` async-iterable, a `result`
+    promise, and `abort()`. Drain `events` for live progress, then `await`
+    the terminal `result`.
+
+    ```ts title="triage.ts"
+    import { runAgent } from "@drover/facade";
+
+    const handle = runAgent(triageAgent, {
+      ticket:
+        "I was charged twice this month and your billing page 500s. " +
+        "Third time this year. Fix it now.",
+    });
+
+    for await (const e of handle.events) {
+      if (e.kind === "assistant_text") console.log("[text]", e.text);
+      if (e.kind === "usage")
+        console.log(
+          "[usage]",
+          e.usage.inputTokens + "/" + e.usage.outputTokens,
+        );
+    }
+
+    const result = await handle.result;
+    ```
+  </Step>
+
+  <Step title="Read the result">
+    `result.output` is populated **only** when `result.status === "success"`.
+    The promise never rejects — inspect `result.status` and `result.error`
+    instead of wrapping the run in `try/catch`.
+
+    ```ts title="triage.ts"
+    if (result.status === "success") {
+      console.log("category:", result.output.category);
+      console.log("priority:", result.output.priority);
+      console.log("summary:", result.output.summary);
+    } else {
+      console.error("run did not succeed:", result.status, result.error);
+    }
+
+    console.log(
+      "tokens:",
+      result.usage.inputTokens + "/" + result.usage.outputTokens,
+    );
+    ```
+
+    Plausible output:
+
+    ```
+    [text] {"category":"billing","priority":"P1","sentiment":"angry","summary":"Double-charged this month; billing page returns 500. Recurring issue."}
+    [usage] 214/41
+    category: billing
+    priority: P1
+    summary: Double-charged this month; billing page returns 500. Recurring issue.
+    tokens: 214/41
+    ```
+  </Step>
+</Steps>
+
+## Why the schema is the contract
+
+drover validates on both edges of the loop:
+
+| Edge | When | On failure |
+| --- | --- | --- |
+| `inputSchema` | Before the model sees the input | Short-circuits with `InputValidationError` — `result.status` is `error`, the model never runs |
+| `outputSchema` | After the model's final text | Feeds a corrective message back and retries, up to `outputRetries` (default `2`) |
+
+You can watch both in the event stream: `input_validated` fires once at the
+start; `output_retry` fires per correction attempt; `output_validated` fires
+when the decode finally passes. With `maxTurns: 2` you allow exactly one
+output-retry before the quota stops the loop. See
+[Events & streams](/concepts/events-and-streams) for the full event union.
+
+## Reading status, usage, and cost
+
+`result.status` is one of `success`, `quota`, `cancelled`, `error`, or
+`paused`. Branch on it — `output` is `undefined` for every status except
+`success`, and `error` carries `{ tag, message }`.
+
+```ts
+switch (result.status) {
+  case "success":
+    return result.output;            // typed as the Triage record
+  case "quota":
+    throw new Error("ran out of turns before a valid record");
+  case "error":
+    throw new Error(result.error?.message ?? "unknown");
+  default:
+    return null;                     // cancelled | paused
+}
+```
+
+`result.usage` carries at least `{ inputTokens, outputTokens }` plus cost
+fields, and the same numbers arrive live on each `usage` event. Sum across runs
+for a billing total.
+
+## Swapping the model for quality
+
+The `model` field takes a single alias string. Bump it when the cheap model
+mislabels:
+
+| Alias | Routes to | Use when |
+| --- | --- | --- |
+| `cheap` | `gemini-3.1-flash-lite-preview` | High volume, simple labels |
+| `mini` | `openai/gpt-5-mini` | Trickier categories, more nuance |
+| `haiku` | `anthropic/claude-haiku-4.5` | Sentiment subtleties matter |
+
+Append a `:reasoning` suffix for a thinking budget — `"mini:high"` — or use the
+object form for full control:
+
+```ts
+model: { name: "openai/gpt-5-mini", reasoning: "medium", temperature: 0 },
+```
+
+<Note>
+  Lower `temperature` makes classification more deterministic — useful when you
+  want the same ticket to land the same label run-to-run.
+</Note>
+
+See [`@drover/model`](/reference/model) for the alias map and `withAliases`.
+
+## What you assembled
+
+- **`inputSchema` / `outputSchema`** (TypeBox) — the contract drover validates
+  on both edges; `Type.Union` of `Type.Literal` gives you closed enums.
+- **`defineAgent`** — JSON-serialisable [AgentSpec](/concepts/agent-spec) with
+  full TS inference for `result.output`.
+- **`model: "cheap"`** — a default alias, swappable for quality without
+  touching the rest of the spec.
+- **`tools: []`** — a pure extraction turn; no sandbox capability needed.
+- **`quota.maxTurns: 2`** — caps the loop, leaving room for one output-retry.
+- **`runAgent`** — the [facade](/reference/facade) handle: `events` to stream,
+  `result` to read; the promise never rejects.
+
+## Level up
+
+<CardGroup cols={2}>
+  <Card title="Read & search a codebase" href="/howto/search-a-codebase" icon="magnifying-glass">
+    Level 2 — add read-only tools (`read`, `grep`, `find`, `ls`) and a sandbox
+    so the agent can ground its answer in real files.
+  </Card>
+  <Card title="Writing an agent" href="/guides/writing-an-agent" icon="pen">
+    Deeper on schemas, output retries, and system prompts.
+  </Card>
+</CardGroup>

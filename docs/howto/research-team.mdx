@@ -1,0 +1,246 @@
+---
+title: A Multi-Agent Research Team
+description: Assemble a planner that spawns researcher and writer subagents into one synthesised report.
+---
+
+This recipe builds a research team: one question goes in, a synthesised
+report comes out. A `planner` decomposes the question, spawns
+`researcher` and `writer` children through the auto-injected `task`
+tool, and composes their validated outputs.
+
+**Level 6 of 7.** Many agents, one run. It assumes you have read
+[Level 5](/howto/learning-assistant) (memory) — this page layers
+subagents, a static registry, fan-out caps, shared global memory, a
+per-run tracer, and storage for child lineage on top of what you already
+know.
+
+## Three specs
+
+The planner holds no tools of its own — its only lever is `task`. The
+two children own narrow schemas. Write a one-line `description` on each
+child: the harness surfaces it to the planner's subagent picker, so a
+good hint is the difference between the model choosing the right child
+or guessing.
+
+```ts title="team.ts"
+import { Type } from "@sinclair/typebox";
+import { defineAgent } from "@drover/core";
+
+const researcher = defineAgent({
+  id: "researcher",
+  description: "Gathers concise factual points on one narrow sub-topic.",
+  systemPrompt:
+    "Given a narrow sub-topic, return 3-5 concise factual points " +
+    "(one sentence each). No preamble, no synthesis.",
+  inputSchema: Type.Object({ prompt: Type.String() }),
+  outputSchema: Type.Object({
+    points: Type.Array(Type.String(), { minItems: 3, maxItems: 5 }),
+  }),
+  model: "mini",
+  tools: [],
+  quota: { maxTurns: 2 },
+});
+
+const writer = defineAgent({
+  id: "writer",
+  description: "Turns research notes into one polished prose section.",
+  systemPrompt:
+    "Given a heading prompt and research notes, write one tight prose " +
+    "section (120-250 words). No headings, no bullet lists.",
+  inputSchema: Type.Object({
+    prompt: Type.String(),
+    notes: Type.Array(Type.String()),
+  }),
+  outputSchema: Type.Object({ section: Type.String() }),
+  model: "mini",
+  tools: [],
+  quota: { maxTurns: 2 },
+});
+
+const planner = defineAgent({
+  id: "planner",
+  description: "Decomposes a question, dispatches subagents, synthesises a report.",
+  systemPrompt: [
+    "You answer a question by orchestrating a team.",
+    "1. Split the question into 2-3 focused sub-topics.",
+    "2. For each, call `task` with agent_type 'researcher' (pass the",
+    "   sub-topic as prompt) to collect points.",
+    "3. For each sub-topic, call `task` with agent_type 'writer', passing",
+    "   input { prompt, notes } where notes are the researcher's points.",
+    "4. Concatenate the sections into the final report.",
+  ].join(" "),
+  inputSchema: Type.Object({ question: Type.String() }),
+  outputSchema: Type.Object({
+    report: Type.String({ minLength: 100 }),
+    sources_used: Type.Integer({ minimum: 0 }),
+    subtopics: Type.Array(Type.String(), { minItems: 2, maxItems: 3 }),
+  }),
+  model: "sonnet",
+  tools: [],
+  subagents: { allowed: ["researcher", "writer"], depth: 2, fanOut: 3 },
+  quota: { maxTurns: 10 },
+});
+```
+
+The planner runs on `sonnet` because orchestration and synthesis are the
+quality-sensitive step; the children run on `mini`. The `task` call can
+also override per-spawn — `task({ agent_type, prompt, model: "haiku" })`.
+
+## The `task` tool shape
+
+`spec.subagents` auto-injects `task` into the planner. Its call shape:
+
+```ts
+task({
+  agent_type: "researcher",   // must be in subagents.allowed
+  prompt: "How are agent harnesses converging in 2026?",
+  input?: { prompt, notes },  // full inputSchema match (writer needs this)
+  model?: "haiku",            // per-spawn override
+  max_turns?: 3,             // per-spawn quota
+})
+```
+
+If `input` is omitted, the child receives `{ prompt }`. That matches
+`researcher` (its `inputSchema` is just `{ prompt }`), so the planner can
+spawn researchers with `prompt` alone. `writer` needs `notes` too, so the
+planner must pass `input` explicitly there.
+
+## Wire the registry, memory, tracer, and storage
+
+A spec that declares `subagents` is inert without a registry — the
+harness resolves `agent_type` strings through it. `staticRegistry` is
+**required** here.
+
+```ts title="run.ts"
+import { runAgent, staticRegistry } from "@drover/facade";
+import { createMarkdownMemory } from "@drover/memory";
+import { createLibsqlStorage } from "@drover/storage";
+import { stepTracerPlugin } from "@drover/plugins";
+import { researcher, writer, planner } from "./team";
+
+const registry = staticRegistry({ researcher, writer });
+
+// Shared store: global entries reach the whole tree.
+const memory = await createMarkdownMemory({ root: "./.memory" });
+
+// Persists every run + its children with parent_run_id lineage.
+const storage = await createLibsqlStorage({ url: "file:./var/runs.db" });
+
+// Fresh tracer PER RUN — stateful, never share across runs.
+const tracer = stepTracerPlugin();
+
+const handle = runAgent(
+  planner,
+  { question: "How are agent harnesses evolving in 2026?" },
+  {
+    agentRegistry: registry,
+    memory,
+    storage,
+    plugins: [tracer.plugin],
+  },
+);
+```
+
+<Warning>
+`stepTracerPlugin()` is stateful. drover does not reconstruct plugins per
+run, so construct the tracer inside the call site and pass `tracer.plugin`
+via `options.plugins`. Putting it on `spec.plugins` would share one
+`steps` array across every run.
+</Warning>
+
+## Read the parent stream, then the result
+
+`subagent_start` and `subagent_end` fire on the **parent** stream. The
+children's internal events (their `turn_start`, `llm_call`, etc.) are not
+mirrored up — too noisy. The parent stream is your team's-eye view.
+
+```ts
+for await (const e of handle.events) {
+  if (e.kind === "subagent_start") {
+    console.log("spawn", e.childRunId, "as", e.agentId);
+  } else if (e.kind === "subagent_end") {
+    console.log("done ", e.childRunId, "status:", e.status);
+  }
+}
+
+const r = await handle.result;
+if (r.status === "success") {
+  console.log(r.output.subtopics);     // ["...", "..."]
+  console.log(r.output.sources_used);  // count the planner reports
+  console.log(r.output.report);        // synthesised prose
+}
+
+// The tracer captured the full timeline of this run.
+console.log(tracer.steps.filter((s) => s.kind === "subagent"));
+```
+
+Child run ids are derived from the parent: the first spawn is
+`parent:1`, the second `parent:2`. A grandchild (allowed because
+`depth: 2`) would be `parent:2:1`. The tracer records each
+`subagent_start`/`subagent_end` as a `subagent` step carrying the
+`childRunId` in its `meta`.
+
+`r.output` is `undefined` unless `r.status === "success"` — the promise
+never rejects. Branch on status.
+
+## Enforcement is a tool error, not a crash
+
+The three `subagents` limits surface as `task` **tool errors** the
+planner's model can read and adapt to — never run crashes:
+
+| Limit | Trigger | `SubagentLimitError` reason |
+| --- | --- | --- |
+| `allowed` | `agent_type` not in the allowlist | `"not_allowed"` |
+| `depth` | child would exceed `depth` (default 2) | `"depth"` |
+| `fanOut` | more than `fanOut` children in flight (default 3) | `"fan_out"` |
+
+If the planner asks for a `summariser` you never registered, it gets a
+`not_allowed` tool result and can re-plan — the run keeps going.
+
+## What the children see
+
+The shared adapter reaches the whole tree, but scope isolation is
+automatic:
+
+- A child reads `global` memory **plus its own** `agent`-scoped entries
+  (keyed by the child's `spec.id`). It never sees the planner's
+  `agent`-scoped memory.
+- Put cross-cutting facts ("the operator wants metric units") at
+  `global` scope to reach planner, researcher, and writer alike.
+
+Children inherit the parent's `cwd`, `env`, `signal` (abort cascades
+down), `meta`, and sandbox; they get a fresh suffixed `runId`, their own
+`depth`, and a `parentRunId`. With `storage` wired, each child lands in
+its own `runs` row with `parent_run_id` set — the eval viewer renders the
+lineage tree.
+
+## What you assembled
+
+- **`defineAgent` ×3** — one planner, two leaf children with narrow
+  schemas and `description` hints for the picker.
+- **`subagents: { allowed, depth, fanOut }`** — the planner's only lever;
+  auto-injects `task`.
+- **`staticRegistry({ researcher, writer })`** — resolves `agent_type`
+  strings; required whenever a spec uses subagents.
+- **`createMarkdownMemory`** — one shared store; `global` reaches the
+  tree, `agent` scope stays private per child.
+- **`stepTracerPlugin()`** — per-run observer projecting the parent
+  stream (including `subagent` steps) into a flat timeline.
+- **`createLibsqlStorage`** — one row per run, children linked by
+  `parent_run_id`.
+
+## Level up
+
+<CardGroup cols={2}>
+  <Card title="A durable batch enrichment service" href="/howto/batch-enrichment-service" icon="layer-group">
+    Move from one run to a persistent queue + worker pool that drains
+    many jobs durably.
+  </Card>
+  <Card title="Subagents guide" href="/guides/subagents" icon="sitemap">
+    The full subagent-as-tool model: child lifecycle, run-id chains, and
+    context inheritance.
+  </Card>
+</CardGroup>
+
+See also the [multi-agent research example](/examples/multi-agent-research)
+and the [plugins guide](/guides/plugins) for tracer and observer patterns.

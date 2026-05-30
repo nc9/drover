@@ -18,6 +18,19 @@
         ]
       },
       {
+        "group": "How-to",
+        "pages": [
+          "howto/overview",
+          "howto/structured-extraction",
+          "howto/search-a-codebase",
+          "howto/coding-agent",
+          "howto/lead-enrichment",
+          "howto/learning-assistant",
+          "howto/research-team",
+          "howto/batch-enrichment-service"
+        ]
+      },
+      {
         "group": "Guides",
         "pages": [
           "guides/writing-an-agent",

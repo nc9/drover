@@ -1,0 +1,245 @@
+---
+title: A Durable Batch Enrichment Service
+description: Turn the lead-enrichment agent into durable queued jobs with a worker pool, crash recovery, and horizontal scale.
+---
+
+You have a CSV of leads, not one lead. Running them inline blocks your process, loses work on a crash, and pins you to one machine. This recipe wraps the [Level-4 enrichment agent](/howto/lead-enrichment) in `@drover/runtime`: a durable libsql queue, a worker pool with leases and crash recovery, and a `RunApi` for enqueue / wait / cancel. The producer that enqueues is fully decoupled from the workers that run — they can live on different machines pointed at the same database.
+
+**Level 7 of 7 — the top of the ladder.** This recipe assumes the lead-enrichment agent from Level 4 (grounded output over a network allowlist) and the storage + pause/resume you wired in Level 5. Here you stop calling `runAgent` yourself and let a pool do it.
+
+## The shift: inline run to durable job
+
+In every prior recipe you called `runAgent(spec, input, options)` and awaited the result in the same process. That is fine for one item. For a stream of leads you want:
+
+- **Producer/consumer split** — enqueuing a job is a fast DB write; execution happens elsewhere, later, on a worker.
+- **Durability** — jobs and runs live in libsql, so a crash mid-enrichment is recoverable.
+- **Horizontal scale** — N pools on N machines drain the same queue with no app-side coordination.
+
+`@drover/runtime` adds three pieces over the library: a `QueueAdapter`, a `WorkerPool`, and a `RunApi`. See [Runtime](/guides/runtime) for the full surface.
+
+## Boot the service
+
+The enrichment agent is the job payload. Each job runs in its own sandbox via the `sandboxFor` factory — a fresh just-bash sandbox with a network allowlist for the lookup tools, so one job cannot reach hosts another job's prompt named.
+
+```ts title="server.ts"
+import { Type } from "@sinclair/typebox";
+import { defineAgent } from "@drover/core";
+import { staticRegistry } from "@drover/facade";
+import {
+  createLibsqlQueue,
+  createRunApi,
+  createWorkerPool,
+} from "@drover/runtime";
+import { createLibsqlStorage } from "@drover/storage";
+import { createJustBashSandbox } from "@drover/sandbox-just-bash";
+
+// 1. The Level-4 agent, unchanged — it is just a JSON-serialisable spec.
+const enrich = defineAgent({
+  id: "enrich",
+  systemPrompt:
+    "Enrich the lead. Use the network tools to confirm the company and " +
+    "role. Only fill a field you can ground in a fetched source; otherwise " +
+    "leave it null. Return JSON matching the output schema.",
+  inputSchema: Type.Object({
+    name: Type.String(),
+    email: Type.String(),
+    company: Type.String(),
+  }),
+  outputSchema: Type.Object({
+    company: Type.String(),
+    industry: Type.Union([Type.String(), Type.Null()]),
+    employeeBand: Type.Union([Type.String(), Type.Null()]),
+    confidence: Type.Number(),
+  }),
+  model: "cheap",
+  tools: ["bash"],
+  quota: { maxTurns: 8, maxCostUsd: 0.05 },
+});
+
+// 2. Shared, durable infra. URLs come from env so workers and producer agree.
+const queue = await createLibsqlQueue({
+  url: process.env.DROVER_QUEUE_URL ?? "file:./var/queue.db",
+});
+const storage = await createLibsqlStorage({
+  url: process.env.DROVER_STORAGE_URL ?? "file:./var/runs.db",
+});
+const registry = staticRegistry({ enrich });
+
+// 3. A per-job sandbox. The allowlist scopes what enrichment can reach.
+const sandboxFor = () =>
+  createJustBashSandbox({
+    network: ["https://api.clearbit.com", "https://www.crunchbase.com"],
+    timeoutMs: 20_000,
+  });
+
+// 4. Workers: claim jobs, run them, heartbeat, recover crashes.
+const pool = createWorkerPool(
+  { queue, storage, registry, sandboxFor },
+  { concurrency: 4, leaseDurationMs: 30_000 },
+);
+pool.start();
+
+// 5. Producer API: enqueue / waitFor / cancel.
+const api = createRunApi({ queue, storage, registry, sandboxFor });
+
+export { api, pool };
+```
+
+<Note>
+For a trusted runtime where the agent uses no shell or network, swap
+`sandboxFor` for `() => createNoneSandbox()`. The none sandbox is in-process,
+not a boundary — see [Sandboxes](/guides/sandboxes).
+</Note>
+
+## Enqueue a CSV of leads
+
+`enqueue` writes a queue row and returns it; it does not run the agent. Give each job a stable `id` (your own key or a UUID) so a retry of the producer enqueues once, not twice. `await` the write before relying on it — the call returns a `Promise<QueueJob>`, and `waitFor` polls storage, so an un-awaited enqueue can race the insert. `waitFor` then blocks until the worker reaches a terminal state for that job.
+
+```ts title="ingest.ts"
+import { api } from "./server.ts";
+
+type Lead = { name: string; email: string; company: string };
+
+async function processLeads(leads: Lead[]) {
+  // Fan out: enqueue everything first (fast), then collect.
+  const ids: string[] = [];
+  for (const lead of leads) {
+    const id = crypto.randomUUID();
+    await api.enqueue({
+      id,
+      agentId: "enrich",
+      input: lead,
+      priority: 10, // higher drains first
+      maxAttempts: 3, // crash-recovery cap, per job
+    });
+    ids.push(id);
+  }
+
+  for (const id of ids) {
+    const { job, run } = await api.waitFor(id, { timeoutMs: 120_000 });
+    if (job.status === "done") {
+      console.log("enriched:", run?.output); // output present only on success
+    } else {
+      console.log("skipped:", id, job.status); // "failed" | "cancelled"
+    }
+  }
+}
+```
+
+`waitFor` returns `{ job, run }` once the job is terminal. The `job.status` is `"done"`, `"failed"`, or `"cancelled"`; `run.output` carries the agent's validated output (your `outputSchema`) and is present only on a successful run, matching `RunResult` semantics — see [Events & streams](/concepts/events-and-streams).
+
+## Cancel a job
+
+Cancellation does **not** retry, even with `maxAttempts > 1`. A still-queued job is marked `cancelled` at once; a running one aborts on the worker's next cancel-poll tick and lands in `failed`.
+
+```ts title="cancel.ts"
+import { api } from "./server.ts";
+
+await api.cancel(jobId); // flags cancel; a running worker aborts the inner run
+
+const { job } = await api.waitFor(jobId);
+console.log(job.status); // "cancelled" if it was queued, "failed" if it was running — no auto-retry either way
+```
+
+## What a worker does per job
+
+Each worker in the pool runs the same loop. You do not write this — the pool does — but knowing it explains the durability guarantees:
+
+<Steps>
+  <Step title="Claim">
+    `queue.claim` runs one atomic `UPDATE ... RETURNING`, so at most one
+    worker leases a given job across all pools.
+  </Step>
+  <Step title="Look up">
+    Resolve `job.agentId` in the registry to the `AgentSpec`.
+  </Step>
+  <Step title="Run">
+    `runAgent(spec, job.input, { storage, sandbox, agentRegistry })` with a
+    per-job `AbortController` wired to the queue's cancel signal, and a
+    per-job sandbox from `sandboxFor()`.
+  </Step>
+  <Step title="Heartbeat">
+    Every `leaseDurationMs / 3`, extend the lease. Stop heartbeating and the
+    lease expires — a sibling reclaims the job.
+  </Step>
+  <Step title="Complete (lease-guarded)">
+    Success → `complete`; error → `fail` with retry if `attempts < maxAttempts`;
+    cancelled → `fail` with no retry. All guarded by the lease, so a worker
+    that lost its lease silently drops a stale result instead of corrupting it.
+  </Step>
+</Steps>
+
+## Horizontal scale and crash recovery
+
+There is no master. Every pool runs the same `server.ts`; they coordinate through the single shared database. Point them at the same URLs via env and add machines to add throughput.
+
+```bash
+# machine 1
+DROVER_QUEUE_URL=libsql://your-org.turso.io \
+DROVER_STORAGE_URL=libsql://your-org.turso.io \
+bun run server.ts
+
+# machine 2 — identical command, same DB
+DROVER_QUEUE_URL=libsql://your-org.turso.io \
+DROVER_STORAGE_URL=libsql://your-org.turso.io \
+bun run server.ts
+```
+
+If a worker crashes mid-enrichment, its heartbeats stop, its lease expires, and another pool's `reclaimStale` loop flips the job back to `queued` with `attempts += 1`. The job runs again — capped by `maxAttempts`, after which it lands in `failed`. The atomic claim is what makes this safe: see the SQL in [Runtime](/guides/runtime).
+
+<Warning>
+A reclaimed job re-runs the agent from the start, repeating any side effects
+its tools performed. For long, expensive runs, prefer durable pause over
+replay: with storage wired, a run checkpoints at every turn and
+[`resumeAgent`](/guides/pause-resume) continues from the saved messages
+instead of restarting.
+</Warning>
+
+## Durable mid-flight runs
+
+Because workers wire the same `storage` you used in Level 5, every run is checkpointed at each turn boundary. That powers two things: crash recovery (above) and explicit [pause/resume](/guides/pause-resume) — a long enrichment can be paused, persisted, and resumed in a later worker process. [Storage](/guides/storage) is the substrate under both the queue's job rows and the runs' event timelines.
+
+## What you assembled
+
+- **`createLibsqlQueue`** — durable job queue; atomic `UPDATE ... RETURNING` claim coordinates many workers.
+- **`createLibsqlStorage`** — run, event, and checkpoint persistence; the basis for recovery and resume.
+- **`staticRegistry({ enrich })`** — maps `agentId` to the Level-4 `AgentSpec` the worker runs.
+- **`sandboxFor`** — per-job sandbox factory; a network-allowlisted just-bash sandbox isolates each job.
+- **`createWorkerPool(..., { concurrency, leaseDurationMs })`** — the consumer; claims, runs, heartbeats, reclaims crashed siblings.
+- **`createRunApi`** — the producer; `enqueue`, `waitFor`, `cancel`, decoupled from execution.
+- **env-driven URLs** — `DROVER_QUEUE_URL` / `DROVER_STORAGE_URL` let identical processes scale horizontally on one DB.
+
+## You've completed the ladder
+
+You climbed from a single typed run to a durable, multi-machine service:
+
+| Level | You added |
+| --- | --- |
+| 1 | input/output schema + model + quota |
+| 2 | built-in read tools + a read-only mount + the event stream |
+| 3 | a read-write sandbox + safety plugins + a `postSuccess` step |
+| 4 | a network allowlist + grounded output + a cost ceiling |
+| 5 | memory scopes + instruction files + storage |
+| 6 | subagents + registry + shared memory + a trace |
+| 7 | queue + worker pool + run API + crash recovery + scale |
+
+Every rung reused the one before. The Level-4 enrichment agent you wrote once is now the unchanged payload of a horizontally scaled job system — that is the point of the JSON-serialisable `AgentSpec`: the agent never changes, only the machinery around it.
+
+From here, go deep rather than wide.
+
+<CardGroup cols={2}>
+  <Card title="Runtime reference" href="/reference/runtime" icon="server">
+    Every queue / pool / RunApi option, lease and reclaim knobs, the full
+    contract behind this recipe.
+  </Card>
+  <Card title="All the guides" href="/guides/runtime" icon="book">
+    Each element on its own — runtime, storage, pause/resume, sandboxes,
+    plugins, memory, subagents.
+  </Card>
+  <Card title="Queue + worker example" href="/examples/queue-worker" icon="bolt">
+    The minimal runnable demo this recipe scales up from.
+  </Card>
+  <Card title="Core reference" href="/reference/core" icon="cube">
+    `defineAgent`, `AgentSpec`, `RunResult`, and the event union in full.
+  </Card>
+</CardGroup>

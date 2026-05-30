@@ -1,0 +1,214 @@
+---
+title: An Assistant That Learns Across Runs
+description: A recurring assistant that carries operator preferences and accrues enrichment rules between runs via memory, ambient instruction files, and persistent storage.
+---
+
+You built a one-shot lead-enrichment agent in [Level 4](/howto/lead-enrichment).
+This recipe makes it a *recurring* assistant: it remembers what the operator
+told it last week and accrues enrichment rules it learns the hard way. State
+crosses runs.
+
+**Level 5 of 7.** Assumes [lead-enrichment](/howto/lead-enrichment). Adds the
+two halves of memory — ambient instruction files plus learned memory — and
+storage so runs persist.
+
+## The two halves of memory
+
+Memory is two distinct mechanisms. Compose with both in mind.
+
+| | Ambient instructions | Learned memory |
+| --- | --- | --- |
+| **Written by** | you, on disk | the agent, during runs |
+| **Source** | `AGENTS.md` / `CLAUDE.md` files | `remember` tool calls |
+| **Always in context** | yes — injected whole every run | no — summaries indexed, bodies via `recall` |
+| **Mutable at runtime** | no — edit the file | yes |
+| **Configured via** | `spec.instructionFiles` | `spec.memory` |
+
+Ambient instructions are the stable baseline — house rules you maintain.
+Learned memory is everything that accrues: operator preferences, corrections,
+enrichment rules the agent discovers. This assistant uses both. See
+[Memory](/guides/memory) for the full model.
+
+<Steps>
+
+<Step title="Define the spec">
+
+Memory and instruction files are spec fields. The agent's prompt tells it to
+prefer recalled facts and to save a non-obvious rule when it finds one.
+
+```ts title="assistant.ts"
+import { Type } from "@sinclair/typebox";
+import { defineAgent } from "@drover/core";
+
+export const assistant = defineAgent({
+  id: "enrichment-assistant",
+  systemPrompt:
+    "You enrich and answer lead questions for a recurring operator. " +
+    "If '## Recalled memory' appears in your system prompt, prefer those " +
+    "facts. Otherwise call `recall(query=...)` before answering. When you " +
+    "learn a non-obvious enrichment rule or an operator preference that " +
+    "will apply to future runs, call `remember` once.",
+  inputSchema: Type.Object({ question: Type.String() }),
+  outputSchema: Type.Object({
+    answer: Type.String(),
+    used_memory: Type.Boolean(),
+  }),
+  model: "mini",
+  tools: [],
+  quota: { maxTurns: 6 },
+  memory: {
+    enabled: true,
+    includeIndex: true, // default — append the summary index
+    writesPerTurn: 1,    // default — one `remember` per turn
+  },
+  instructionFiles: {}, // {} = all defaults: loads AGENTS.md / CLAUDE.md chain
+});
+```
+
+When `memory.enabled` is true and an adapter is wired, the harness auto-injects
+`remember` and `recall`, appends a `## Recalled memory` summary index to the
+system prompt, and applies `memoryRateLimitPlugin({ writesPerTurn })` for you.
+
+<Note>
+`memoryRateLimitPlugin` is auto-applied when memory is enabled — do not add it
+to `spec.plugins`. `allowForget` defaults to off, so `forget` is not injected
+unless you opt in.
+</Note>
+
+</Step>
+
+<Step title="Wire memory, storage, and seed a global fact">
+
+`createMarkdownMemory` backs both halves with files on disk. `instructionFiles`
+loads `AGENTS.md` / `CLAUDE.md` from the cwd's ancestor chain. Storage persists
+runs, events, and checkpoints so a second run is a real continuation.
+
+Seed one durable fact at `global` scope — the `put` returns an Effect, so run
+it with `Effect.runPromise`.
+
+```ts title="server.ts"
+import { runAgent } from "@drover/facade";
+import { createMarkdownMemory } from "@drover/memory";
+import { createLibsqlStorage } from "@drover/storage";
+import { Effect } from "effect";
+
+import { assistant } from "./assistant.ts";
+
+const memory = await createMarkdownMemory({ root: "./.memory" });
+const storage = await createLibsqlStorage({ url: "file:./var/runs.db" });
+
+// Seed a cross-run, cross-agent fact once.
+await Effect.runPromise(
+  memory.put({
+    scope: "global",
+    kind: "user",
+    summary: "Operator prefers headcount over revenue when ranking leads",
+    body: "Rank ambiguous leads by employee count, not estimated revenue. Why: the operator sells seat-based SaaS. How to apply: surface headcount first in every enrichment summary.",
+    tags: ["preference", "ranking"],
+  }),
+);
+```
+
+</Step>
+
+<Step title="Run it and watch the memory events">
+
+Pass `memory` and `storage` through `RunOptions`. Two `HarnessEvent` kinds
+surface every recall and write — log them to see what the agent pulled in and
+what it chose to keep.
+
+```ts title="server.ts (continued)"
+const handle = runAgent(
+  assistant,
+  { question: "How should I rank this batch of leads?" },
+  { memory, storage },
+);
+
+for await (const e of handle.events) {
+  if (e.kind === "memory_recalled") {
+    console.log(`recall q="${e.query ?? ""}" → ${e.hits.length} hit(s)`);
+  } else if (e.kind === "memory_written") {
+    console.log(`wrote ${e.entry.scope}/${e.entry.kind}: ${e.entry.summary}`);
+  }
+}
+
+const result = await handle.result;
+if (result.status === "success") {
+  console.log(result.output); // → { answer: "...", used_memory: true }
+}
+```
+
+The promise never rejects — inspect `result.status` and read `result.output`
+only when it is `"success"`. See [Events and streams](/concepts/events-and-streams).
+
+</Step>
+
+</Steps>
+
+## The three scopes
+
+Where a learned entry lives decides how far it travels.
+
+| Scope | Crosses into | Visible to |
+| --- | --- | --- |
+| `global` | every run, every agent | all agents |
+| `agent` | every run of this `spec.id` | only this agent |
+| `run` | one runId (and its pause/resume) | only that run, while active |
+
+The seeded preference is `global`, so it reaches any agent you point at the
+same adapter. Enrichment rules the assistant discovers about its own behaviour
+belong at `agent` scope — private to `enrichment-assistant`.
+
+### Many agents, one store
+
+Pass the *same* adapter to every run. `global` is shared; `agent`-scoped
+entries stay private per `spec.id`. No extra wiring — isolation is automatic.
+
+```ts
+runAgent(assistant, input, { memory, storage });    // sees global + its own
+runAgent(researcher, input, { memory, storage });   // sees global + its own
+```
+
+## Second run sees what the first learned
+
+The markdown adapter rebuilds its index on construction. Whatever the first run
+wrote via `remember` lands in the `## Recalled memory` block of the next run's
+system prompt — no code change. With `storage` wired, each run is also a
+persisted row, so you can resume a paused one. A later question that overlaps a
+prior lesson recalls it directly:
+
+```ts
+runAgent(
+  assistant,
+  { question: "Same batch, anything I should know?" },
+  { memory, storage },
+);
+// → recall pulls the agent-scoped rule the first run saved
+```
+
+<Warning>
+Memory config (`enabled`, `includeIndex`, `maxIndexEntries`, `allowForget`,
+`writesPerTurn`) and `instructionFiles` are part of [`hashSpec`](/concepts/hash-spec).
+A paused run resumed under different memory settings fails with a spec-hash
+mismatch. File *content* is not hashed — only the config.
+</Warning>
+
+## What you assembled
+
+- **`spec.memory`** — `enabled` with `includeIndex` and `writesPerTurn: 1`; auto-injects `remember` / `recall` and the summary index.
+- **`spec.instructionFiles: {}`** — ambient `AGENTS.md` / `CLAUDE.md` along the cwd ancestor chain, always in context, read-only.
+- **`createMarkdownMemory({ root })`** — file-backed learned memory; one seeded `global` fact via `Effect.runPromise(memory.put(...))`.
+- **Three scopes** — `global` crosses every agent, `agent` is private per id, `run` is per run; one store shared across agents.
+- **`createLibsqlStorage`** — persists runs/events/checkpoints so a second run continues rather than restarts.
+- **`memory_recalled` / `memory_written` events** — observe hits and writes on the stream.
+
+## Level up
+
+<CardGroup cols={2}>
+  <Card title="A multi-agent research team" href="/howto/research-team" icon="users">
+    Next: a lead agent spawning subagents that share one memory store.
+  </Card>
+  <Card title="Self-learning agent example" href="/examples/self-learning-agent" icon="brain">
+    End-to-end: seed a fact, watch it surface, write a new lesson.
+  </Card>
+</CardGroup>

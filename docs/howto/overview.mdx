@@ -1,0 +1,65 @@
+---
+title: How-to recipes
+description: A progressive ladder of task recipes — assemble drover's elements into real agents, simple to complex.
+---
+
+The [guides](/guides/writing-an-agent) document each element on its own; the
+[examples](/examples/echo-agent) are minimal demos. These **recipes** sit in
+between: each one is a real task, built by *assembling* several elements, and
+they climb in difficulty. Read them in order and every recipe reuses what the
+last one taught.
+
+Each page ends with two things: a **What you assembled** recap naming the
+elements you wired, and a **Level up** card pointing at the next rung.
+
+## The ladder
+
+| Level | Recipe | What you assemble |
+| --- | --- | --- |
+| 1 | [Classify and extract](/howto/structured-extraction) | input/output schema + model alias + quota — no tools |
+| 2 | [Read & search a codebase](/howto/search-a-codebase) | built-in `read`/`grep`/`ls` + a read-only just-bash mount + the event stream |
+| 3 | [A coding agent](/howto/coding-agent) | read-write mount + `bash`/`edit` + safety plugins + a `postSuccess` test step |
+| 4 | [Enrich a single lead](/howto/lead-enrichment) | MCP search tools / network allowlist + grounded output + a cost ceiling |
+| 5 | [An assistant that learns](/howto/learning-assistant) | memory scopes + ambient instruction files + storage |
+| 6 | [A research team](/howto/research-team) | subagents + registry + shared memory + a trace |
+| 7 | [A durable batch service](/howto/batch-enrichment-service) | queue + worker pool + run API + crash recovery |
+
+## How to read these
+
+<Steps>
+  <Step title="Start at your level">
+    New to drover? Begin at Level 1 — it is the [quickstart](/guides/quickstart)
+    agent with the schema contract explained. Already shipping agents? Jump to
+    the recipe whose task matches yours; each lists its assumed prior rungs.
+  </Step>
+  <Step title="Run the code">
+    Every snippet is runnable TypeScript on [Bun](/guides/quickstart). Set
+    `OPENROUTER_API_KEY` once and the default model aliases resolve. Copy a
+    recipe, change the schema, and you have a starting point.
+  </Step>
+  <Step title="Follow the cross-links">
+    A recipe shows you *how to assemble* an element; the linked guide explains
+    *what it is*. When a recipe wires memory, [Memory](/guides/memory) has the
+    full contract.
+  </Step>
+</Steps>
+
+## The shape every recipe shares
+
+A drover agent is always the same four moves, and the ladder just adds elements
+to each:
+
+1. **Define** a `defineAgent({ ... })` spec — the typed input/output contract.
+2. **Wire** the deps a run needs — a sandbox, a registry, storage, memory, MCP.
+3. **Run** it with `runAgent(spec, input, options)`.
+4. **Read** the result and the event stream.
+
+<CardGroup cols={2}>
+  <Card title="Start the ladder" href="/howto/structured-extraction" icon="play">
+    Level 1 — classify and extract structured data from text.
+  </Card>
+  <Card title="The mental model" href="/guides/concepts" icon="book">
+    AgentSpec, RunContext, HarnessEvent, plugins — the concepts the ladder
+    leans on.
+  </Card>
+</CardGroup>

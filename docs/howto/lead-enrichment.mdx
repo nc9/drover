@@ -1,0 +1,234 @@
+---
+title: Enrich a Single Lead
+description: Build a web-research agent that fills a firmographic record and cites every source.
+---
+
+A firmographic enrichment agent: hand it a company name and domain, it searches the web, reads the results, and returns a structured record with industry, size, location, and funding stage — every field grounded in a cited URL.
+
+**Level 4 of 7.** This recipe assumes you can define a spec, set a grounded output schema, and read `result.output` (see [structured extraction](/howto/structured-extraction)). New here: reaching the outside world. You wire either an MCP search server or a just-bash network allowlist, cap spend with a cost quota, and retry the fiddly JSON.
+
+## The task
+
+```ts title="lead.ts"
+import { Type } from "@sinclair/typebox";
+
+const Input = Type.Object({
+  company: Type.String(),
+  domain: Type.String(),
+});
+
+const Output = Type.Object({
+  industry: Type.String(),
+  employee_range: Type.Union([
+    Type.Literal("1-10"),
+    Type.Literal("11-50"),
+    Type.Literal("51-200"),
+    Type.Literal("201-1000"),
+    Type.Literal("1001-5000"),
+    Type.Literal("5000+"),
+  ]),
+  hq_location: Type.String(),
+  funding_stage: Type.Union([
+    Type.Literal("bootstrapped"),
+    Type.Literal("seed"),
+    Type.Literal("series_a"),
+    Type.Literal("series_b"),
+    Type.Literal("series_c_plus"),
+    Type.Literal("public"),
+    Type.Literal("unknown"),
+  ]),
+  one_liner: Type.String({ maxLength: 200 }),
+  sources: Type.Array(Type.String()),
+});
+```
+
+`sources` is the grounding contract: the URLs each claim came from. The system prompt makes citing mandatory.
+
+## Pick a wiring: MCP tools or a network allowlist
+
+Two real ways to reach the web. Pick one.
+
+| | MCP search server | just-bash network allowlist |
+|---|---|---|
+| Tool shape | structured tools (`search__query`, `search__fetch`) | raw `bash` (`curl` against allowlisted URLs) |
+| Output | parsed JSON from the server | response body the model parses itself |
+| Surface | merged into the toolset, prefixed | one `bash` tool |
+| Best for | a search API with a typed contract | a known HTTP endpoint you trust |
+
+<Steps>
+  <Step title="Option A — MCP search server">
+
+Define the server config, boot a runtime, allowlist it on the spec.
+
+```ts title="enrich-mcp.ts"
+import type { McpServerConfig } from "@drover/mcp";
+import { createMcpRuntime } from "@drover/mcp";
+
+const configs: McpServerConfig[] = [
+  {
+    id: "search",
+    transport: "stdio",
+    command: "bun",
+    args: ["./mcp-servers/search/server.ts"],
+  },
+  // http variant:
+  // { id: "search", transport: "http", url: "https://search.example.com/mcp" },
+];
+
+const mcpRuntime = await createMcpRuntime(configs);
+console.log(mcpRuntime.servers());
+// [{ id: "search", transport: "stdio", toolCount: 2 }]
+```
+
+The agent declares the server in `mcpServers` — the per-agent allowlist:
+
+```ts
+import { defineAgent } from "@drover/core";
+
+const enrich = defineAgent({
+  id: "lead-enrich",
+  systemPrompt: [
+    "Enrich a company into a firmographic record. Use the search tools to",
+    "find evidence on the web, read results, then fill every field. You MUST",
+    "populate `sources` with the URLs each claim came from — never assert a",
+    "field you cannot cite. Use `unknown` for funding_stage if unconfirmed.",
+  ].join(" "),
+  inputSchema: Input,
+  outputSchema: Output,
+  model: "mini",
+  tools: [],
+  mcpServers: ["search"],
+  outputRetries: 3,
+  quota: { maxTurns: 12, maxCostUsd: 0.5 },
+});
+```
+
+Per the runtime contract, tools from allowlisted MCP servers are **merged into the agent's toolset automatically** — you do not relist them in `spec.tools`. They surface to the model prefixed `search__<tool>`, so two servers shipping a `query` tool never collide. (If you want a built-in tool too, e.g. `read`, add it to `tools`; MCP tools come in on top.)
+
+Pass the runtime on the run:
+
+```ts
+import { runAgent } from "@drover/facade";
+
+const handle = runAgent(
+  enrich,
+  { company: "Acme Robotics", domain: "acme-robotics.com" },
+  { mcpRuntime },
+);
+```
+
+Connect the runtime once at app start, reuse across runs, close on shutdown:
+
+```ts
+process.on("SIGTERM", async () => {
+  await mcpRuntime.close();
+});
+```
+
+`close()` is best-effort. One bad server contributes 0 tools and doesn't block the others. See [the MCP guide](/guides/mcp).
+
+  </Step>
+  <Step title="Option B — just-bash network allowlist">
+
+No MCP server. Give the default sandbox a curl allowlist and let the agent fetch directly:
+
+```ts title="enrich-bash.ts"
+import { createJustBashSandbox } from "@drover/sandbox-just-bash";
+import { defineAgent } from "@drover/core";
+
+const sandbox = createJustBashSandbox({
+  mounts: [],
+  network: [
+    "https://api.example-search.com",
+    "https://acme-robotics.com",
+  ],
+  timeoutMs: 30000,
+});
+
+const enrich = defineAgent({
+  id: "lead-enrich",
+  systemPrompt: [
+    "Enrich a company into a firmographic record. Use `bash` with curl",
+    "against the allowlisted endpoints to gather evidence, then fill every",
+    "field. You MUST populate `sources` with the URLs each claim came from.",
+    "Use `unknown` for funding_stage if unconfirmed.",
+  ].join(" "),
+  inputSchema: Input,
+  outputSchema: Output,
+  model: "mini",
+  tools: ["bash"],
+  outputRetries: 3,
+  quota: { maxTurns: 12, maxCostUsd: 0.5 },
+});
+```
+
+`network` is off by default; only the listed origins are reachable via `curl`/`wget`. Anything else fails. The sandbox can't escape a mount root. Wire it on the run:
+
+```ts
+import { runAgent } from "@drover/facade";
+
+const handle = runAgent(
+  enrich,
+  { company: "Acme Robotics", domain: "acme-robotics.com" },
+  { sandbox },
+);
+```
+
+<Note>
+The contrast: MCP gives the model **structured tools** with parsed results; the network allowlist gives it **raw fetch** and the model parses the body itself. MCP is cleaner when the search backend already speaks a typed contract. See [sandboxes](/guides/sandboxes).
+</Note>
+
+  </Step>
+</Steps>
+
+## Run and read the result
+
+The `result` promise never rejects — inspect `result.status`. `output` is defined only on `success`.
+
+```ts
+const r = await handle.result;
+
+if (r.status === "success" && r.output) {
+  const lead = r.output;
+  console.log(lead.industry, lead.employee_range, lead.funding_stage);
+  console.log("cited:", lead.sources);
+} else if (r.status === "quota") {
+  console.warn("budget hit — research loop stopped at", r.turns, "turns");
+} else {
+  console.error(r.status, r.error?.message);
+}
+```
+
+The cost ceiling matters here. Web research loops run away — the model keeps searching, reading, re-searching. `maxCostUsd: 0.5` (alongside `maxTurns: 12`) makes the harness abort and return `status: "quota"` rather than burning your budget. No partial `output` on quota; you decide whether to re-run with a higher cap or accept the miss.
+
+## Stream what the agent does
+
+```ts
+for await (const e of handle.events) {
+  if (e.kind === "tool_call_start") console.log("→", e);
+  else if (e.kind === "output_retry") console.log("retry: JSON didn't validate");
+  else if (e.kind === "usage") console.log("tokens", e.usage.inputTokens, e.usage.outputTokens);
+  else if (e.kind === "output_validated") console.log("record grounded ✓");
+}
+```
+
+`output_retry` fires when the model returns malformed firmographic JSON — `outputRetries: 3` re-prompts it against the schema instead of failing the run. Enum fields (`employee_range`, `funding_stage`) are exactly the kind of thing a small model fumbles on the first pass, which is why the retry budget is higher than the default 2.
+
+## What you assembled
+
+- **Grounded output schema** — `sources: Type.Array(Type.String())` plus a system prompt that forbids uncited claims. The schema makes grounding a structural requirement, not a hope.
+- **Outside-world reach** — either an MCP search server (`createMcpRuntime` + `mcpServers` allowlist, tools merged in prefixed `search__*`) or a just-bash `network` allowlist for raw `curl`.
+- **Cost quota** — `maxCostUsd: 0.5` + `maxTurns: 12` cap a runaway research loop; the run returns `status: "quota"` instead of overspending.
+- **Output retries** — `outputRetries: 3` re-prompts on fiddly enum/JSON failures via `output_retry` events.
+- **`mini` model** — cheap enough for high-volume enrichment, capable enough to follow tool results.
+
+## Level up
+
+<CardGroup cols={2}>
+  <Card title="An assistant that learns across runs" href="/howto/learning-assistant" icon="brain">
+    Add memory so the agent remembers firmographic facts and conventions between runs.
+  </Card>
+  <Card title="Sandboxes deep-dive" href="/guides/sandboxes" icon="box">
+    Mounts, network allowlists, and when to swap just-bash for a heavier adapter.
+  </Card>
+</CardGroup>
