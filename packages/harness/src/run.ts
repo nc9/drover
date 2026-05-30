@@ -4,6 +4,7 @@ import {
   type AgentSpec,
   type AnyToolDef,
   CancelledError,
+  CompactionConfigError,
   type HarnessError,
   type HarnessEvent,
   InputValidationError,
@@ -39,11 +40,18 @@ import { builtinsById, type BuiltinToolId } from "@droveragent/tools";
 import { Effect } from "effect";
 import { runAgentLoop, runAgentLoopContinue } from "@mariozechner/pi-agent-core";
 import { taskTool, DEFAULT_MAX_DEPTH, DEFAULT_FAN_OUT } from "./task-tool.ts";
+import {
+  initCompactionState,
+  makeSummarizer,
+  maybeCompact,
+  validateCompactionPolicy,
+  type SummarizeFn,
+} from "./compaction/index.ts";
 import { runLifecycleSteps } from "./lifecycle.ts";
 import type { HarnessDeps } from "./deps.ts";
 import { mcpActive, memoryActive, skillsActive, subagentsActive } from "./capability-gates.ts";
 import type { AgentLoopConfig, AgentMessage } from "@mariozechner/pi-agent-core";
-import type { KnownApi, Message, UserMessage } from "@mariozechner/pi-ai";
+import type { KnownApi, Message, Model, UserMessage } from "@mariozechner/pi-ai";
 import { Value } from "@sinclair/typebox/value";
 import { Kind, type TSchema } from "@sinclair/typebox";
 import * as path from "node:path";
@@ -74,6 +82,13 @@ export interface RunArgs<S extends AgentSpec<TSchema, TSchema>> {
    * is `paused` rather than `cancelled` — so resume can pick up later.
    */
   pauseFlag?: { requested: boolean };
+  /**
+   * Mutable holder the facade flips when `handle.compact()` is called. The
+   * next `transformContext` pass honours it (ignoring `spec.compaction.trigger`
+   * and cooldown), then clears `requested`. `instructions` overrides the
+   * summary prompt for that one pass. No-op when `spec.compaction` is absent.
+   */
+  compactFlag?: { requested: boolean; instructions?: string };
 }
 
 const DEFAULT_OUTPUT_RETRIES = 2;
@@ -219,13 +234,14 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
   args: RunArgs<S>,
 ): Effect.Effect<RunResult<AgentOutput<S>>, HarnessError, never> {
   return Effect.gen(function* () {
-    const { spec, input, ctx, emit, deps, resumeFrom, pauseFlag } = args;
+    const { spec, input, ctx, emit, deps, resumeFrom, pauseFlag, compactFlag } = args;
     const isResume = resumeFrom !== undefined;
     const startedAt = Date.now();
     const usage: Usage = { inputTokens: 0, outputTokens: 0 };
     const toolCalls: string[] = resumeFrom ? [...resumeFrom.toolCalls] : [];
 
-    const explicitPlugins: ReadonlyArray<import("@droveragent/core").HarnessPlugin> = spec.plugins ?? [];
+    const explicitPlugins: ReadonlyArray<import("@droveragent/core").HarnessPlugin> =
+      spec.plugins ?? [];
     // Auto-apply memory rate-limit when memory is enabled and writes-per-turn > 0.
     const writesPerTurn = spec.memory?.writesPerTurn ?? 1;
     const autoMemoryPlugin: import("@droveragent/core").HarnessPlugin | null =
@@ -307,6 +323,21 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       );
     }
     safeEmit({ kind: "input_validated", runId: ctx.runId, ts: Date.now() });
+
+    // Compaction policy is validated up front (fast-fail, no LLM call) — e.g.
+    // a `summarize` strategy with no `summaryPrompt` is a configuration error.
+    if (spec.compaction) {
+      const compactionConfigError = validateCompactionPolicy(spec.compaction);
+      if (compactionConfigError) {
+        return yield* Effect.fail(
+          new CompactionConfigError({
+            runId: ctx.runId,
+            agentId: spec.id,
+            message: compactionConfigError,
+          }),
+        );
+      }
+    }
 
     const resolved = yield* resolveModel(spec.model, {
       runId: ctx.runId,
@@ -687,15 +718,64 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       resolved.reasoning ??
       ((resolved.model as { reasoning?: boolean }).reasoning ? "medium" : undefined);
 
+    // Compaction setup. The engine runs inside `transformContext` (below).
+    // Build the summariser once — reuse the run's model unless the policy names
+    // a `summaryModel`. A bad `summaryModel` fails the run here (like a bad
+    // main model), surfacing as ModelError rather than a silent skip.
+    const wantsCompaction = spec.compaction !== undefined;
+    const compactionState = initCompactionState();
+    let compactionSummarizer: SummarizeFn | undefined;
+    if (spec.compaction?.strategy.includes("summarize")) {
+      let summaryModel: Model<KnownApi> = resolved.model;
+      let summaryApiKey = resolved.apiKey;
+      if (spec.compaction.summaryModel) {
+        const summaryResolved = yield* resolveModel(spec.compaction.summaryModel, {
+          runId: ctx.runId,
+          ...(deps.modelAliases ? { aliases: deps.modelAliases } : {}),
+          ...(deps.env ? { env: deps.env } : {}),
+          ...(deps.preResolvedModels ? { preResolved: deps.preResolvedModels } : {}),
+        });
+        summaryModel = summaryResolved.model;
+        summaryApiKey = summaryResolved.apiKey;
+      }
+      compactionSummarizer = makeSummarizer(summaryModel, summaryApiKey);
+    }
+
     // transformContext: pi calls this before each LLM call with the live
-    // message list. We snapshot it here so post-turn checkpoints can persist
-    // the exact state needed to resume via `runAgentLoopContinue`.
-    const transformContext = storage
-      ? async (messages: AgentMessage[]): Promise<AgentMessage[]> => {
-          messagesSnapshot.value = [...messages];
-          return messages;
-        }
-      : undefined;
+    // message list (and the loop's abort signal). Compaction runs FIRST, then
+    // the snapshot captures the post-compaction array — so checkpoints persist
+    // compacted history and resume replays it (O(suffix), no re-summarisation).
+    // Wired whenever compaction OR storage is active (compaction needs the seam
+    // even with no storage). Honours pi's must-not-throw contract: `maybeCompact`
+    // never throws.
+    const transformContext =
+      wantsCompaction || storage
+        ? async (messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> => {
+            let next = messages;
+            if (wantsCompaction) {
+              const manual = compactFlag?.requested
+                ? compactFlag.instructions !== undefined
+                  ? { instructions: compactFlag.instructions }
+                  : {}
+                : undefined;
+              if (compactFlag?.requested) compactFlag.requested = false; // one-shot
+              next = (await maybeCompact({
+                messages: next as Message[],
+                policy: spec.compaction!,
+                contextWindow: resolved.model.contextWindow,
+                currentTurn: translator.currentTurn(),
+                state: compactionState,
+                runId: ctx.runId,
+                emit: safeEmit,
+                ...(compactionSummarizer ? { summarize: compactionSummarizer } : {}),
+                ...(manual ? { manual } : {}),
+                ...(signal ? { signal } : {}),
+              })) as AgentMessage[];
+            }
+            if (storage) messagesSnapshot.value = [...next];
+            return next;
+          }
+        : undefined;
 
     const loopConfig: AgentLoopConfig = {
       model: resolved.model as never,
@@ -1221,6 +1301,7 @@ export function hashSpec(spec: AgentSpec): string {
     instructionFiles: spec.instructionFiles ?? null,
     promptTemplate: spec.promptTemplate ?? null,
     lifecycle: spec.lifecycle ?? null,
+    compaction: spec.compaction ?? null,
   });
   for (let i = 0; i < s.length; i++) {
     h = (h * 31 + s.charCodeAt(i)) | 0;

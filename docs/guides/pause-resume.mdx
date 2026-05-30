@@ -6,7 +6,9 @@ description: Suspend a run, persist it, continue later. Across processes.
 drover supports durable pause and resume. The harness checkpoints the
 pi-agent-core message list at every turn boundary; calling `pause()`
 flips the run's status to `paused` and `resumeAgent` picks up from the
-saved messages.
+saved messages. With [compaction](/guides/compaction) enabled the
+checkpoint stores the *compacted* history, so resume replays the
+shortened transcript rather than re-deriving it.
 
 ## Prerequisites
 
@@ -67,6 +69,7 @@ never rejects.
 - `model`, `systemPrompt` (function-valued prompts hash via `.toString()`)
 - `inputSchema`, `outputSchema`
 - `subagents`, `outputRetries`, `quota`
+- `memory`, `instructionFiles`, `promptTemplate`, `lifecycle`, `compaction`
 - `plugins` (by id — bump the plugin id when its behaviour changes)
 
 If you edit the system prompt and resume, drover rejects with:

@@ -1,0 +1,235 @@
+---
+title: Compaction
+description: Shrink a run's conversation history — automatically or on demand — without losing the thread.
+---
+
+A long, tool-heavy run grows its message history until it crowds the model's
+context window. **Compaction** reclaims that space by rewriting the history:
+clearing stale tool output, summarising the middle of the conversation, or
+dropping it outright — while keeping the original task and the most recent turns
+verbatim.
+
+drover ships compaction as a **primitive you assemble**, not a behaviour that's
+on by default. There are no baked-in thresholds or strategies: you declare what
+fires it, how it reclaims, and what it must preserve. Omit `spec.compaction` and
+nothing changes — the run keeps its full history, exactly as before.
+
+## Where it runs
+
+pi-agent-core calls `transformContext` before every LLM call with the live
+message list. That is the one seam that can rewrite history, and it's where
+drover's compaction engine runs. Two consequences follow:
+
+- The **system prompt is never touched** — pi sends it separately, so it is not
+  part of the array compaction sees. Your cacheable prompt prefix is safe.
+- With [storage](/guides/storage) wired, the checkpoint captures the
+  *post-compaction* array, so [resume](/guides/pause-resume) replays the
+  compacted history — no re-summarising on resume.
+
+`transformContext` must never throw. The engine honours that: any failure (a
+summariser error, say) emits an `error` event tagged `CompactionError` and
+returns the **original** messages. A broken compaction never breaks the run — it
+just continues uncompacted.
+
+## The policy
+
+```ts
+import { defineAgent, DEFAULT_COMPACTION_SUMMARY_PROMPT } from "@drover/core";
+import { Type } from "@sinclair/typebox";
+
+const researcher = defineAgent({
+  id: "researcher",
+  systemPrompt: "Research the question thoroughly using your tools.",
+  inputSchema: Type.Object({ question: Type.String() }),
+  outputSchema: Type.Object({ answer: Type.String() }),
+  model: "sonnet",
+  tools: ["bash", "show_tool_result"],
+  compaction: {
+    strategy: ["drop-tool-results", "summarize"],
+    trigger: { kind: "context_fraction", value: 0.8 },
+    preserve: { firstUserTurn: true, recentTurns: 3, pinTools: ["remember", "recall"] },
+    minReclaimTokens: 4096,
+    cooldownTurns: 2,
+    summaryPrompt: DEFAULT_COMPACTION_SUMMARY_PROMPT,
+  },
+});
+```
+
+| Field | Required | What it does |
+| --- | --- | --- |
+| `strategy` | ✅ | Ordered ladder of strategies, applied until the trigger clears. |
+| `preserve` | ✅ | What survives a pass verbatim. |
+| `trigger` | — | Auto-fire threshold. Omit ⇒ **manual-only**. |
+| `minReclaimTokens` | — | Skip a pass that reclaims less than this (cache-bust guard). Omit ⇒ no gate. |
+| `cooldownTurns` | — | Don't auto-fire within N turns of the last pass. Omit ⇒ no cooldown. |
+| `summaryPrompt` | conditional | Required when `strategy` includes `"summarize"`. |
+| `summaryModel` | — | Model for the summarise sub-call. Omit ⇒ reuse the run's model. |
+
+A policy that lists `"summarize"` with no `summaryPrompt` is a configuration
+error — the run fails fast with `CompactionConfigError` before any model call,
+rather than silently substituting a default.
+
+## Strategies
+
+The `strategy` array is a ladder: drover applies each rung in order, re-checking
+the budget after each, and stops once the run is back under the trigger (or the
+ladder is exhausted). Order them cheap → expensive.
+
+<Steps>
+  <Step title="drop-tool-results">
+    Replace old `toolResult` content with `[cleared to save context]`, keeping
+    the `toolCall` record so the causal trace survives. **No model call.**
+    Re-fetchable tool output (long logs, big file reads) is usually the biggest
+    consumer, so this is the cheapest, highest-leverage first rung. Pair it with
+    [`show_tool_result`](/guides/plugins) so the model can re-read a cleared
+    result on demand.
+  </Step>
+  <Step title="summarize">
+    An LLM sub-call condenses the compactable head into one synthetic message,
+    inserted before the verbatim tail and marked `[compacted]`. Highest fidelity,
+    costs tokens. The call is made with **no tools and reasoning off** — a
+    tool-equipped model otherwise tends to call a tool instead of writing the
+    summary. Reuses the run's model unless you set `summaryModel`.
+  </Step>
+  <Step title="sliding-window">
+    Mechanically delete the compactable head, leaving opener + tail. No summary,
+    no model call — the lossiest rung, useful as a last resort when even a
+    summarise pass can't fit.
+  </Step>
+</Steps>
+
+## Triggers — auto vs manual
+
+A `trigger` makes compaction **automatic**: drover estimates the input size
+before each call and fires when it crosses the threshold.
+
+```ts
+// fire at 80% of the model's context window
+trigger: { kind: "context_fraction", value: 0.8 }
+// or at an absolute input-token ceiling
+trigger: { kind: "input_tokens", value: 120_000 }
+```
+
+The estimate is taken from the live message array (a `chars / 4` heuristic over
+rendered content), measured against `model.contextWindow`. There is no
+recommended default — pick a fraction that leaves headroom for the model's
+output and, if you summarise, for the summary itself.
+
+**Omit `trigger` entirely** and compaction is manual-only: it fires only when you
+call `handle.compact()`.
+
+```ts
+const handle = runAgent(researcher, { question: "…" }, { storage });
+
+// at a natural boundary, or reacting to a usage event:
+handle.compact("Focus the summary on the failing test and the stack trace.");
+
+const result = await handle.result;
+```
+
+`compact()` is honoured by the next `transformContext` pass even when no
+`trigger` is set, then the request clears. The optional argument overrides the
+summary prompt for that one pass. It does **not** require storage, and it's a
+no-op when `spec.compaction` is absent. You can use both: an auto `trigger` for
+safety plus manual `compact()` calls at known checkpoints.
+
+## What's preserved
+
+```ts
+preserve: { firstUserTurn: true, recentTurns: 3, pinTools: ["remember", "recall"] }
+```
+
+- **`firstUserTurn`** — keep the opening user turn (the original task) untouched.
+- **`recentTurns`** — keep the last N model turns verbatim. A turn is an
+  assistant message plus the tool results that follow it; the freshest turns stay
+  last so the model acts on current reality, never a summary of it.
+- **`pinTools`** — tool ids whose results are never compacted. Pin
+  `remember`/`recall` so externalised [memory](/guides/memory) survives a pass.
+
+Only the **head** — everything between the preserved opener and the verbatim
+tail — is ever compacted. The head boundary snaps to a turn boundary, so a
+`toolCall` is never split from its `toolResult`.
+
+## Observing it
+
+Each committed pass emits a [`compaction` event](/concepts/events-and-streams):
+
+```ts
+for await (const e of handle.events) {
+  if (e.kind === "compaction") {
+    console.log(
+      `${e.trigger} ${e.strategy}: ${e.beforeTokens} → ${e.afterTokens} tokens`,
+      `(collapsed messages [${e.collapsedRange[0]}, ${e.collapsedRange[1]}))`,
+    );
+  }
+}
+```
+
+`trigger` is `"auto"` or `"manual"`; `summarized` is true only for the
+`summarize` rung; `collapsedRange` is the `[start, end)` of the replaced head.
+Skipped passes (below `minReclaimTokens`, in cooldown, or under budget) emit
+nothing. A summariser failure emits an `error` event tagged `CompactionError`.
+
+## Cache and resume interactions
+
+Rewriting the head **busts the prompt cache** from the first changed message
+forward — see [prompt caching](/concepts/prompt-caching). Three things keep that
+cheap: `cooldownTurns` and `minReclaimTokens` make passes rare and worthwhile,
+the verbatim tail re-warms a stable suffix, and the system prompt's cache
+breakpoint is never touched.
+
+Because the checkpoint stores the compacted array, **`spec.compaction` is folded
+into [`hashSpec`](/concepts/hash-spec)** — changing the policy invalidates a
+paused run's hash, so resume won't replay old messages under a new compaction
+policy. (Changing the policy is a spec change; migrate by writing a new run
+rather than mutating a paused one.)
+
+## Manual-only and drop-only recipes
+
+The cheapest, no-LLM setup — clear stale tool output automatically, never call a
+model to summarise:
+
+```ts
+compaction: {
+  strategy: ["drop-tool-results"],
+  trigger: { kind: "context_fraction", value: 0.85 },
+  preserve: { firstUserTurn: true, recentTurns: 4 },
+  minReclaimTokens: 2048,
+}
+```
+
+A manual-only policy — you decide exactly when, e.g. between phases of a
+long task:
+
+```ts
+compaction: {
+  strategy: ["drop-tool-results", "summarize"],
+  preserve: { firstUserTurn: true, recentTurns: 5 },
+  summaryPrompt: DEFAULT_COMPACTION_SUMMARY_PROMPT,
+  // no trigger → only handle.compact() fires it
+}
+```
+
+## What you assembled
+
+- **`spec.compaction`** — a policy of `strategy` + `preserve`, plus optional
+  `trigger`, guards, and summariser config. No hidden defaults.
+- **the `transformContext` seam** — compaction runs before each LLM call, then
+  the checkpoint snapshots the compacted array.
+- **`handle.compact(instructions?)`** — the manual trigger, mirroring `pause()`.
+- **the `compaction` event** — one per committed pass, for observability.
+
+<CardGroup cols={2}>
+  <Card title="Pause / resume" href="/guides/pause-resume" icon="floppy-disk">
+    Checkpoints store compacted history — resume replays it.
+  </Card>
+  <Card title="Prompt caching" href="/concepts/prompt-caching" icon="bolt">
+    Why compaction busts the cache, and how the defaults keep it cheap.
+  </Card>
+  <Card title="Events & streams" href="/concepts/events-and-streams" icon="signal">
+    The `compaction` event and the full `HarnessEvent` union.
+  </Card>
+  <Card title="Memory" href="/guides/memory" icon="brain">
+    Pin `remember`/`recall` so externalised knowledge survives a pass.
+  </Card>
+</CardGroup>

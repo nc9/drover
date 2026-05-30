@@ -41,6 +41,7 @@
           "guides/mcp",
           "guides/subagents",
           "guides/pause-resume",
+          "guides/compaction",
           "guides/runtime",
           "guides/sandboxes",
           "guides/storage",

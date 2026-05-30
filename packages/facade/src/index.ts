@@ -82,6 +82,14 @@ export interface RunHandle<S extends AgentSpec> {
    * degrades to `abort()` — status becomes `cancelled`.
    */
   pause: () => void;
+  /**
+   * Request a history compaction before the next LLM call. The next
+   * `transformContext` pass honours it even when `spec.compaction.trigger`
+   * is unset (manual-only policies), then clears the request. `instructions`
+   * overrides the summary prompt for that one pass. No-op when
+   * `spec.compaction` is absent. Does not require storage.
+   */
+  compact: (instructions?: string) => void;
 }
 
 /**
@@ -148,6 +156,7 @@ export function runAgent<S extends AgentSpec<TSchema, TSchema>>(
       ? ({ ...spec, plugins: [...(spec.plugins ?? []), ...options.plugins] } as S)
       : spec;
   const pauseFlag = { requested: false };
+  const compactFlag: { requested: boolean; instructions?: string } = { requested: false };
   const effect = runAgentEffect<S>({
     spec: effectiveSpec,
     input,
@@ -155,6 +164,7 @@ export function runAgent<S extends AgentSpec<TSchema, TSchema>>(
     emit: stream.emit,
     deps,
     pauseFlag,
+    compactFlag,
   });
 
   const result: Promise<RunResult<AgentOutput<S>>> = Effect.runPromise(Effect.either(effect)).then(
@@ -189,6 +199,10 @@ export function runAgent<S extends AgentSpec<TSchema, TSchema>>(
       // cleanly to a regular abort so status becomes `cancelled`.
       if (options?.storage) pauseFlag.requested = true;
       ac.abort();
+    },
+    compact: (instructions?: string): void => {
+      compactFlag.requested = true;
+      if (instructions !== undefined) compactFlag.instructions = instructions;
     },
   };
 }
@@ -269,6 +283,7 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
       ? ({ ...spec, plugins: [...(spec.plugins ?? []), ...options.plugins] } as S)
       : spec;
   const pauseFlag = { requested: false };
+  const compactFlag: { requested: boolean; instructions?: string } = { requested: false };
 
   const resumeFailure = (tag: string, message: string): RunResult<AgentOutput<S>> => {
     stream.close();
@@ -353,6 +368,7 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
       deps,
       resumeFrom: checkpoint,
       pauseFlag,
+      compactFlag,
     });
     const either = await Effect.runPromise(Effect.either(effect));
     stream.close();
@@ -380,6 +396,10 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
     pause: (): void => {
       pauseFlag.requested = true;
       ac.abort();
+    },
+    compact: (instructions?: string): void => {
+      compactFlag.requested = true;
+      if (instructions !== undefined) compactFlag.instructions = instructions;
     },
   };
 }
@@ -432,5 +452,11 @@ function createEventStream(): {
   };
 }
 
-export type { AgentSpec, AgentInput, AgentOutput, HarnessEvent, RunResult } from "@droveragent/core";
+export type {
+  AgentSpec,
+  AgentInput,
+  AgentOutput,
+  HarnessEvent,
+  RunResult,
+} from "@droveragent/core";
 export { staticRegistry, type AgentRegistry } from "@droveragent/harness";

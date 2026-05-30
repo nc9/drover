@@ -108,6 +108,19 @@ export class LifecycleError extends Data.TaggedError("LifecycleError")<{
 }> {}
 
 /**
+ * A `spec.compaction` policy is internally inconsistent — e.g. it lists the
+ * `summarize` strategy but provides no `summaryPrompt`. Caught at run start
+ * (fast-fail, no LLM call), not at the first compaction pass. Distinct from a
+ * runtime summariser failure, which is non-fatal: that surfaces as an `error`
+ * event tagged `"CompactionError"` and the run continues uncompacted.
+ */
+export class CompactionConfigError extends Data.TaggedError("CompactionConfigError")<{
+  readonly runId: string;
+  readonly agentId: string;
+  readonly message: string;
+}> {}
+
+/**
  * Discriminated union of every error a run can fail with.
  * Effect surface uses this as the error channel: `Effect<RunResult, HarnessError, R>`.
  */
@@ -123,4 +136,5 @@ export type HarnessError =
   | StorageError
   | PluginError
   | MemoryError
-  | LifecycleError;
+  | LifecycleError
+  | CompactionConfigError;

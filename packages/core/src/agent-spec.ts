@@ -1,5 +1,6 @@
 import type { TSchema, Static } from "@sinclair/typebox";
 
+import type { CompactionPreserve, CompactionStrategy, CompactionTrigger } from "./compaction.ts";
 import type { RunContext } from "./context.ts";
 import type { HarnessPlugin } from "./plugin.ts";
 
@@ -151,6 +152,44 @@ export interface RunQuota {
 }
 
 /**
+ * Conversation-history compaction policy. Absent ⇒ no compaction (the
+ * historical behaviour). Present ⇒ exactly what is configured — drover bakes
+ * in no defaults for the behavioural knobs: `strategy` and `preserve` are
+ * required, an omitted `trigger` means manual-only, and an omitted guard
+ * (`minReclaimTokens` / `cooldownTurns`) means that guard is off, never a
+ * silently-chosen value.
+ *
+ * The engine runs in pi's `transformContext` seam (before each LLM call) and
+ * rewrites the message array in place; with storage wired, the post-compaction
+ * array is checkpointed, so resume replays compacted history. See the
+ * compaction guide and {@link CompactionStrategy}.
+ */
+export interface CompactionPolicy {
+  /** Strategy ladder, applied in order until the trigger clears. Required (≥1 entry). */
+  strategy: readonly CompactionStrategy[];
+  /** What survives a pass verbatim. Required — declare it; no surprise loss. */
+  preserve: CompactionPreserve;
+  /** Auto-trigger threshold. Omit ⇒ manual-only (`handle.compact()`). */
+  trigger?: CompactionTrigger;
+  /**
+   * Minimum tokens a single pass must reclaim or it is skipped (a guard against
+   * prompt-cache thrash — rewriting history busts the cached prefix). Omit ⇒ no gate.
+   */
+  minReclaimTokens?: number;
+  /** Do not auto-fire again within this many turns of the last pass. Omit ⇒ no cooldown. */
+  cooldownTurns?: number;
+  /**
+   * Summary prompt for the `summarize` strategy. Required when `strategy`
+   * includes `"summarize"` — the run fails with `CompactionConfigError` if
+   * absent rather than substituting a silent default. Import
+   * `DEFAULT_COMPACTION_SUMMARY_PROMPT` to use drover's shipped text.
+   */
+  summaryPrompt?: string;
+  /** Model for the summarize sub-call. Omit ⇒ reuse the run's resolved model. */
+  summaryModel?: ModelSpec;
+}
+
+/**
  * The data substrate. JSON-serialisable when `systemPrompt` is a string.
  * Dynamic agents (LLM-composed at runtime) build the same shape.
  *
@@ -204,6 +243,11 @@ export interface AgentSpec<ISchema extends TSchema = TSchema, OSchema extends TS
    * default block join. When set, the template fully defines the prompt.
    */
   promptTemplate?: PromptTemplateConfig;
+  /**
+   * Conversation-history compaction. Omit to disable (default). See
+   * {@link CompactionPolicy}.
+   */
+  compaction?: CompactionPolicy;
 }
 
 /** Static input type derived from an `AgentSpec`'s `inputSchema`. */

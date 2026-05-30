@@ -1,3 +1,5 @@
+import type { CompactionStrategy } from "./compaction.ts";
+
 /**
  * Token + cost accounting for a single LLM call. Cumulative aggregation
  * happens in the storage layer; events carry per-call deltas.
@@ -67,9 +69,20 @@ export type HarnessEvent =
   | {
       kind: "compaction";
       runId: string;
+      /** Turn at which the pass fired. */
+      turn: number;
+      /** What initiated it: an auto threshold breach or an explicit `handle.compact()`. */
+      trigger: "auto" | "manual";
+      /** Which ladder rung produced this pass. */
+      strategy: CompactionStrategy;
+      /** Estimated input tokens before the pass. */
       beforeTokens: number;
+      /** Estimated input tokens after the pass. */
       afterTokens: number;
+      /** `[startIdx, endIdx)` of the collapsed/replaced head span, in the array as this pass saw it. */
       collapsedRange: [number, number];
+      /** True only when `strategy === "summarize"` (an LLM sub-call ran). */
+      summarized: boolean;
       ts: number;
     }
   | {

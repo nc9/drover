@@ -20,7 +20,7 @@ plugins observe via `onEvent`.
 | `tool_call_start` | pi dispatches a tool | `toolUseId`, `toolName`, `input` |
 | `tool_call_end` | tool returns | `toolUseId`, `toolName`, `result`, `durationMs` |
 | `usage` | per-call accounting | `usage: { inputTokens, outputTokens, costUsd? }` |
-| `compaction` | history compacted | `beforeTokens`, `afterTokens`, `collapsedRange` |
+| `compaction` | history [compacted](/guides/compaction) | `turn`, `trigger`, `strategy`, `beforeTokens`, `afterTokens`, `collapsedRange`, `summarized` |
 | `subagent_start` | child spawn | `childRunId`, `agentId` |
 | `subagent_end` | child completes | `childRunId`, `status` |
 | `output_validated` | output passed `outputSchema` | — |
