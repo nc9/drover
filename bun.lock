@@ -54,7 +54,7 @@
     },
     "packages/commands": {
       "name": "@droveragent/commands",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@droveragent/prompt": "workspace:*",
         "yaml": "^2.6.0",
@@ -62,7 +62,7 @@
     },
     "packages/core": {
       "name": "@droveragent/core",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@sinclair/typebox": "^0.34.0",
         "effect": "^3.10.0",
@@ -73,7 +73,7 @@
     },
     "packages/droveragent": {
       "name": "droveragent",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@droveragent/core": "workspace:*",
         "@droveragent/facade": "workspace:*",
@@ -81,14 +81,14 @@
     },
     "packages/eval": {
       "name": "@droveragent/eval",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@droveragent/core": "workspace:*",
       },
     },
     "packages/facade": {
       "name": "@droveragent/facade",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@droveragent/core": "workspace:*",
         "@droveragent/harness": "workspace:*",
@@ -101,7 +101,7 @@
     },
     "packages/harness": {
       "name": "@droveragent/harness",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@droveragent/commands": "workspace:*",
         "@droveragent/core": "workspace:*",
@@ -121,7 +121,7 @@
     },
     "packages/mcp": {
       "name": "@droveragent/mcp",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@droveragent/core": "workspace:*",
         "@modelcontextprotocol/sdk": "^1.29.0",
@@ -131,7 +131,7 @@
     },
     "packages/memory": {
       "name": "@droveragent/memory",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@droveragent/core": "workspace:*",
         "@sinclair/typebox": "^0.34.0",
@@ -141,7 +141,7 @@
     },
     "packages/model": {
       "name": "@droveragent/model",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@droveragent/core": "workspace:*",
         "@mariozechner/pi-ai": "^0.70",
@@ -150,7 +150,7 @@
     },
     "packages/plugins": {
       "name": "@droveragent/plugins",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@droveragent/core": "workspace:*",
         "@sinclair/typebox": "^0.34.0",
@@ -159,7 +159,7 @@
     },
     "packages/prompt": {
       "name": "@droveragent/prompt",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@droveragent/memory": "workspace:*",
         "@droveragent/skills": "workspace:*",
@@ -169,7 +169,7 @@
     },
     "packages/runtime": {
       "name": "@droveragent/runtime",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@droveragent/core": "workspace:*",
         "@droveragent/facade": "workspace:*",
@@ -183,7 +183,7 @@
     },
     "packages/sandbox": {
       "name": "@droveragent/sandbox",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@droveragent/core": "workspace:*",
         "effect": "^3.10.0",
@@ -191,7 +191,7 @@
     },
     "packages/sandbox-just-bash": {
       "name": "@droveragent/sandbox-just-bash",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@droveragent/core": "workspace:*",
         "@droveragent/sandbox": "workspace:*",
@@ -201,7 +201,7 @@
     },
     "packages/skills": {
       "name": "@droveragent/skills",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@droveragent/core": "workspace:*",
         "@sinclair/typebox": "^0.34.0",
@@ -211,7 +211,7 @@
     },
     "packages/storage": {
       "name": "@droveragent/storage",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@droveragent/core": "workspace:*",
         "@libsql/client": "^0.17.3",
@@ -220,7 +220,7 @@
     },
     "packages/tools": {
       "name": "@droveragent/tools",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "dependencies": {
         "@droveragent/core": "workspace:*",
         "@droveragent/sandbox": "workspace:*",
