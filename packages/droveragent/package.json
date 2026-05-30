@@ -1,0 +1,39 @@
+{
+  "name": "droveragent",
+  "version": "0.0.1",
+  "private": false,
+  "type": "module",
+  "description": "Headless agent harness — define agents and run them. Umbrella entry point re-exporting @droveragent/facade + defineAgent.",
+  "keywords": ["agent", "agents", "ai", "llm", "harness", "claude", "effect"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nc9/drover.git",
+    "directory": "packages/droveragent"
+  },
+  "homepage": "https://nc9.github.io/drover/",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "build": "tsc -p tsconfig.build.json && bun run ../../scripts/postbuild-dts.ts",
+    "prepublishOnly": "tsc -p tsconfig.build.json && bun run ../../scripts/postbuild-dts.ts"
+  },
+  "dependencies": {
+    "@droveragent/core": "workspace:*",
+    "@droveragent/facade": "workspace:*"
+  },
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

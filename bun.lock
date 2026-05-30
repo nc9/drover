@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "droveragent",
+      "name": "droveragent-monorepo",
       "devDependencies": {
         "@types/bun": "^1.3.14",
         "@typescript/native-preview": "latest",
@@ -69,6 +69,14 @@
       },
       "devDependencies": {
         "@typescript/native-preview": "latest",
+      },
+    },
+    "packages/droveragent": {
+      "name": "droveragent",
+      "version": "0.0.1",
+      "dependencies": {
+        "@droveragent/core": "workspace:*",
+        "@droveragent/facade": "workspace:*",
       },
     },
     "packages/eval": {
@@ -831,6 +839,8 @@
     "devlop": ["devlop@1.1.0", "", { "dependencies": { "dequal": "^2.0.0" } }, "sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA=="],
 
     "diff": ["diff@8.0.4", "", {}, "sha512-DPi0FmjiSU5EvQV0++GFDOJ9ASQUVFh5kD+OzOnYdi7n3Wpm9hWWGfB/O2blfHcMVTL5WkQXSnRiK9makhrcnw=="],
+
+    "droveragent": ["droveragent@workspace:packages/droveragent"],
 
     "dunder-proto": ["dunder-proto@1.0.1", "", { "dependencies": { "call-bind-apply-helpers": "^1.0.1", "es-errors": "^1.3.0", "gopd": "^1.2.0" } }, "sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A=="],
 

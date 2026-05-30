@@ -12,6 +12,23 @@ coverage/
 .tmp/
 CLAUDE.md
 
+# tsc output accidentally emitted next to package sources (build belongs in dist/)
+packages/*/src/**/*.js
+packages/*/src/**/*.js.map
+packages/*/src/**/*.d.ts
+packages/*/src/**/*.d.ts.map
+packages/*/test/**/*.js
+packages/*/test/**/*.js.map
+packages/*/test/**/*.d.ts
+packages/*/test/**/*.d.ts.map
+packages/*/scripts/**/*.js
+packages/*/scripts/**/*.js.map
+packages/*/scripts/**/*.d.ts
+packages/*/scripts/**/*.d.ts.map
+# always-cruft sourcemaps (no hand-written .map files in this repo)
+**/*.js.map
+**/*.d.ts.map
+
 # local run artifacts
 var/
 evals/eval-results/
