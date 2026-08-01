@@ -27,6 +27,52 @@ for p in "${ORDER[@]}"; do
 done
 echo "✓ build ok"
 
+# Pre-flight: bun rewrites workspace:* deps at pack/publish time from the
+# versions recorded in bun.lock — NOT package.json. A stale lock (version bump
+# without a lock refresh; plain `bun install` does not update the workspace
+# "version" fields) would publish manifests depending on old, possibly
+# never-published versions — uninstallable, while every check below still
+# passes. Pack each package and verify its workspace dep versions BEFORE
+# touching the registry (npm versions are immutable; a bad publish burns the
+# version number).
+echo "▶ verifying packed workspace dep versions…"
+pack_tmp=$(mktemp -d)
+trap 'rm -rf "$pack_tmp"' EXIT
+for p in "${ORDER[@]}"; do
+  rm -f "$pack_tmp"/*.tgz
+  pack_out=$(cd "packages/$p" && bun pm pack --destination "$pack_tmp" 2>&1) \
+    || { echo "✗ pack failed: $p"; echo "$pack_out"; exit 1; }
+  tar -xzOf "$pack_tmp"/*.tgz package/package.json >"$pack_tmp/manifest.json"
+  bun -e '
+    const fs = require("fs");
+    const manifest = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const want = Object.fromEntries(
+      fs.readdirSync("packages")
+        .map((d) => `packages/${d}/package.json`)
+        .filter((f) => fs.existsSync(f))
+        .map((f) => JSON.parse(fs.readFileSync(f, "utf8")))
+        .map((p) => [p.name, p.version]),
+    );
+    const bad = [];
+    for (const field of ["dependencies", "peerDependencies", "optionalDependencies"]) {
+      for (const [dep, ver] of Object.entries(manifest[field] ?? {})) {
+        if (dep in want && ver !== want[dep]) bad.push(`${dep}@${ver} (workspace has ${want[dep]})`);
+      }
+    }
+    if (bad.length > 0) {
+      console.error(`stale workspace deps in packed ${manifest.name}: ${bad.join(", ")}`);
+      process.exit(1);
+    }
+  ' "$pack_tmp/manifest.json" || {
+    echo "✗ bun.lock is out of sync with package.json versions — bun publish"
+    echo "  would ship manifests depending on old versions. Update the workspace"
+    echo "  \"version\" fields in bun.lock (plain 'bun install' does NOT refresh"
+    echo "  them) and retry."
+    exit 1
+  }
+done
+echo "✓ packed workspace dep versions ok"
+
 echo "▶ publishing…"
 published=0
 skipped=0
