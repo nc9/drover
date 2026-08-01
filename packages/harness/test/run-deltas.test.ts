@@ -5,10 +5,7 @@ import { defineAgent, type HarnessEvent, type RunContext } from "@droveragent/co
 import { createNoneSandbox } from "@droveragent/sandbox";
 import { createMemoryStorage } from "@droveragent/storage/memory";
 import type { PreResolvedModel } from "@droveragent/model";
-import {
-  createAssistantMessageEventStream,
-  type AssistantMessage,
-} from "@mariozechner/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage } from "@mariozechner/pi-ai";
 import type { StreamFn } from "@mariozechner/pi-agent-core";
 
 import { runAgentEffect } from "../src/run.ts";

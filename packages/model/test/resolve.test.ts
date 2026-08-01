@@ -11,9 +11,7 @@ describe("resolveModel — preResolved", () => {
     const preResolved = new Map<string, PreResolvedModel>([
       ["job-x", { model: fakeModel, apiKey: "sk-test" }],
     ]);
-    const r = await Effect.runPromise(
-      resolveModel("job-x", { runId: "r", preResolved, env: {} }),
-    );
+    const r = await Effect.runPromise(resolveModel("job-x", { runId: "r", preResolved, env: {} }));
     expect(r.model).toBe(fakeModel);
     expect(r.apiKey).toBe("sk-test");
   });

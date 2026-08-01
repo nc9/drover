@@ -78,7 +78,10 @@ const ENV_KEY_BY_PROVIDER: Readonly<Record<string, ReadonlyArray<string>>> = {
   cerebras: ["CEREBRAS_API_KEY"],
 };
 
-function readApiKey(provider: string, env: Readonly<Record<string, string | undefined>>): string | null {
+function readApiKey(
+  provider: string,
+  env: Readonly<Record<string, string | undefined>>,
+): string | null {
   const keys = ENV_KEY_BY_PROVIDER[provider] ?? [];
   for (const k of keys) {
     const v = env[k];

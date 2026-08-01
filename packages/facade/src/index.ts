@@ -481,8 +481,4 @@ export type {
   HarnessEvent,
   RunResult,
 } from "@droveragent/core";
-export {
-  staticRegistry,
-  type AgentRegistry,
-  type PreResolvedModel,
-} from "@droveragent/harness";
+export { staticRegistry, type AgentRegistry, type PreResolvedModel } from "@droveragent/harness";

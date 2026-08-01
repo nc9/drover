@@ -10,7 +10,10 @@ import type { Static, TSchema } from "@sinclair/typebox";
  */
 export function toPiTool(
   tool: AnyToolDef,
-  buildCtx: (toolCallId: string, signal?: AbortSignal) => {
+  buildCtx: (
+    toolCallId: string,
+    signal?: AbortSignal,
+  ) => {
     runId: string;
     cwd: string;
     env: Readonly<Record<string, string>>;
@@ -27,7 +30,11 @@ export function toPiTool(
       toolCallId: string,
       params: Static<TSchema>,
       signal?: AbortSignal,
-    ): Promise<{ content: Array<{ type: "text"; text: string }>; details: unknown; terminate?: boolean }> => {
+    ): Promise<{
+      content: Array<{ type: "text"; text: string }>;
+      details: unknown;
+      terminate?: boolean;
+    }> => {
       const base = buildCtx(toolCallId, signal);
       const ctx = {
         runId: base.runId,
@@ -107,7 +114,9 @@ export function createTranslator(
             }
           }
           // Carry usage when the assistant message tags it.
-          const usage = (msg as { usage?: { input?: number; output?: number; cost?: { total?: number } } }).usage;
+          const usage = (
+            msg as { usage?: { input?: number; output?: number; cost?: { total?: number } } }
+          ).usage;
           if (usage && (usage.input || usage.output)) {
             const u: { inputTokens: number; outputTokens: number; costUsd?: number } = {
               inputTokens: usage.input ?? 0,
