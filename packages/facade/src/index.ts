@@ -29,6 +29,16 @@ export interface RunOptions {
   sandbox?: SandboxAdapter;
   /** Override the model alias map. */
   modelAliases?: HarnessDeps["modelAliases"];
+  /**
+   * Host-injected, already-constructed pi-ai models (+ API keys), keyed by
+   * the spec's model name (the name part of `ModelSpec`, any `:reasoning`
+   * suffix stripped). Checked BEFORE alias / slug / builtin lookup — lets a
+   * host with its own model resolver (provider connections, encrypted
+   * credentials, models newer than pi-ai's static table) bypass env-var key
+   * reading entirely. Per-call `reasoning` / `temperature` / etc. from the
+   * spec still apply on top of the injected model.
+   */
+  models?: HarnessDeps["preResolvedModels"];
   /** Subagent registry. Required when any spec in the run tree uses `subagents`. */
   agentRegistry?: HarnessDeps["agentRegistry"];
   /**
@@ -143,6 +153,7 @@ export function runAgent<S extends AgentSpec<TSchema, TSchema>>(
   const deps: HarnessDeps = {
     sandbox,
     ...(options?.modelAliases ? { modelAliases: options.modelAliases } : {}),
+    ...(options?.models ? { preResolvedModels: options.models } : {}),
     ...(options?.agentRegistry ? { agentRegistry: options.agentRegistry } : {}),
     ...(options?.storage ? { storage: options.storage } : {}),
     ...(options?.skills ? { skills: options.skills } : {}),
@@ -271,6 +282,7 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
     sandbox,
     storage: options.storage,
     ...(options.modelAliases ? { modelAliases: options.modelAliases } : {}),
+    ...(options.models ? { preResolvedModels: options.models } : {}),
     ...(options.agentRegistry ? { agentRegistry: options.agentRegistry } : {}),
     ...(options.skills ? { skills: options.skills } : {}),
     ...(options.mcpRuntime ? { mcpRuntime: options.mcpRuntime } : {}),
@@ -459,4 +471,8 @@ export type {
   HarnessEvent,
   RunResult,
 } from "@droveragent/core";
-export { staticRegistry, type AgentRegistry } from "@droveragent/harness";
+export {
+  staticRegistry,
+  type AgentRegistry,
+  type PreResolvedModel,
+} from "@droveragent/harness";
