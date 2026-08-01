@@ -18,7 +18,7 @@
   },
   "dependencies": {
     "@droveragent/core": "workspace:*",
-    "@mariozechner/pi-ai": "^0.70",
+    "@mariozechner/pi-ai": "^0.73.1",
     "effect": "^3.10.0"
   },
   "module": "./dist/index.js",

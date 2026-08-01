@@ -27,8 +27,8 @@
     "@droveragent/skills": "workspace:*",
     "@droveragent/storage": "workspace:*",
     "@droveragent/tools": "workspace:*",
-    "@mariozechner/pi-ai": "^0.70",
-    "@mariozechner/pi-agent-core": "^0.70",
+    "@mariozechner/pi-agent-core": "^0.73.1",
+    "@mariozechner/pi-ai": "^0.73.1",
     "@sinclair/typebox": "^0.34.0",
     "effect": "^3.10.0"
   },
