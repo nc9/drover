@@ -157,7 +157,13 @@ export function resolveModel(
       );
     }
 
-    let model: Model<KnownApi>;
+    // pi-ai's getModel is a bare Map lookup — it returns `undefined` on a
+    // miss rather than throwing. Without the explicit check below, a
+    // well-formed-but-unknown slug (e.g. "openrouter:openai/not-a-model")
+    // would yield `ResolvedModel.model === undefined` and crash obscurely
+    // later inside pi-agent-core. Keep the try/catch as a belt against a
+    // future pi-ai that throws instead.
+    let model: Model<KnownApi> | undefined;
     try {
       model = getModel(entry.provider as never, entry.modelId as never);
     } catch (err) {
@@ -167,6 +173,16 @@ export function resolveModel(
           modelName: norm.name,
           reason: "routing_miss",
           message: `pi-ai getModel("${entry.provider}", "${entry.modelId}") failed: ${(err as Error).message}`,
+        }),
+      );
+    }
+    if (model === undefined) {
+      return yield* Effect.fail(
+        new ModelError({
+          runId: opts.runId,
+          modelName: norm.name,
+          reason: "routing_miss",
+          message: `unknown model "${entry.modelId}" for provider "${entry.provider}" — not in pi-ai's model table. Pass a pre-resolved model (RunOptions.models) to use a model pi-ai doesn't know yet.`,
         }),
       );
     }

@@ -39,3 +39,50 @@ describe("resolveModel — preResolved", () => {
     expect(exit._tag).toBe("Failure");
   });
 });
+
+describe("resolveModel — unknown models fail fast with ModelError", () => {
+  test("bare unknown name -> ModelError routing_miss", async () => {
+    const either = await Effect.runPromise(
+      Effect.either(resolveModel("no-such-model-anywhere", { runId: "r", env: {} })),
+    );
+    expect(either._tag).toBe("Left");
+    if (either._tag === "Left") {
+      expect(either.left._tag).toBe("ModelError");
+      expect(either.left.reason).toBe("routing_miss");
+      expect(either.left.modelName).toBe("no-such-model-anywhere");
+    }
+  });
+
+  test("well-formed provider slug for a model missing from pi-ai's table -> ModelError, not undefined", async () => {
+    // pi-ai's getModel is a bare Map.get: it returns undefined on a miss
+    // instead of throwing. The resolver must convert that into a typed
+    // failure BEFORE the loop starts — never a ResolvedModel with
+    // model === undefined.
+    const either = await Effect.runPromise(
+      Effect.either(
+        resolveModel("openrouter:openai/gpt-99-does-not-exist", {
+          runId: "r",
+          env: { OPENROUTER_API_KEY: "sk-test" },
+        }),
+      ),
+    );
+    expect(either._tag).toBe("Left");
+    if (either._tag === "Left") {
+      expect(either.left._tag).toBe("ModelError");
+      expect(either.left.reason).toBe("routing_miss");
+      expect(either.left.message).toContain("openai/gpt-99-does-not-exist");
+    }
+  });
+
+  test("known provider slug still resolves to a defined model", async () => {
+    const r = await Effect.runPromise(
+      resolveModel("openrouter:openai/gpt-5.5", {
+        runId: "r",
+        env: { OPENROUTER_API_KEY: "sk-test" },
+      }),
+    );
+    expect(r.model).toBeDefined();
+    expect(r.model.id).toBe("openai/gpt-5.5");
+    expect(r.apiKey).toBe("sk-test");
+  });
+});
