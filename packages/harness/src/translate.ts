@@ -54,6 +54,17 @@ export function toPiTool(
   };
 }
 
+/** Behavioural switches for {@link createTranslator}. */
+export interface TranslatorOptions {
+  /**
+   * Forward pi `message_update` token deltas as `assistant_delta` /
+   * `thinking_delta` events. Default false — `message_update` is dropped
+   * and the stream is exactly the whole-message shape. Tool-call argument
+   * deltas are always dropped.
+   */
+  emitDeltas?: boolean;
+}
+
 /**
  * Translate pi-agent-core's `AgentEvent` stream into drover `HarnessEvent`s.
  * One pi event may produce 0..N drover events.
@@ -64,11 +75,13 @@ export function toPiTool(
 export function createTranslator(
   runId: string,
   initialTurn = 0,
+  options?: TranslatorOptions,
 ): {
   translate: (e: PiEvent) => HarnessEvent[];
   currentTurn: () => number;
 } {
   let turn = initialTurn;
+  const emitDeltas = options?.emitDeltas === true;
   const toolStartedAt = new Map<string, number>();
 
   const translate = (e: PiEvent): HarnessEvent[] => {
@@ -142,10 +155,24 @@ export function createTranslator(
           },
         ];
       }
+      case "message_update": {
+        if (!emitDeltas) return [];
+        // pi wraps the underlying pi-ai stream event; only the token-delta
+        // variants translate. toolcall_delta (partial JSON args) stays
+        // dropped — consumers get whole args at `tool_call_start`.
+        const ame = e.assistantMessageEvent;
+        if (!ame || typeof ame.delta !== "string" || ame.delta.length === 0) return [];
+        if (ame.type === "text_delta") {
+          return [{ kind: "assistant_delta", runId, turn, text: ame.delta, ts }];
+        }
+        if (ame.type === "thinking_delta") {
+          return [{ kind: "thinking_delta", runId, turn, text: ame.delta, ts }];
+        }
+        return [];
+      }
       case "agent_end":
       case "turn_end":
       case "message_start":
-      case "message_update":
       case "tool_execution_update":
         return [];
       default:
@@ -174,6 +201,8 @@ function extractToolResult(raw: unknown, isError: boolean): ToolResult {
 export type PiEvent = {
   type: string;
   message?: { role?: string; content?: unknown; usage?: unknown };
+  /** On `message_update`: the wrapped pi-ai stream event (delta variants carry `delta`). */
+  assistantMessageEvent?: { type: string; delta?: string; contentIndex?: number };
   toolCallId?: string;
   toolName?: string;
   args?: unknown;

@@ -77,6 +77,14 @@ export interface RunOptions {
    * plugin matching `writesPerTurn`.
    */
   memory?: HarnessDeps["memory"];
+  /**
+   * Stream token deltas: forward pi `message_update` events as
+   * `assistant_delta` / `thinking_delta` on `events`. Default false —
+   * the stream is exactly the whole-message shape (`assistant_text` /
+   * `thinking` at message end). Deltas are ephemeral and never persisted
+   * to storage. Tool-call argument deltas are always dropped.
+   */
+  emitDeltas?: boolean;
 }
 
 export interface RunHandle<S extends AgentSpec> {
@@ -176,6 +184,7 @@ export function runAgent<S extends AgentSpec<TSchema, TSchema>>(
     deps,
     pauseFlag,
     compactFlag,
+    ...(options?.emitDeltas ? { emitDeltas: true } : {}),
   });
 
   const result: Promise<RunResult<AgentOutput<S>>> = Effect.runPromise(Effect.either(effect)).then(
@@ -381,6 +390,7 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
       resumeFrom: checkpoint,
       pauseFlag,
       compactFlag,
+      ...(options.emitDeltas ? { emitDeltas: true } : {}),
     });
     const either = await Effect.runPromise(Effect.either(effect));
     stream.close();

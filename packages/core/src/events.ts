@@ -46,6 +46,20 @@ export type HarnessEvent =
     }
   | { kind: "assistant_text"; runId: string; turn: number; text: string; ts: number }
   | { kind: "thinking"; runId: string; turn: number; text: string; ts: number }
+  /**
+   * Incremental assistant-text token delta, streamed while the model is
+   * producing a message. Opt-in via the run option `emitDeltas` (default
+   * off — without it the event stream is exactly the non-delta shape).
+   * Ephemeral: deltas are NOT persisted to storage; the whole-message
+   * `assistant_text` at message end remains the durable record.
+   */
+  | { kind: "assistant_delta"; runId: string; turn: number; text: string; ts: number }
+  /**
+   * Incremental thinking/reasoning token delta. Same opt-in + ephemeral
+   * semantics as `assistant_delta`; the whole-block `thinking` event at
+   * message end remains the durable record.
+   */
+  | { kind: "thinking_delta"; runId: string; turn: number; text: string; ts: number }
   | {
       kind: "tool_call_start";
       runId: string;

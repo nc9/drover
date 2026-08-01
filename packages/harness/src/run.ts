@@ -89,6 +89,14 @@ export interface RunArgs<S extends AgentSpec<TSchema, TSchema>> {
    * summary prompt for that one pass. No-op when `spec.compaction` is absent.
    */
   compactFlag?: { requested: boolean; instructions?: string };
+  /**
+   * Forward pi `message_update` token deltas as `assistant_delta` /
+   * `thinking_delta` events. Default false — the event stream is exactly
+   * the whole-message shape. Deltas are ephemeral: emitted to consumers
+   * and plugin observers but never persisted to storage (the whole-message
+   * `assistant_text` / `thinking` events remain the durable record).
+   */
+  emitDeltas?: boolean;
 }
 
 const DEFAULT_OUTPUT_RETRIES = 2;
@@ -234,7 +242,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
   args: RunArgs<S>,
 ): Effect.Effect<RunResult<AgentOutput<S>>, HarnessError, never> {
   return Effect.gen(function* () {
-    const { spec, input, ctx, emit, deps, resumeFrom, pauseFlag, compactFlag } = args;
+    const { spec, input, ctx, emit, deps, resumeFrom, pauseFlag, compactFlag, emitDeltas } = args;
     const isResume = resumeFrom !== undefined;
     const startedAt = Date.now();
     const usage: Usage = { inputTokens: 0, outputTokens: 0 };
@@ -272,7 +280,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         }
       }
       // Persist; failures are swallowed so storage outages don't break runs.
-      if (storage) {
+      // Token deltas are deliberately excluded: one row per token would
+      // flood the event log, and the whole-message `assistant_text` /
+      // `thinking` events already carry the durable content.
+      if (storage && e.kind !== "assistant_delta" && e.kind !== "thinking_delta") {
         const seq = nextSeq++;
         Effect.runPromise(
           Effect.either(
@@ -512,7 +523,11 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
 
     // Translation state + lastAssistantText tracking for output validation.
     // Counters (turn, usage, retries) initialise from the checkpoint on resume.
-    const translator = createTranslator(ctx.runId, resumeFrom ? resumeFrom.seq : 0);
+    const translator = createTranslator(
+      ctx.runId,
+      resumeFrom ? resumeFrom.seq : 0,
+      emitDeltas ? { emitDeltas } : undefined,
+    );
     const lastAssistant: { text: string | null } = { text: null };
     const lastUsage: { value: Usage } = {
       value: resumeFrom ? { ...resumeFrom.usage } : { inputTokens: 0, outputTokens: 0 },
@@ -861,6 +876,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             loopConfig,
             sink as (e: PiEvent) => void,
             abortController.signal,
+            deps.streamFn,
           );
         } else {
           finalMessages = await runAgentLoop(
@@ -869,6 +885,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             loopConfig,
             sink as (e: PiEvent) => void,
             abortController.signal,
+            deps.streamFn,
           );
         }
       } catch (err) {
@@ -1004,6 +1021,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
               postLoopConfig,
               sink as (e: PiEvent) => void,
               abortController.signal,
+              deps.streamFn,
             );
           } catch (err) {
             loopError = err as Error;

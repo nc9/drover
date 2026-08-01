@@ -5,6 +5,7 @@ import type { SandboxAdapter } from "@droveragent/sandbox";
 import type { MemoryAdapter } from "@droveragent/memory";
 import type { SkillRegistry } from "@droveragent/skills";
 import type { StorageAdapter } from "@droveragent/storage";
+import type { StreamFn } from "@mariozechner/pi-agent-core";
 
 /**
  * Per-run dependencies the harness needs. Extracted into its own module so
@@ -58,4 +59,12 @@ export interface HarnessDeps {
    * `command`; the spec's `commands` array is the per-agent allowlist.
    */
   commands?: CommandRegistry;
+  /**
+   * Override pi's LLM transport. Forwarded verbatim to
+   * `runAgentLoop`/`runAgentLoopContinue` — pi calls it instead of
+   * `streamSimple` for every model call. A host seam for proxied
+   * transports; also lets tests drive the loop offline with a scripted
+   * event stream.
+   */
+  streamFn?: StreamFn;
 }
