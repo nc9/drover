@@ -36,11 +36,20 @@ for p in "${ORDER[@]}"; do
 
   # Skip only a version that is verifiably already on the registry. `npm view`
   # exit codes differ across npm majors for a missing version (E404 vs empty
-  # stdout + exit 0), so require BOTH success and non-empty output.
-  if existing=$(npm view "${name}@${version}" version 2>/dev/null) && [ -n "$existing" ]; then
+  # stdout + exit 0), so require BOTH success and non-empty output to skip.
+  # Any non-404 failure (registry outage, auth, bad config) aborts — treating
+  # it as "not published" would defeat the check's purpose.
+  view_rc=0
+  view_out=$(npm view "${name}@${version}" version 2>&1) || view_rc=$?
+  if [ "$view_rc" -eq 0 ] && [ -n "$view_out" ]; then
     echo "↷ SKIP ${name}@${version} — exact version already on registry"
     skipped=$((skipped + 1))
     continue
+  fi
+  if [ "$view_rc" -ne 0 ] && ! grep -q "E404" <<<"$view_out"; then
+    echo "✗ registry check failed for ${name}@${version} (not a 404) — aborting:"
+    echo "$view_out"
+    exit 1
   fi
 
   echo "── publishing ${name}@${version} ──"
