@@ -113,15 +113,33 @@ export function createTranslator(
               events.push({ kind: "thinking", runId, turn, text, ts });
             }
           }
-          // Carry usage when the assistant message tags it.
+          // Carry usage when the assistant message tags it. `input` is
+          // exclusive of cached prompt tokens — cacheRead/cacheWrite are
+          // separate fields and must travel too.
           const usage = (
-            msg as { usage?: { input?: number; output?: number; cost?: { total?: number } } }
+            msg as {
+              usage?: {
+                input?: number;
+                output?: number;
+                cacheRead?: number;
+                cacheWrite?: number;
+                cost?: { total?: number };
+              };
+            }
           ).usage;
-          if (usage && (usage.input || usage.output)) {
-            const u: { inputTokens: number; outputTokens: number; costUsd?: number } = {
+          if (usage && (usage.input || usage.output || usage.cacheRead || usage.cacheWrite)) {
+            const u: {
+              inputTokens: number;
+              outputTokens: number;
+              cacheReadTokens?: number;
+              cacheWriteTokens?: number;
+              costUsd?: number;
+            } = {
               inputTokens: usage.input ?? 0,
               outputTokens: usage.output ?? 0,
             };
+            if (usage.cacheRead) u.cacheReadTokens = usage.cacheRead;
+            if (usage.cacheWrite) u.cacheWriteTokens = usage.cacheWrite;
             if (usage.cost?.total !== undefined) u.costUsd = usage.cost.total;
             events.push({ kind: "usage", runId, turn, usage: u, ts });
           }

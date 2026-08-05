@@ -585,16 +585,31 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       }
       // Track tool calls in order.
       if (e.type === "tool_execution_start" && e.toolName) toolCalls.push(e.toolName);
-      // Accumulate usage.
+      // Accumulate usage. pi-ai reports `input` EXCLUSIVE of cached prompt
+      // tokens (`cacheRead`/`cacheWrite` carry the rest) — all four fields
+      // must be summed or a cached system prompt makes runs look several
+      // times cheaper than they are.
       if (e.type === "message_end") {
         const u = (
-          e.message as { usage?: { input?: number; output?: number; cost?: { total?: number } } }
+          e.message as {
+            usage?: {
+              input?: number;
+              output?: number;
+              cacheRead?: number;
+              cacheWrite?: number;
+              cost?: { total?: number };
+            };
+          }
         )?.usage;
         if (u) {
           const next: Usage = {
             inputTokens: (lastUsage.value.inputTokens ?? 0) + (u.input ?? 0),
             outputTokens: (lastUsage.value.outputTokens ?? 0) + (u.output ?? 0),
           };
+          const cacheRead = (lastUsage.value.cacheReadTokens ?? 0) + (u.cacheRead ?? 0);
+          if (cacheRead > 0) next.cacheReadTokens = cacheRead;
+          const cacheWrite = (lastUsage.value.cacheWriteTokens ?? 0) + (u.cacheWrite ?? 0);
+          if (cacheWrite > 0) next.cacheWriteTokens = cacheWrite;
           const cost = (lastUsage.value.costUsd ?? 0) + (u.cost?.total ?? 0);
           if (cost > 0) next.costUsd = cost;
           lastUsage.value = next;
@@ -896,6 +911,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // Aggregate usage.
     usage.inputTokens = lastUsage.value.inputTokens;
     usage.outputTokens = lastUsage.value.outputTokens;
+    if (lastUsage.value.cacheReadTokens !== undefined)
+      usage.cacheReadTokens = lastUsage.value.cacheReadTokens;
+    if (lastUsage.value.cacheWriteTokens !== undefined)
+      usage.cacheWriteTokens = lastUsage.value.cacheWriteTokens;
     if (lastUsage.value.costUsd !== undefined) usage.costUsd = lastUsage.value.costUsd;
 
     // Resolve terminal status. Priority order:
@@ -1046,6 +1065,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         // Re-aggregate usage — the `postSuccess` turns consumed tokens too.
         usage.inputTokens = lastUsage.value.inputTokens;
         usage.outputTokens = lastUsage.value.outputTokens;
+        if (lastUsage.value.cacheReadTokens !== undefined)
+          usage.cacheReadTokens = lastUsage.value.cacheReadTokens;
+        if (lastUsage.value.cacheWriteTokens !== undefined)
+          usage.cacheWriteTokens = lastUsage.value.cacheWriteTokens;
         if (lastUsage.value.costUsd !== undefined) usage.costUsd = lastUsage.value.costUsd;
       }
     }
