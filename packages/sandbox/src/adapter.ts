@@ -54,6 +54,13 @@ export interface SandboxAdapter {
   readFile(path: string): Effect.Effect<string, SandboxError, never>;
   writeFile(path: string, contents: string): Effect.Effect<void, SandboxError, never>;
   /**
+   * Optional: list directory entry names (non-recursive, no metadata).
+   * Consumers use it to harvest output files after a run. Adapters whose
+   * filesystem cannot enumerate may omit it — callers must feature-check
+   * before use.
+   */
+  readdir?(path: string): Effect.Effect<ReadonlyArray<string>, SandboxError, never>;
+  /**
    * Map a tool-supplied (possibly relative) path to a host-absolute path
    * within the run's working tree. The returned path may still escape
    * allowed roots — callers that intend to act on the path should pass
