@@ -34,3 +34,4 @@ var/
 evals/eval-results/
 evals/results/
 plans/
+.envrc
