@@ -183,7 +183,7 @@
     },
     "packages/sandbox": {
       "name": "@droveragent/sandbox",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@droveragent/core": "workspace:*",
         "effect": "^3.10.0",
