@@ -1,0 +1,32 @@
+{
+  "name": "@droveragent/sandbox-cloudflare",
+  "version": "0.1.0",
+  "private": false,
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "test": "bun test",
+    "build": "tsc -p tsconfig.build.json && bun run ../../scripts/postbuild-dts.ts",
+    "prepublishOnly": "tsc -p tsconfig.build.json && bun run ../../scripts/postbuild-dts.ts"
+  },
+  "dependencies": {
+    "@droveragent/core": "workspace:*",
+    "@droveragent/sandbox": "workspace:*",
+    "effect": "^3.10.0"
+  }
+}

@@ -189,6 +189,15 @@
         "effect": "^3.10.0",
       },
     },
+    "packages/sandbox-cloudflare": {
+      "name": "@droveragent/sandbox-cloudflare",
+      "version": "0.1.0",
+      "dependencies": {
+        "@droveragent/core": "workspace:*",
+        "@droveragent/sandbox": "workspace:*",
+        "effect": "^3.10.0",
+      },
+    },
     "packages/sandbox-just-bash": {
       "name": "@droveragent/sandbox-just-bash",
       "version": "0.1.0",
@@ -370,6 +379,8 @@
     "@droveragent/runtime": ["@droveragent/runtime@workspace:packages/runtime"],
 
     "@droveragent/sandbox": ["@droveragent/sandbox@workspace:packages/sandbox"],
+
+    "@droveragent/sandbox-cloudflare": ["@droveragent/sandbox-cloudflare@workspace:packages/sandbox-cloudflare"],
 
     "@droveragent/sandbox-just-bash": ["@droveragent/sandbox-just-bash@workspace:packages/sandbox-just-bash"],
 
