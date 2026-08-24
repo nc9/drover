@@ -1,26 +1,22 @@
 {
-  "name": "@droveragent/storage",
+  "name": "@droveragent/storage-d1",
   "version": "0.1.0",
   "private": false,
+  "files": [
+    "dist"
+  ],
   "type": "module",
   "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    },
-    "./memory": {
-      "types": "./dist/memory.d.ts",
-      "import": "./dist/memory.js"
-    },
-    "./libsql": {
-      "types": "./dist/libsql.d.ts",
-      "import": "./dist/libsql.js"
-    },
-    "./migrations": {
-      "types": "./dist/migrations.d.ts",
-      "import": "./dist/migrations.js"
     }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
@@ -30,15 +26,7 @@
   },
   "dependencies": {
     "@droveragent/core": "workspace:*",
-    "@libsql/client": "^0.17.3",
+    "@droveragent/storage": "workspace:*",
     "effect": "^3.10.0"
-  },
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "files": [
-    "dist"
-  ],
-  "publishConfig": {
-    "access": "public"
   }
 }

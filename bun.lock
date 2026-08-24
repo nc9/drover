@@ -228,6 +228,15 @@
         "effect": "^3.10.0",
       },
     },
+    "packages/storage-d1": {
+      "name": "@droveragent/storage-d1",
+      "version": "0.1.0",
+      "dependencies": {
+        "@droveragent/core": "workspace:*",
+        "@droveragent/storage": "workspace:*",
+        "effect": "^3.10.0",
+      },
+    },
     "packages/tools": {
       "name": "@droveragent/tools",
       "version": "0.1.0",
@@ -369,6 +378,8 @@
     "@droveragent/skills": ["@droveragent/skills@workspace:packages/skills"],
 
     "@droveragent/storage": ["@droveragent/storage@workspace:packages/storage"],
+
+    "@droveragent/storage-d1": ["@droveragent/storage-d1@workspace:packages/storage-d1"],
 
     "@droveragent/tools": ["@droveragent/tools@workspace:packages/tools"],
 
