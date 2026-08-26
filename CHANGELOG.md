@@ -2,6 +2,39 @@
 
 All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version together.
 
+## 0.2.0 — 2026-08-25
+
+`@droveragent/harness` + `@droveragent/facade` only; every other package is
+unchanged at 0.1.x.
+
+### Added
+
+- `RunOptions.onPayload` (facade) / `HarnessDeps.onPayload` (harness) — patch the
+  provider request body immediately before it is sent. pi calls it with the
+  built params and the model; return the replacement payload, or `undefined` to
+  leave it unchanged.
+
+  The seam is for provider request preferences the host knows and the harness
+  does not — OpenRouter routing being the motivating case:
+
+  ```ts
+  runAgent(spec, input, {
+    onPayload: (payload) => ({
+      ...(payload as Record<string, unknown>),
+      provider: { order: ["amazon-bedrock/us-east-1"], allow_fallbacks: true },
+    }),
+  });
+  ```
+
+  Applied to EVERY model call of the run — the main loop, subagent runs (which
+  inherit `deps`), and the compaction summariser — so a pinned route stays
+  pinned for the whole run. Never carry secrets in it: this is the request body,
+  not a credential channel; use `apiKey` or an egress proxy.
+
+  Previously `loopConfig` was a fixed literal that never forwarded `onPayload`,
+  so a consumer had no way to reach it short of replacing the whole transport
+  via `HarnessDeps.streamFn`.
+
 ## 0.1.0 — 2026-08-01
 
 First consumer-ready release.
