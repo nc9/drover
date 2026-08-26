@@ -15,7 +15,7 @@
  */
 import { COMPACTION_SUMMARY_MARKER } from "@droveragent/core";
 import { completeSimple } from "@mariozechner/pi-ai";
-import type { KnownApi, Message, Model } from "@mariozechner/pi-ai";
+import type { KnownApi, Message, Model, SimpleStreamOptions } from "@mariozechner/pi-ai";
 
 /** Produce summary text for the head messages. Injected into the orchestrator. */
 export type SummarizeFn = (
@@ -63,11 +63,19 @@ export function buildSummaryMessage(summaryText: string, now: number): Message {
   return { role: "user", content: `${COMPACTION_SUMMARY_MARKER} ${body}`, timestamp: now };
 }
 
-/** Build the pi-backed summariser bound to a model + key. */
+/**
+ * Build the pi-backed summariser bound to a model + key.
+ *
+ * `onPayload` is the host's provider request-body seam (`HarnessDeps.onPayload`)
+ * forwarded verbatim, so a summary call routes exactly like the run's other
+ * model calls — a host that pins an OpenRouter provider order for the loop would
+ * otherwise silently lose it here.
+ */
 export function makeSummarizer(
   model: Model<KnownApi>,
   apiKey: string,
   maxTokens?: number,
+  onPayload?: SimpleStreamOptions["onPayload"],
 ): SummarizeFn {
   return async (head, summaryPrompt, signal) => {
     const transcript = renderTranscript(head);
@@ -82,6 +90,7 @@ export function makeSummarizer(
         apiKey,
         maxTokens: maxTokens ?? SUMMARY_MAX_TOKENS,
         ...(signal ? { signal } : {}),
+        ...(onPayload ? { onPayload } : {}),
       },
     );
     return blockText(reply.content);

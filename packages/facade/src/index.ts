@@ -85,6 +85,20 @@ export interface RunOptions {
    * to storage. Tool-call argument deltas are always dropped.
    */
   emitDeltas?: boolean;
+  /**
+   * Patch the provider request body right before it is sent. Called with the
+   * built params and the model; return the replacement payload, or `undefined`
+   * to leave it unchanged.
+   *
+   * For provider-specific request preferences drover has no opinion on — the
+   * motivating case is OpenRouter routing, e.g.
+   * `provider: { order: ["amazon-bedrock/us-east-1"], allow_fallbacks: true }`.
+   * Applied to every model call of the run, the compaction summariser included.
+   *
+   * Never carry secrets in it: this is the request body, not a credential
+   * channel.
+   */
+  onPayload?: HarnessDeps["onPayload"];
 }
 
 export interface RunHandle<S extends AgentSpec> {
@@ -168,6 +182,7 @@ export function runAgent<S extends AgentSpec<TSchema, TSchema>>(
     ...(options?.mcpRuntime ? { mcpRuntime: options.mcpRuntime } : {}),
     ...(options?.commands ? { commands: options.commands } : {}),
     ...(options?.memory ? { memory: options.memory } : {}),
+    ...(options?.onPayload ? { onPayload: options.onPayload } : {}),
   };
 
   const effectiveSpec: S =
@@ -297,6 +312,7 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
     ...(options.mcpRuntime ? { mcpRuntime: options.mcpRuntime } : {}),
     ...(options.commands ? { commands: options.commands } : {}),
     ...(options.memory ? { memory: options.memory } : {}),
+    ...(options.onPayload ? { onPayload: options.onPayload } : {}),
   };
 
   const effectiveSpec: S =

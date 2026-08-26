@@ -6,6 +6,7 @@ import type { MemoryAdapter } from "@droveragent/memory";
 import type { SkillRegistry } from "@droveragent/skills";
 import type { StorageAdapter } from "@droveragent/storage";
 import type { StreamFn } from "@mariozechner/pi-agent-core";
+import type { SimpleStreamOptions } from "@mariozechner/pi-ai";
 
 /**
  * Per-run dependencies the harness needs. Extracted into its own module so
@@ -67,4 +68,20 @@ export interface HarnessDeps {
    * event stream.
    */
   streamFn?: StreamFn;
+  /**
+   * Patch the provider request body immediately before it is sent. pi calls it
+   * with the built params and the model; return the replacement payload, or
+   * `undefined` to leave it unchanged.
+   *
+   * The seam exists for provider-specific request preferences a host knows and
+   * the harness does not — OpenRouter `provider: { order, allow_fallbacks }`
+   * routing being the motivating case. It is applied to every model call of the
+   * run, including the compaction summariser, so a pinned route stays pinned
+   * for the whole run rather than only the main loop.
+   *
+   * NEVER route secrets through it: the payload is the request body, and
+   * credentials belong in `apiKey` / transport headers. Prefer `streamFn` when
+   * the whole transport needs replacing.
+   */
+  onPayload?: SimpleStreamOptions["onPayload"];
 }

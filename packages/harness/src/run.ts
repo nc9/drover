@@ -768,7 +768,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         summaryModel = summaryResolved.model;
         summaryApiKey = summaryResolved.apiKey;
       }
-      compactionSummarizer = makeSummarizer(summaryModel, summaryApiKey);
+      // The summariser gets `deps.onPayload` too — a host that pins routing for
+      // the run means the run, not just the main loop.
+      compactionSummarizer = makeSummarizer(summaryModel, summaryApiKey, undefined, deps.onPayload);
     }
 
     // transformContext: pi calls this before each LLM call with the live
@@ -816,6 +818,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       ...(resolved.temperature !== undefined ? { temperature: resolved.temperature } : {}),
       ...(resolved.maxTokens !== undefined ? { maxTokens: resolved.maxTokens } : {}),
       ...(resolved.cacheRetention ? { cacheRetention: resolved.cacheRetention } : {}),
+      // Host seam for provider request-body preferences (e.g. OpenRouter
+      // routing). `AgentLoopConfig extends SimpleStreamOptions` and pi spreads
+      // the whole config into the stream options, so this reaches the provider.
+      ...(deps.onPayload ? { onPayload: deps.onPayload } : {}),
       ...(transformContext ? { transformContext } : {}),
       ...(beforeToolCall ? { beforeToolCall: beforeToolCall as never } : {}),
       ...(afterToolCall ? { afterToolCall: afterToolCall as never } : {}),
