@@ -16,8 +16,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ORDER=(core sandbox sandbox-vercel tools memory plugins skills prompt commands mcp model \
-       storage harness sandbox-just-bash facade runtime eval droveragent)
+ORDER=(core sandbox sandbox-vercel sandbox-cloudflare tools memory plugins skills prompt \
+       commands mcp model storage storage-d1 harness sandbox-just-bash facade runtime eval \
+       droveragent)
 
 echo "▶ building all (dependency order)…"
 for p in "${ORDER[@]}"; do

@@ -230,7 +230,7 @@
     },
     "packages/storage": {
       "name": "@droveragent/storage",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@droveragent/core": "workspace:*",
         "@libsql/client": "^0.17.3",
