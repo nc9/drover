@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Cause, Effect } from "effect";
 
-import { createCloudflareSandbox, cloudflareSdkClient, normalizePosix } from "../src/index.ts";
+import {
+  createCloudflareSandbox,
+  cloudflareSdkClient,
+  isRuntimeReplacedError,
+  normalizePosix,
+} from "../src/index.ts";
 import type {
   CloudflareExecOptions,
   CloudflareGetSandboxOptions,
@@ -553,6 +558,85 @@ describe("createCloudflareSandbox", () => {
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(r._tag).toBe("Left");
     if (r._tag === "Left") expect(r.left.message).toContain("acquisition timed out");
+  });
+
+  test("a replaced runtime drops the handle: the next op re-acquires, other errors do not", async () => {
+    const behavior: RunBehavior = {
+      startError: Object.assign(
+        new Error(
+          "Sandbox operation sandbox.exec was interrupted while the platform was updating the sandbox runtime",
+        ),
+        { code: "OPERATION_INTERRUPTED" },
+      ),
+    };
+    const { adapter, state } = sb({}, { behavior });
+    const first = await Effect.runPromiseExit(adapter.run("echo", ["hi"]));
+    expect(first._tag).toBe("Failure");
+    expect(state.getSandboxCalls.length).toBe(1);
+
+    // The stub is gone; the next op must acquire afresh (env + policy re-applied).
+    behavior.startError = undefined;
+    const second = await Effect.runPromise(adapter.run("echo", ["hi"]));
+    expect(second.exitCode).toBe(0);
+    expect(state.getSandboxCalls.length).toBe(2);
+    expect(state.allowedHostCalls.length).toBe(2);
+
+    // An ordinary failure keeps the memoised handle.
+    behavior.startError = new Error("spawn failed");
+    const third = await Effect.runPromiseExit(adapter.run("echo", ["hi"]));
+    expect(third._tag).toBe("Failure");
+    behavior.startError = undefined;
+    await Effect.runPromise(adapter.run("echo", ["hi"]));
+    expect(state.getSandboxCalls.length).toBe(2);
+  });
+
+  test("isRuntimeReplacedError: codes, messages, causes, and the adapter's own SandboxError", async () => {
+    expect(isRuntimeReplacedError({ code: "STALE_PROCESS_HANDLE" })).toBe(true);
+    expect(
+      isRuntimeReplacedError(
+        new Error("wrapped", {
+          cause: new Error("Process handle refers to a previous runtime incarnation"),
+        }),
+      ),
+    ).toBe(true);
+    expect(isRuntimeReplacedError(new Error("ENOENT"))).toBe(false);
+    expect(isRuntimeReplacedError(null)).toBe(false);
+    const { adapter } = sb(
+      {},
+      {
+        behavior: {
+          startError: new Error(
+            "Sandbox operation sandbox.exec was interrupted while the platform was updating the sandbox runtime",
+          ),
+        },
+      },
+    );
+    const exit = await Effect.runPromiseExit(adapter.run("echo", ["hi"]));
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const failure = Cause.failureOption(exit.cause);
+      expect(failure._tag).toBe("Some");
+      if (failure._tag === "Some") expect(isRuntimeReplacedError(failure.value)).toBe(true);
+    }
+
+    // Recognised by `code` alone: the wrapped SandboxError must still classify,
+    // and the original message must still be there for the caller to show.
+    const codeOnly = sb(
+      {},
+      { behavior: { startError: Object.assign(new Error("boom"), { code: "STALE_PROCESS_HANDLE" }) } },
+    );
+    const exit2 = await Effect.runPromiseExit(codeOnly.adapter.run("echo", ["hi"]));
+    expect(exit2._tag).toBe("Failure");
+    if (exit2._tag === "Failure") {
+      const failure = Cause.failureOption(exit2.cause);
+      if (failure._tag === "Some") {
+        expect(isRuntimeReplacedError(failure.value)).toBe(true);
+        expect(failure.value.message).toContain("boom");
+      }
+    }
+    expect(codeOnly.state.getSandboxCalls.length).toBe(1);
+    await Effect.runPromiseExit(codeOnly.adapter.run("echo", ["hi"]));
+    expect(codeOnly.state.getSandboxCalls.length).toBe(2);
   });
 
   test("failed acquire resets so the next op can retry", async () => {

@@ -309,6 +309,41 @@ const SIGKILL = 9;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8");
 
+/**
+ * The SDK's "the container behind this stub was replaced" family.
+ *
+ * Matched on the SDK's error `code` first (`OPERATION_INTERRUPTED` with a
+ * `runtime_replaced` reason, `STALE_PROCESS_HANDLE`) and on its messages as a
+ * fallback, through up to eight `cause` links, because the SDK wraps DO
+ * transport failures before they reach the adapter. Also true for a
+ * `SandboxError` this adapter minted from one, so callers can classify the
+ * error they were handed without keeping the original.
+ */
+export function isRuntimeReplacedError(err: unknown): boolean {
+  let current: unknown = err;
+  for (let depth = 0; depth < 8 && current != null; depth += 1) {
+    if (typeof current === "object") {
+      const { code, message, cause } = current as {
+        code?: unknown;
+        message?: unknown;
+        cause?: unknown;
+      };
+      if (code === "OPERATION_INTERRUPTED" || code === "STALE_PROCESS_HANDLE") return true;
+      if (typeof message === "string" && RUNTIME_REPLACED_PATTERN.test(message)) return true;
+      current = cause;
+      continue;
+    }
+    return false;
+  }
+  return false;
+}
+
+/** Appended to a wrapped message that was recognised by `code` alone. */
+const RUNTIME_REPLACED_TAG = "(sandbox runtime replaced)";
+
+const RUNTIME_REPLACED_PATTERN =
+  /interrupted while the platform was updating the sandbox runtime|refers to a previous runtime incarnation|runtime incarnation does not match|\(sandbox runtime replaced\)/i;
+
 const sandboxError = (op: "exec" | "read" | "write", err: unknown, path?: string): SandboxError =>
   err instanceof SandboxError
     ? err
@@ -481,6 +516,41 @@ export function createCloudflareSandbox(opts: CloudflareSandboxOptions): Cloudfl
     return sandboxP;
   };
 
+  /**
+   * Wrap an SDK failure, and drop the memoised handle when the SDK reports
+   * that the container behind it was REPLACED.
+   *
+   * When the container restarts under a live stub — the platform killed it
+   * (out of memory is the usual reason), it crashed, or the runtime was
+   * updated — the SDK fails the in-flight op with `OPERATION_INTERRUPTED`
+   * ("interrupted while the platform was updating the sandbox runtime") and
+   * every later op on the SAME stub with the same error, or with
+   * `STALE_PROCESS_HANDLE` ("Process handle refers to a previous runtime
+   * incarnation"). Those are not retryable in place, but a FRESH acquire is:
+   * `getSandbox` addresses the same Durable Object, whose new runtime
+   * incarnation accepts work. Without this reset one container restart wedged
+   * every remaining tool call of the turn.
+   *
+   * The disk did not survive the restart. The error is returned unchanged so
+   * the caller can recognise it (see {@link isRuntimeReplacedError}) and
+   * re-stage whatever it had written.
+   */
+  const failed = (op: "exec" | "read" | "write", err: unknown, path?: string): SandboxError => {
+    if (!isRuntimeReplacedError(err)) return sandboxError(op, err, path);
+    sandboxP = null;
+    const wrapped = sandboxError(op, err, path);
+    // `SandboxError` carries only a message, so an SDK error recognised by its
+    // `code` alone would stop being recognisable once wrapped. Tag it.
+    return RUNTIME_REPLACED_PATTERN.test(wrapped.message)
+      ? wrapped
+      : new SandboxError({
+          runId: wrapped.runId,
+          op: wrapped.op,
+          ...(wrapped.path !== undefined ? { path: wrapped.path } : {}),
+          message: `${wrapped.message} ${RUNTIME_REPLACED_TAG}`,
+        });
+  };
+
   const capTail = (text: string): string => {
     const bytes = encoder.encode(text);
     if (bytes.length <= maxOutputBytes) return text;
@@ -620,7 +690,7 @@ export function createCloudflareSandbox(opts: CloudflareSandboxOptions): Cloudfl
   ): Effect.Effect<ExecResult, SandboxError, never> =>
     Effect.tryPromise({
       try: (): Promise<ExecResult> => execRun(cmd, args, runOpts),
-      catch: (err): SandboxError => sandboxError("exec", err),
+      catch: (err): SandboxError => failed("exec", err),
     });
 
   const readFile = (p: string): Effect.Effect<string, SandboxError, never> =>
@@ -634,7 +704,7 @@ export function createCloudflareSandbox(opts: CloudflareSandboxOptions): Cloudfl
         if (!result.success) throw new Error(`readFile failed for '${p}'`);
         return result.content;
       },
-      catch: (err): SandboxError => sandboxError("read", err, p),
+      catch: (err): SandboxError => failed("read", err, p),
     });
 
   const writeFile = (p: string, contents: string): Effect.Effect<void, SandboxError, never> =>
@@ -644,7 +714,7 @@ export function createCloudflareSandbox(opts: CloudflareSandboxOptions): Cloudfl
         const result = await sandbox.writeFile(p, contents);
         if (!result.success) throw new Error(`writeFile failed for '${p}'`);
       },
-      catch: (err): SandboxError => sandboxError("write", err, p),
+      catch: (err): SandboxError => failed("write", err, p),
     });
 
   const readdir = (p: string): Effect.Effect<ReadonlyArray<string>, SandboxError, never> =>
@@ -655,7 +725,7 @@ export function createCloudflareSandbox(opts: CloudflareSandboxOptions): Cloudfl
         if (!result.success) throw new Error(`listFiles failed for '${p}'`);
         return result.files.map((f) => f.name);
       },
-      catch: (err): SandboxError => sandboxError("read", err, p),
+      catch: (err): SandboxError => failed("read", err, p),
     });
 
   const mkdir = (p: string): Effect.Effect<void, SandboxError, never> =>
@@ -666,7 +736,7 @@ export function createCloudflareSandbox(opts: CloudflareSandboxOptions): Cloudfl
         const result = await sandbox.mkdir(p, { recursive: true });
         if (!result.success) throw new Error(`mkdir failed for '${p}'`);
       },
-      catch: (err): SandboxError => sandboxError("write", err, p),
+      catch: (err): SandboxError => failed("write", err, p),
     });
 
   const resolvePath = (p: string, cwd: string): string =>
@@ -705,7 +775,7 @@ export function createCloudflareSandbox(opts: CloudflareSandboxOptions): Cloudfl
         const sandbox = await pending.catch(() => null);
         if (sandbox) await op(sandbox);
       },
-      catch: (err): SandboxError => sandboxError("exec", err),
+      catch: (err): SandboxError => failed("exec", err),
     });
 
   return {
