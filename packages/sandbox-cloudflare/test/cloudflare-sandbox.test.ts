@@ -341,6 +341,19 @@ describe("createCloudflareSandbox", () => {
     expect(acquired).toBe(1);
   });
 
+  test("env also rides on every exec (setEnvVars misses an already-started container)", async () => {
+    const { adapter, state } = sb({ env: { PYTHONUNBUFFERED: "1", A: "base" } });
+    await Effect.runPromise(adapter.run("true", []));
+    await Effect.runPromise(adapter.run("true", [], { env: { A: "override", B: "2" } }));
+    expect(state.execCalls[0]?.options?.env).toEqual({ PYTHONUNBUFFERED: "1", A: "base" });
+    // per-call env wins on collision, adapter-wide keys survive
+    expect(state.execCalls[1]?.options?.env).toEqual({
+      PYTHONUNBUFFERED: "1",
+      A: "override",
+      B: "2",
+    });
+  });
+
   test("run: maps argv, cwd, env onto exec and returns the result", async () => {
     const { adapter, state } = sb(
       {},

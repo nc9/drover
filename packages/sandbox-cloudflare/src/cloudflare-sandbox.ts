@@ -8,13 +8,25 @@ import { Effect } from "effect";
  * Unlike Vercel Sandbox — where the firewall is a `getOrCreate` parameter —
  * Cloudflare's egress controls live on the `Sandbox` **Durable Object**
  * (`@cloudflare/containers`' `enableInternet` field plus the runtime
- * `setAllowedHosts` / `setDeniedHosts` RPCs). Two consequences:
+ * `setAllowedHosts` / `setDeniedHosts` RPCs). Three consequences:
  *
  * 1. `deny-all` is only *real* when the DO subclass declares
  *    `enableInternet = false`. The adapter cannot read that flag over RPC,
  *    so it cannot verify it — see {@link CloudflareSandboxOptions.networkPolicy}.
  * 2. `allow-all` is likewise not something the adapter can switch on; it
  *    means "the adapter installs no host lists, the DO's own posture wins".
+ * 3. Installing either list flips the container into **intercept-all** mode
+ *    for the rest of its life (`@cloudflare/containers` promotes as soon as
+ *    the outbound config is mutated at runtime). Any catch-all `static
+ *    outbound` handler on the DO then sees *every* allowed host, not just
+ *    the one it was written for — so a credential-stamping handler must key
+ *    off `new URL(request.url).hostname` (or live in `static outboundByHost`)
+ *    rather than assume its target.
+ *
+ * Host patterns are matched by `@cloudflare/containers`' `simpleGlobMatch`:
+ * plain equality plus `*` wildcards, against the hostname only. As of
+ * `@cloudflare/containers@0.3.7` there is **no CIDR matching** despite what
+ * the docs suggest — a `"10.0.0.0/8"` entry matches nothing.
  */
 export type CloudflareNetworkPolicy =
   | "deny-all"
@@ -25,6 +37,18 @@ export type CloudflareNetworkPolicy =
       /** Hostnames blocked unconditionally, even when `enableInternet` is true. */
       deny?: readonly string[];
     };
+
+/*
+ * The structural slices below mirror `@cloudflare/sandbox` without importing
+ * it — the SDK only loads inside `workerd`, so a direct import would make this
+ * package untestable in plain bun and drag Workers types into every consumer.
+ *
+ * Verified byte-for-byte assignable against `@cloudflare/sandbox@0.13.0-next.751.1`
+ * (`@cloudflare/containers@0.3.7`): the real `SandboxClient<Sandbox>` returned by
+ * `getSandbox` satisfies `CloudflareSandboxHandle`, and `SandboxOptions` and
+ * `CloudflareGetSandboxOptions` are mutually assignable. Re-run that check after
+ * bumping the SDK — the prerelease line moves.
+ */
 
 /** Structural slice of the SDK's `ProcessOutput<string>`. */
 export interface CloudflareProcessOutput {
@@ -185,10 +209,29 @@ export interface CloudflareSandboxOptions {
    * base posture. Declare it yourself:
    *
    * ```ts
-   * export class ZenancySandbox extends Sandbox<Env> {
+   * export class MySandbox extends Sandbox<Env> {
    *   override enableInternet = false;
+   *   // Required to see (and therefore modify) HTTPS egress. Defaults to
+   *   // false on Container; Sandbox does not override it. Left false, an
+   *   // allowed HTTPS host is a transparent tunnel — outbound handlers
+   *   // never run and no header can be added.
+   *   override interceptHttps = true;
    * }
+   * // Without this re-export the DO throws on the first list install:
+   * // "ctx.exports.ContainerProxy is undefined".
+   * export { ContainerProxy } from "@cloudflare/sandbox";
    * ```
+   *
+   * With `interceptHttps = true` the platform mints an ephemeral CA at
+   * `/etc/cloudflare/certs/cloudflare-containers-ca.crt` inside the
+   * container. The stock sandbox image trusts it; anything with its own
+   * trust store (python `certifi`, node, curl built against a pinned
+   * bundle) needs `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` /
+   * `NODE_EXTRA_CA_CERTS` pointed at a bundle that includes it, or TLS
+   * verification fails for every intercepted host. The CA-free alternative
+   * (what the SDK's own git/s3/r2 credential proxies do): have the container
+   * speak plain `http://` to the host, and let the `outboundByHost` handler
+   * upgrade to `https://` and stamp the credential before forwarding.
    *
    * Anything other than `"allow-all"` requires the handle to expose
    * `setAllowedHosts` / `setDeniedHosts`; the adapter fails closed with a
@@ -197,7 +240,23 @@ export interface CloudflareSandboxOptions {
   networkPolicy?: CloudflareNetworkPolicy;
   /** Options forwarded to `getSandbox`. `normalizeId` defaults to true. */
   sandboxOptions?: CloudflareGetSandboxOptions;
-  /** Container-wide env applied once per acquire via `setEnvVars`. */
+  /**
+   * Environment for everything this adapter runs.
+   *
+   * Applied two ways, deliberately:
+   *
+   * 1. `setEnvVars` once per acquire. **This only reaches a container that has
+   *    not started yet** — the SDK's `setEnvVars` mutates the Durable Object's
+   *    `envVars` record, and that record is handed to the container exactly
+   *    once, in the `container.start()` config. Call it against a container
+   *    that is already running (a warm sandbox reattached from a later
+   *    isolate) and it is a silent no-op until the next cold start.
+   * 2. Merged under `ExecOptions.env` on **every** `run`, so it is in effect
+   *    regardless of container warmth. Per-call `env` wins on key collisions.
+   *
+   * Secrets do not belong here either way: they would be visible to every
+   * process in the container. Inject them at the egress handler instead.
+   */
   env?: Record<string, string>;
   /**
    * Default cwd for `run` and the base for `resolvePath`. Default
@@ -485,12 +544,18 @@ export function createCloudflareSandbox(opts: CloudflareSandboxOptions): Cloudfl
         });
       }
 
+      // `setEnvVars` only lands on a container that has yet to start, so the
+      // adapter-wide env rides on every exec too. Per-call env wins.
+      const execEnv =
+        opts.env !== undefined || runOpts?.env !== undefined
+          ? { ...opts.env, ...runOpts?.env }
+          : undefined;
       const startP = acquired.sandbox
         .exec([cmd, ...args], {
           cwd: runOpts?.cwd ?? baseCwd,
           // Container-side backstop; the client-side race is the primary.
           timeout: timeoutMs + SDK_TIMEOUT_PAD_MS,
-          ...(runOpts?.env !== undefined ? { env: { ...runOpts.env } } : {}),
+          ...(execEnv !== undefined ? { env: execEnv } : {}),
         })
         .then(
           (process) => ({ kind: "started" as const, process }),
