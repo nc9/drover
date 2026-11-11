@@ -77,3 +77,17 @@ describe("createTranslator — message_update deltas", () => {
     expect(events[0]).toMatchObject({ kind: "assistant_text", text: "hello" });
   });
 });
+
+describe("tool_call_end trust hint", () => {
+  test("tool results are stamped trust: untrusted", () => {
+    const t = createTranslator("run_1");
+    const out = t.translate({
+      type: "tool_execution_end",
+      toolCallId: "t1",
+      toolName: "read",
+      result: { content: [{ type: "text", text: "ok" }] },
+      isError: false,
+    } as unknown as PiEvent);
+    expect(out[0]).toMatchObject({ kind: "tool_call_end", trust: "untrusted" });
+  });
+});

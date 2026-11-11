@@ -178,6 +178,7 @@ export function createTranslator(
             toolName,
             result,
             durationMs: ts - startedAt,
+            trust: "untrusted",
             ts,
           },
         ];

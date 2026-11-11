@@ -6,3 +6,4 @@ export * from "./errors.ts";
 export * from "./tool.ts";
 export * from "./plugin.ts";
 export * from "./result.ts";
+export * from "./trace.ts";

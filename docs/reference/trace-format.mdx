@@ -1,0 +1,143 @@
+---
+title: Trace format v1
+description: The versioned shape of a run trace, for viewers and for comparing runs across harness versions.
+---
+
+A **trace** is a header plus the run's `HarnessEvent`s in order. Stored in a
+`StorageAdapter` the events are rows (`appendEvent` / `listEvents`); exported, a trace is
+JSON Lines.
+
+```
+{"kind":"trace_header","traceVersion":1,"runId":"run_1","agentId":"triage","specHash":"a1b2","harnessVersion":"0.2.0","startedAt":1700000000000}
+{"kind":"run_start","runId":"run_1","ts":1700000000001,"agentId":"triage","specHash":"a1b2"}
+{"kind":"turn_start","runId":"run_1","ts":1700000000002,"turn":1}
+...
+{"kind":"run_end","runId":"run_1","ts":1700000009000,"status":"success"}
+```
+
+```ts
+import { traceToJsonl, parseTraceJsonl, readEvent, summarizeTrace, TRACE_VERSION } from "@droveragent/core";
+
+const rows = await Effect.runPromise(storage.listEvents(runId));
+const events = rows.map((r) => readEvent(r.payload));          // typed, or { unknown: true, ... }
+const text = traceToJsonl({ header: { traceVersion: TRACE_VERSION, runId }, events });
+const trace = parseTraceJsonl(text);                           // tolerant; trace.warnings says what it skipped
+const summary = summarizeTrace(trace.events);                  // numbers to list and to diff between versions
+```
+
+## Stability rules
+
+- Adding an event kind or a field does **not** change `traceVersion`. A reader MUST ignore
+  unknown fields and MUST tolerate unknown kinds: `readEvent` returns them as
+  `{ unknown: true, kind, reason: "unknown_kind", raw }`, and storage never drops them.
+- Removing or renaming a kind or field, or changing a field's type or meaning, bumps `traceVersion`.
+- A trace written by a newer version is still read; the reader adds a warning.
+- `REQUIRED_FIELDS` is exhaustive over `HarnessEvent["kind"]` at compile time, so a new kind cannot be
+  added without declaring what makes it well-formed. A known kind missing a required field is
+  returned as `{ unknown: true, reason: "malformed: <field>" }`, not dropped.
+
+## Events
+
+Every event has `kind`, `runId` (string), `ts` (epoch ms). Required fields beyond those:
+
+| Kind | Required fields | Notes |
+|---|---|---|
+| `run_start` | `agentId`, `specHash` | |
+| `input_validated` | | |
+| `prompt_rendered` | `cacheablePrefixChars`, `totalChars`, `reordered`, `warnings` | |
+| `turn_start` | `turn` | |
+| `llm_call` | `turn`, `modelName` | `reasoning` optional |
+| `assistant_text`, `thinking` | `turn`, `text` | durable record of a message |
+| `assistant_delta`, `thinking_delta` | `turn`, `text` | ephemeral, opt-in (`emitDeltas`), not persisted |
+| `tool_call_start` | `turn`, `toolUseId`, `toolName` | `input` |
+| `tool_call_end` | `turn`, `toolUseId`, `toolName`, `result`, `durationMs` | `result.isError` marks a tool error; timing is `durationMs`; `trust` optional (`untrusted`) |
+| `usage` | `turn`, `usage` | per model call: tokens, `costUsd`; `provider` and `model` when the message names them |
+| `compaction` | `turn`, `trigger`, `strategy`, `beforeTokens`, `afterTokens`, `collapsedRange`, `summarized` | |
+| `subagent_start` / `subagent_end` | `childRunId`, `agentId` / `status` | child events are in the child's own trace |
+| `output_validated`, `output_retry` | `attempt`, `reason` (retry) | |
+| `memory_written`, `memory_recalled` | `entry` / `scopes`, `hits` | |
+| `error` | `tag`, `message` | |
+| `run_end` | `status` | `success`, `quota`, `cancelled`, `error`, `paused`: the final status |
+
+Kinds added by other changes (provider failover, budget warnings) appear as unknown kinds in this reader until
+they are added to the table; `summarizeTrace` counts them in `unknownKinds`, so nothing is lost and a viewer can
+still show that they happened.
+
+## Untrusted fields
+
+A trace holds text that came from outside the harness: model output, tool arguments and results, error
+messages, memory content, recall queries. These fields are marked in `UNTRUSTED_FIELDS`. A path is a
+top-level field or `field.key` one level into an object, so structural flags next to the text
+(`result.isError`, `entry.id`) are not marked and stay readable after redaction:
+
+| Kind | Untrusted fields |
+|---|---|
+| `assistant_text`, `thinking`, `assistant_delta`, `thinking_delta` | `text` |
+| `tool_call_start` | `input` |
+| `tool_call_end` | `result.content`, `result.data` (the event also carries `trust`, below) |
+| `output_retry` | `reason` |
+| `memory_written` | `entry.summary` |
+| `memory_recalled` | `query` |
+| `error` | `message` |
+| `prompt_rendered` | `warnings` |
+
+> **Warning.** Treat these as data, never as instructions or markup. A viewer MUST HTML-escape them before
+> rendering and MUST NOT replay them into a model prompt. Tool results are stored raw (fencing, where a tool
+> applies it, is part of the stored content). `tool_call_end.trust` is `"untrusted"` on every result the harness
+> writes; an absent value (older traces) means untrusted. `summarizeTrace` never reads any of these fields.
+
+`trust` is a hint, not a guarantee: a trace is a file, and a hostile or edited trace can say `"trusted"`.
+A viewer MUST NOT loosen escaping or rendering because of it.
+
+Some text from outside the harness is not marked, because the reader and the summary need it, and it
+cannot be redacted. Escape it when you render it:
+
+- `toolName` on `tool_call_start` / `tool_call_end`: the model chooses it (a hallucinated name is emitted
+  before the tool lookup fails), and MCP tool names come from external servers.
+- The summary's `toolCalls.byTool` keys (tool names) and `usageByProvider` keys.
+- `provider` and `model` on a `usage` event, when present: they come from the provider's response.
+
+`traceToJsonl` escapes `<`, `>`, `&`, U+2028 and U+2029 as `\uXXXX`, so a line is safe to embed in HTML or a
+script block; it is still plain JSON. That does not replace escaping when you render a field.
+
+### Redaction on export
+
+```ts
+const text = traceToJsonl(trace, {
+  redact: ({ kind, field }) => (kind === "tool_call_end" ? "mask" : undefined), // "remove" | "mask" | undefined
+});
+```
+
+The hook is called once per marked field present on the event, with `field` set to the path
+(`result.content`). `mask` writes `"[redacted]"`, `remove` drops the field. A redacted trace still
+reads as typed events: the reader accepts `"[redacted]"`, or the field being absent, in place of a
+marked top-level field of any type (`error.message`, `prompt_rendered.warnings`), and nowhere else, so
+`"[redacted]"` or a gap in `durationMs` or `usage` makes the event malformed. A consumer of a redacted
+trace must therefore expect a marked field to be missing.
+
+Malformed events of a known kind are redacted by that kind's marked paths too (on the stored event).
+Only events of a kind this reader does not know are written as stored: redact those yourself.
+
+## Complete example
+
+One run: a tool call, usage, and the final status. Lines are shown as exported (`<`, `>`, `&` would appear as `\u003c` etc.).
+
+```
+{"kind":"trace_header","traceVersion":1,"runId":"run_1","agentId":"triage","specHash":"a1b2","harnessVersion":"0.2.0","startedAt":1700000000000}
+{"kind":"run_start","runId":"run_1","ts":1700000000001,"agentId":"triage","specHash":"a1b2"}
+{"kind":"input_validated","runId":"run_1","ts":1700000000002}
+{"kind":"prompt_rendered","runId":"run_1","ts":1700000000003,"cacheablePrefixChars":120,"totalChars":200,"reordered":false,"warnings":[]}
+{"kind":"turn_start","runId":"run_1","ts":1700000000004,"turn":1}
+{"kind":"llm_call","runId":"run_1","ts":1700000000005,"turn":1,"modelName":"m"}
+{"kind":"tool_call_start","runId":"run_1","ts":1700000000100,"turn":1,"toolUseId":"t1","toolName":"read","input":{"path":"/x"}}
+{"kind":"tool_call_end","runId":"run_1","ts":1700000000112,"turn":1,"toolUseId":"t1","toolName":"read","result":{"content":"ok"},"durationMs":12,"trust":"untrusted"}
+{"kind":"usage","runId":"run_1","ts":1700000000200,"turn":1,"usage":{"inputTokens":10,"outputTokens":5,"costUsd":0.01}}
+{"kind":"assistant_text","runId":"run_1","ts":1700000000201,"turn":1,"text":"done"}
+{"kind":"run_end","runId":"run_1","ts":1700000009000,"status":"success"}
+```
+
+## Comparing runs across harness versions
+
+`summarizeTrace(events)` returns status, turns, tool calls (count, errors, total ms, by tool), tokens and cost
+(total and by serving provider), compactions, subagents, errors, and the count of events it could not type. Write
+`harnessVersion` in the header and diff two summaries to see what a harness change did to the same scenario.
