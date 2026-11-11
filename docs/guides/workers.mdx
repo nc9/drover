@@ -1,0 +1,126 @@
+---
+title: Cloudflare Workers
+description: Run an agent inside a Worker with the @droveragent/facade/core entry.
+---
+
+The default `@droveragent/facade` entry is for Node and Bun: when you pass no sandbox it
+builds a just-bash sandbox over the host filesystem, which does not bundle for a Worker.
+`@droveragent/facade/core` has the same `runAgent` / `resumeAgent` without that default.
+
+<Warning>
+Status: the core entry is checked by bundling (a test bundles it for the browser target and
+fails on a Node-only import or a size over budget). It has not yet been run on the Workers
+runtime (`workerd` / `wrangler dev`) by an automated test.
+</Warning>
+
+## What differs from the default entry
+
+| | `@droveragent/facade` | `@droveragent/facade/core` |
+| --- | --- | --- |
+| `sandbox` | optional, defaults to just-bash over `cwd` | **required**: an adapter or `"disabled"` |
+| `cwd` | `process.cwd()` | `"/"` |
+| `env` | `process.env` | `{}`: pass the keys the run needs |
+| Node built-ins at import | many | `node:path`, `node:crypto` only (both provided with `nodejs_compat`) |
+
+`sandbox: "disabled"` means no filesystem and no shell: every sandbox operation fails with a
+`SandboxError`, and `bash` is never offered to the model. Use it when every tool is a custom
+tool or an MCP tool. (It is not `createNoneSandbox()` from `@droveragent/sandbox`, which is the
+opposite: the unconfined host filesystem.) For a sandbox with a real filesystem and shell, pass
+`createCloudflareSandbox(...)` from `@droveragent/sandbox-cloudflare`.
+
+## Setup
+
+`wrangler.toml`:
+
+```toml
+name = "my-agent"
+main = "src/worker.ts"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "agent-runs"
+database_id = "<your d1 id>"
+```
+
+`src/worker.ts`:
+
+```ts
+import { Type } from "@sinclair/typebox";
+import { defineAgent } from "@droveragent/core";
+import { runAgent } from "@droveragent/facade/core";
+import { createD1Storage } from "@droveragent/storage-d1";
+
+interface Env {
+  DB: D1Database;
+  OPENROUTER_API_KEY: string;
+}
+
+const triage = defineAgent({
+  id: "triage",
+  systemPrompt: "Classify the ticket. Reply with JSON matching the outputSchema.",
+  inputSchema: Type.Object({ ticket: Type.String() }),
+  outputSchema: Type.Object({ label: Type.String() }),
+  model: "cheap",
+  tools: [],
+  quota: { maxTurns: 2 },
+});
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const { ticket } = (await request.json()) as { ticket: string };
+    const handle = runAgent(triage, { ticket }, {
+      sandbox: "disabled",
+      // Model API keys are read from `env`, never from `process.env`, in the core entry.
+      env: { OPENROUTER_API_KEY: env.OPENROUTER_API_KEY },
+      storage: createD1Storage({ db: env.DB }),
+    });
+    const result = await handle.result;
+    return Response.json({ status: result.status, output: result.output });
+  },
+};
+```
+
+Storage: `createD1Storage` (`@droveragent/storage-d1`) or `createMemoryStorage()` from
+`@droveragent/storage`. The default libsql adapter needs a native module and is not for Workers.
+
+## Memory, skills, commands and instruction files
+
+The file loaders (`createMarkdownMemory`, `scanSkillDirs` / skill loading from disk,
+`scanCommandDirs`, prompt template files, `spec.instructionFiles`) read the filesystem. They
+import `node:fs` lazily, so they do not break the bundle, but a Worker has no project
+filesystem: do not use them there.
+
+What works without a filesystem:
+
+- **Memory:** `createInMemoryMemory()` from `@droveragent/memory` (per isolate, not durable).
+  A durable Worker memory adapter (D1 or KV) is not shipped yet.
+- **Skills and commands:** build the registry from data you bundle or fetch:
+  `createSkillRegistry([{ name, description, body, ... }])` from `@droveragent/skills`, and the
+  matching command registry from `@droveragent/commands`.
+- **Instruction files:** leave `spec.instructionFiles` unset; put the text in `systemPrompt`.
+
+## Bundle size
+
+Measured with `bun build src/core.ts --target=browser --minify --external 'node:*' --external @opentelemetry/api`:
+
+| Bundle | Size |
+| --- | --- |
+| `@droveragent/facade/core`, every pi-ai provider | about 2.1 MB |
+| the same with the other provider SDKs external (OpenAI-compatible only) | about 1.0 MB |
+
+A test (`packages/facade/test/core-entry.test.ts`) fails when the first number passes 2.4 MB.
+
+pi-ai loads each provider through a dynamic import, and bundlers follow those. To ship one
+provider, mark the other SDKs external:
+
+```sh
+bun build src/worker.ts --target=browser --minify \
+  --external 'node:*' --external @opentelemetry/api \
+  --external @anthropic-ai/sdk --external @google/genai --external @mistralai/mistralai \
+  --external '@aws-sdk/*' --external '@smithy/*' --external proxy-agent --external undici
+```
+
+That keeps `openai` (OpenAI-compatible and OpenRouter models). Swap the externals to keep a
+different provider.

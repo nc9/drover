@@ -1,6 +1,8 @@
 import { MemoryError } from "@droveragent/core";
 import { Effect } from "effect";
-import * as fs from "node:fs/promises";
+// node:fs is loaded on first use, not at import: a bundle that never reads files
+// (a Workers bundle of @droveragent/facade/core) has no static node:fs import.
+const loadFs = (): Promise<typeof import("node:fs/promises")> => import("node:fs/promises");
 import * as path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
@@ -24,12 +26,7 @@ export interface MarkdownMemoryOptions {
   root: string;
 }
 
-const KINDS: ReadonlySet<MemoryKind> = new Set([
-  "user",
-  "feedback",
-  "project",
-  "reference",
-]);
+const KINDS: ReadonlySet<MemoryKind> = new Set(["user", "feedback", "project", "reference"]);
 
 const SCOPES: ReadonlySet<MemoryScope> = new Set(["global", "agent", "run"]);
 
@@ -47,11 +44,9 @@ const SCOPES: ReadonlySet<MemoryScope> = new Set(["global", "agent", "run"]);
  * Concurrency: single-process. Writes are serialised through a Promise
  * queue so two concurrent `put` calls can't interleave YAML output.
  */
-export async function createMarkdownMemory(
-  opts: MarkdownMemoryOptions,
-): Promise<MemoryAdapter> {
+export async function createMarkdownMemory(opts: MarkdownMemoryOptions): Promise<MemoryAdapter> {
   const root = path.resolve(opts.root);
-  await fs.mkdir(root, { recursive: true });
+  await (await loadFs()).mkdir(root, { recursive: true });
 
   const entries = new Map<string, MemoryEntry>();
   const docs = new Map<string, Doc>();
@@ -78,7 +73,7 @@ export async function createMarkdownMemory(
 
   const writeFile = async (entry: MemoryEntry): Promise<void> => {
     const file = pathFor(entry);
-    await fs.mkdir(path.dirname(file), { recursive: true });
+    await (await loadFs()).mkdir(path.dirname(file), { recursive: true });
     const frontmatter: Record<string, unknown> = {
       id: entry.id,
       scope: entry.scope,
@@ -92,7 +87,7 @@ export async function createMarkdownMemory(
     if (entry.updatedAt) frontmatter.updatedAt = entry.updatedAt;
     const yaml = stringifyYaml(frontmatter).trimEnd();
     const content = `---\n${yaml}\n---\n\n${entry.body.trim()}\n`;
-    await fs.writeFile(file, content, "utf8");
+    await (await loadFs()).writeFile(file, content, "utf8");
   };
 
   const enqueueWrite = (task: () => Promise<void>): Promise<void> => {
@@ -133,7 +128,7 @@ export async function createMarkdownMemory(
           if (existing && pathFor(existing) !== pathFor(entry)) {
             await enqueueWrite(async () => {
               try {
-                await fs.unlink(pathFor(existing));
+                await (await loadFs()).unlink(pathFor(existing));
               } catch {
                 /* tolerable — stale file, new entry already durable */
               }
@@ -152,8 +147,7 @@ export async function createMarkdownMemory(
               }),
       }),
 
-    get: (id) =>
-      Effect.sync(() => entries.get(id) ?? null),
+    get: (id) => Effect.sync(() => entries.get(id) ?? null),
 
     search: (searchOpts: SearchOpts) =>
       Effect.sync((): ReadonlyArray<MemoryHit> => {
@@ -190,7 +184,7 @@ export async function createMarkdownMemory(
           if (!entry) return false;
           await enqueueWrite(async () => {
             try {
-              await fs.unlink(pathFor(entry));
+              await (await loadFs()).unlink(pathFor(entry));
             } catch (err) {
               const code = (err as NodeJS.ErrnoException).code;
               if (code !== "ENOENT") throw err;
@@ -269,10 +263,8 @@ async function scanInto(
 
 async function listSegments(dir: string): Promise<string[]> {
   try {
-    const ents = await fs.readdir(dir, { withFileTypes: true });
-    return ents
-      .filter((e) => e.isDirectory() && ID_SEGMENT_RE.test(e.name))
-      .map((e) => e.name);
+    const ents = await (await loadFs()).readdir(dir, { withFileTypes: true });
+    return ents.filter((e) => e.isDirectory() && ID_SEGMENT_RE.test(e.name)).map((e) => e.name);
   } catch {
     return [];
   }
@@ -280,7 +272,7 @@ async function listSegments(dir: string): Promise<string[]> {
 
 async function listMdIds(dir: string): Promise<string[]> {
   try {
-    const ents = await fs.readdir(dir, { withFileTypes: true });
+    const ents = await (await loadFs()).readdir(dir, { withFileTypes: true });
     return ents
       .filter((e) => e.isFile() && e.name.endsWith(".md"))
       .map((e) => e.name.slice(0, -3))
@@ -298,7 +290,7 @@ async function loadFile(
 ): Promise<MemoryEntry | null> {
   let raw: string;
   try {
-    raw = await fs.readFile(file, "utf8");
+    raw = await (await loadFs()).readFile(file, "utf8");
   } catch {
     return null;
   }
@@ -330,16 +322,11 @@ async function loadFile(
     Array.isArray(fm.tags) && fm.tags.every((t) => typeof t === "string")
       ? (fm.tags as string[])
       : undefined;
-  const updatedAt =
-    typeof fm.updatedAt === "number" ? fm.updatedAt : undefined;
+  const updatedAt = typeof fm.updatedAt === "number" ? fm.updatedAt : undefined;
   const agentIdValue =
-    typeof fm.agentId === "string" && ID_SEGMENT_RE.test(fm.agentId)
-      ? fm.agentId
-      : ctx.agentId;
+    typeof fm.agentId === "string" && ID_SEGMENT_RE.test(fm.agentId) ? fm.agentId : ctx.agentId;
   const runIdValue =
-    typeof fm.runId === "string" && ID_SEGMENT_RE.test(fm.runId)
-      ? fm.runId
-      : ctx.runId;
+    typeof fm.runId === "string" && ID_SEGMENT_RE.test(fm.runId) ? fm.runId : ctx.runId;
   return {
     id,
     scope,

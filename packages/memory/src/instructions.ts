@@ -1,6 +1,8 @@
 import { MemoryError } from "@droveragent/core";
 import { Effect } from "effect";
-import * as fs from "node:fs/promises";
+// node:fs is loaded on first use, not at import: a bundle that never reads files
+// (a Workers bundle of @droveragent/facade/core) has no static node:fs import.
+const loadFs = (): Promise<typeof import("node:fs/promises")> => import("node:fs/promises");
 import * as path from "node:path";
 
 import type { MemoryAdapter } from "./adapter.ts";
@@ -33,10 +35,7 @@ export interface LoadInstructionsOptions {
   maxBytesPerFile?: number;
 }
 
-export const DEFAULT_INSTRUCTION_FILENAMES: ReadonlyArray<string> = [
-  "AGENTS.md",
-  "CLAUDE.md",
-];
+export const DEFAULT_INSTRUCTION_FILENAMES: ReadonlyArray<string> = ["AGENTS.md", "CLAUDE.md"];
 
 const DEFAULT_MAX_BYTES = 16 * 1024;
 /** Cap the upward walk so a stray cwd can't climb the whole filesystem. */
@@ -79,7 +78,7 @@ export async function loadInstructionFiles(
       const file = path.join(d, filename);
       let raw: string;
       try {
-        raw = await fs.readFile(file, "utf8");
+        raw = await (await loadFs()).readFile(file, "utf8");
       } catch {
         continue; // not present in this dir
       }
@@ -108,7 +107,7 @@ async function detectRoot(cwd: string): Promise<string> {
   let dir = cwd;
   for (let i = 0; i < MAX_WALK_DEPTH; i++) {
     try {
-      await fs.stat(path.join(dir, ".git"));
+      await (await loadFs()).stat(path.join(dir, ".git"));
       return dir;
     } catch {
       /* keep climbing */

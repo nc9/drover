@@ -29,7 +29,7 @@ describe("@droveragent/facade/core", () => {
     expect(coreSrc).not.toContain("sandbox-just-bash");
   });
 
-  test('sandbox "none": runs, tools that need the filesystem fail softly', async () => {
+  test('sandbox "disabled": runs, tools that need the filesystem fail softly', async () => {
     const spec = defineAgent({
       id: "core-none",
       systemPrompt: "probe",
@@ -89,7 +89,7 @@ describe("@droveragent/facade/core", () => {
           },
         ],
       ]);
-      const h = runAgent(spec, { q: "x" }, { models, sandbox: "none" });
+      const h = runAgent(spec, { q: "x" }, { models, sandbox: "disabled" });
       const r = await h.result;
       expect(r.status).toBe("success");
       expect(r.finalText).toBe("done");
@@ -113,5 +113,50 @@ describe("@droveragent/facade/core", () => {
     }
     expect(s.resolvePath("a/b", "/w/")).toBe("/w/a/b");
     expect(s.resolvePath("/a", "/w")).toBe("/a");
+  });
+});
+
+/**
+ * Workers guard for the `core` entry. Workers (with the `nodejs_compat` flag) provide
+ * `node:path` and `node:crypto`; any other `node:*` module must only be reached lazily
+ * (a dynamic `import()` or a `require` inside a function), so that it is loaded only by
+ * a feature a Worker does not use (file loaders, pi-ai's credentials-file lookup).
+ */
+const WORKERS_STATIC_NODE = new Set(["node:path", "node:crypto"]);
+/** Minified browser bundle of `src/core.ts`, all pi-ai providers included. Measured: ~2.08 MB. */
+const CORE_BUNDLE_BUDGET_BYTES = 2_400_000;
+
+describe("@droveragent/facade/core: Workers bundle guard", () => {
+  test("static node:* imports are only those Workers provide; the rest are lazy", async () => {
+    const r = await Bun.build({
+      entrypoints: [new URL("../src/core.ts", import.meta.url).pathname],
+      target: "browser",
+      external: ["node:*", "@opentelemetry/api"],
+      metafile: true,
+      minify: true,
+    });
+    expect(r.success).toBe(true);
+    const inputs = (
+      r as unknown as {
+        metafile: {
+          inputs: Record<string, { imports?: Array<{ path: string; kind: string }> }>;
+        };
+      }
+    ).metafile.inputs;
+    const staticNode = new Set<string>();
+    const lazyNode = new Set<string>();
+    for (const [file, info] of Object.entries(inputs)) {
+      for (const imp of info.imports ?? []) {
+        if (!imp.path.startsWith("node:")) continue;
+        if (imp.kind === "import-statement") staticNode.add(`${imp.path} <- ${file}`);
+        else lazyNode.add(imp.path);
+      }
+    }
+    const offending = [...staticNode].filter((s) => !WORKERS_STATIC_NODE.has(s.split(" <- ")[0]!));
+    expect(offending).toEqual([]);
+    // The file loaders still exist, lazily: this is what keeps them out of the static graph.
+    expect(lazyNode.has("node:fs/promises")).toBe(true);
+    const bytes = r.outputs.reduce((n, o) => n + o.size, 0);
+    expect(bytes).toBeLessThan(CORE_BUNDLE_BUDGET_BYTES);
   });
 });

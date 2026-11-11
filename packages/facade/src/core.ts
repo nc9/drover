@@ -108,8 +108,12 @@ export interface RunOptionsBase {
   providers?: HarnessDeps["providers"];
 }
 
-/** Sandbox choice for the core entry: an adapter, or `"none"` for no sandbox at all. */
-export type CoreSandbox = SandboxAdapter | "none";
+/**
+ * Sandbox choice for the core entry: an adapter, or `"disabled"` for no filesystem and no
+ * shell at all. (Named `"disabled"`, not `"none"`: `createNoneSandbox()` in
+ * `@droveragent/sandbox` is the opposite, the unconfined host filesystem.)
+ */
+export type CoreSandbox = SandboxAdapter | "disabled";
 
 /**
  * Options of the Worker-friendly entry. `sandbox` is REQUIRED: there is no
@@ -125,7 +129,7 @@ export interface CoreResumeOptions extends ResumeOptionsBase {
 }
 
 /**
- * The `"none"` sandbox: no filesystem, no shell. Every operation fails with a
+ * The `"disabled"` sandbox: no filesystem, no shell. Every operation fails with a
  * `SandboxError`, `capabilities.shell` is false (so `bash` is never composed).
  * Right for agents whose tools are all custom/MCP and that need no file access
  * (the Worker case). Not to be confused with `createNoneSandbox()` from
@@ -138,7 +142,7 @@ export function createDisabledSandbox(): SandboxAdapter {
         runId: "(sandbox)",
         op,
         path,
-        message: 'sandbox is "none": filesystem and shell are unavailable in this run',
+        message: 'sandbox is "disabled": filesystem and shell are unavailable in this run',
       }),
     );
   return {
@@ -153,7 +157,7 @@ export function createDisabledSandbox(): SandboxAdapter {
 }
 
 const resolveSandbox = (s: CoreSandbox): SandboxAdapter =>
-  s === "none" ? createDisabledSandbox() : s;
+  s === "disabled" ? createDisabledSandbox() : s;
 
 export interface RunHandle<S extends AgentSpec> {
   runId: string;
