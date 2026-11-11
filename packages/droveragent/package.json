@@ -2,6 +2,20 @@
   "name": "droveragent",
   "version": "0.1.0",
   "private": false,
+  "description": "Headless agent harness — define agents and run them. Umbrella entry point re-exporting @droveragent/facade + defineAgent.",
+  "keywords": [
+    "agent",
+    "agents",
+    "ai",
+    "claude",
+    "effect",
+    "harness",
+    "llm"
+  ],
+  "homepage": "https://nc9.github.io/drover/",
+  "bugs": {
+    "url": "https://github.com/nc9/drover/issues"
+  },
   "license": "MIT",
   "author": "Nik Cubrilovic",
   "repository": {
@@ -9,27 +23,23 @@
     "url": "git+https://github.com/nc9/drover.git",
     "directory": "packages/droveragent"
   },
-  "homepage": "https://nc9.github.io/drover/",
-  "bugs": {
-    "url": "https://github.com/nc9/drover/issues"
-  },
-  "type": "module",
-  "description": "Headless agent harness — define agents and run them. Umbrella entry point re-exporting @droveragent/facade + defineAgent.",
-  "keywords": [
-    "agent",
-    "agents",
-    "ai",
-    "llm",
-    "harness",
-    "claude",
-    "effect"
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
+  "type": "module",
   "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
@@ -42,15 +52,5 @@
   },
   "devDependencies": {
     "@sinclair/typebox": "^0.34.0"
-  },
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
-  ],
-  "publishConfig": {
-    "access": "public"
   }
 }

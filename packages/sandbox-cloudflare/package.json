@@ -2,16 +2,16 @@
   "name": "@droveragent/sandbox-cloudflare",
   "version": "0.1.0",
   "private": false,
+  "homepage": "https://nc9.github.io/drover/",
+  "bugs": {
+    "url": "https://github.com/nc9/drover/issues"
+  },
   "license": "MIT",
   "author": "Nik Cubrilovic",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/nc9/drover.git",
     "directory": "packages/sandbox-cloudflare"
-  },
-  "homepage": "https://nc9.github.io/drover/",
-  "bugs": {
-    "url": "https://github.com/nc9/drover/issues"
   },
   "files": [
     "dist",
