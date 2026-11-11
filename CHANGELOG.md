@@ -47,6 +47,18 @@ All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version t
   `model`; `RunResult.usageByProvider` splits usage per serving provider.
 - `makeSummarizer` takes an optional transport; under a chain the compaction
   summariser fails over too.
+- `@droveragent/eval` (#22): `recordStream(real, sink, options)` and
+  `replayStream(recording, options)` record provider
+  responses and replay them offline through `streamFn`. Turns are keyed by
+  conversation (system prompt + first message) and call within it, so parallel
+  subagents replay in any interleaving; a request that matches no turn fails with
+  `ReplayDriftError` naming the call. Recordings hold no API key or headers, and
+  a failed call's provider text only with `keepProviderText`. `fakeProvider(script)`
+  with `faults` (402, 403, 429 + Retry-After, 5xx, timeout, empty completion) and
+  `reply` steps, usable as `streamFn` or a provider chain `streams` entry. A
+  throwing sink or redact never hangs or fails the run (`onError` / `errors`);
+  concurrent subagents that share a thread replay as `ReplayAmbiguousError`
+  rather than with swapped answers.
 
 ## 0.2.0 — 2026-08-25
 

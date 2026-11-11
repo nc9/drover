@@ -87,6 +87,16 @@
       "version": "0.1.0",
       "dependencies": {
         "@droveragent/core": "workspace:*",
+        "@mariozechner/pi-agent-core": "^0.73.1",
+        "@mariozechner/pi-ai": "^0.73.1",
+      },
+      "devDependencies": {
+        "@droveragent/harness": "workspace:*",
+        "@droveragent/model": "workspace:*",
+        "@droveragent/sandbox": "workspace:*",
+        "@droveragent/storage": "workspace:*",
+        "@sinclair/typebox": "^0.34.0",
+        "effect": "^3.10.0",
       },
     },
     "packages/facade": {
