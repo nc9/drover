@@ -158,4 +158,107 @@ describe("repeatRefusalPlugin in a run", () => {
       { plugin: "tool-call-cap", code: "tool_call_cap" },
     ]);
   });
+
+  test("edit, then rerun: a failing check, a successful destructive fix, the same check runs again", async () => {
+    const state = { fixed: false, checks: 0 };
+    const check = defineTool({
+      id: "check",
+      description: "run the tests",
+      inputSchema: Type.Object({ suite: Type.String() }),
+      execute: () =>
+        Effect.sync(() => {
+          state.checks += 1;
+          return state.fixed ? { content: "pass" } : { content: "1 failing", isError: true };
+        }),
+    });
+    const fix = defineTool({
+      id: "fix",
+      description: "edit the code",
+      inputSchema: Type.Object({ path: Type.String() }),
+      destructive: true,
+      execute: () =>
+        Effect.sync(() => {
+          state.fixed = true;
+          return { content: "edited" };
+        }),
+    });
+    const script = (withFix: boolean): StreamFn => {
+      const calls: Array<[string, Record<string, unknown>]> = withFix
+        ? [
+            ["check", { suite: "all" }],
+            ["check", { suite: "all" }], // no change in between: refused
+            ["fix", { path: "a.ts" }],
+            ["check", { suite: "all" }], // after the fix: runs again
+          ]
+        : [
+            ["check", { suite: "all" }],
+            ["check", { suite: "all" }],
+          ];
+      let turn = 0;
+      return () => {
+        turn += 1;
+        const s = createAssistantMessageEventStream();
+        const next = calls[turn - 1];
+        const m = next
+          ? msg({
+              stopReason: "toolUse",
+              content: [{ type: "toolCall", id: `c${turn}`, name: next[0], arguments: next[1] }],
+            })
+          : msg({ content: [{ type: "text", text: "done" }] });
+        s.push({ type: "start", partial: m });
+        s.push({ type: "done", reason: m.stopReason as "stop", message: m });
+        s.end();
+        return s;
+      };
+    };
+    const runIt = async (withFix: boolean) => {
+      state.fixed = false;
+      state.checks = 0;
+      const events: HarnessEvent[] = [];
+      const result = await Effect.runPromise(
+        runAgentEffect({
+          spec: defineAgent({
+            id: "rr-fix",
+            systemPrompt: "probe",
+            inputSchema: Type.Object({ q: Type.String() }),
+            outputSchema: Type.Unknown(),
+            model: MODEL_NAME,
+            tools: [],
+            plugins: [{ id: "fix-tools", tools: [check, fix] }, repeatRefusalPlugin()],
+          }),
+          input: { q: "hi" },
+          ctx: {
+            runId: withFix ? "rr-fix-1" : "rr-fix-2",
+            depth: 0,
+            cwd: process.cwd(),
+            env: {},
+            signal: new AbortController().signal,
+          },
+          emit: (e) => events.push(e),
+          deps: {
+            sandbox: createNoneSandbox(),
+            preResolvedModels: new Map([[MODEL_NAME, { model: fakeModel, apiKey: "sk-fake" }]]),
+            streamFn: script(withFix),
+          },
+        }),
+      );
+      const codes = events
+        .filter(
+          (e): e is Extract<HarnessEvent, { kind: "tool_call_end" }> => e.kind === "tool_call_end",
+        )
+        .map(
+          (e) => `${e.toolName}:${e.result.denied?.code ?? (e.result.isError ? "error" : "ok")}`,
+        );
+      return { result, codes, checks: state.checks };
+    };
+
+    const fixed = await runIt(true);
+    expect(fixed.result.status).toBe("success");
+    expect(fixed.codes).toEqual(["check:error", "check:repeat_refusal", "fix:ok", "check:ok"]);
+    expect(fixed.checks).toBe(2);
+
+    const unfixed = await runIt(false);
+    expect(unfixed.codes).toEqual(["check:error", "check:repeat_refusal"]);
+    expect(unfixed.checks).toBe(1);
+  });
 });

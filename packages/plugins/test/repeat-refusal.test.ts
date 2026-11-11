@@ -21,12 +21,37 @@ function driver(opts: RepeatRefusalOptions = {}) {
     input: unknown,
     result: Pick<ToolResult, "isError" | "denied">,
     runId = "r1",
+    extra: { destructive?: boolean; startInput?: unknown } = {},
   ) => {
-    const decision = await Effect.runPromise(plugin.beforeToolCall!(toolName, input, ctx(runId)));
     const toolUseId = `t${++id}`;
+    const decision = await Effect.runPromise(
+      plugin.beforeToolCall!(toolName, input, ctx(runId), {
+        toolUseId,
+        ...(extra.destructive !== undefined
+          ? {
+              tool: {
+                id: toolName,
+                description: "",
+                inputSchema: {} as never,
+                destructive: extra.destructive,
+                execute: () => Effect.succeed({ content: "" }),
+              },
+            }
+          : {}),
+      }),
+    );
     const ev = (e: Record<string, unknown>) =>
       Effect.runPromise(plugin.onEvent!(e as unknown as HarnessEvent, ctx(runId)));
-    await ev({ kind: "tool_call_start", runId, turn: 1, toolUseId, toolName, input, ts: 0 });
+    const startInput = "startInput" in extra ? extra.startInput : input;
+    await ev({
+      kind: "tool_call_start",
+      runId,
+      turn: 1,
+      toolUseId,
+      toolName,
+      input: startInput,
+      ts: 0,
+    });
     const ended: ToolResult =
       decision.kind === "deny"
         ? {
@@ -128,5 +153,60 @@ describe("repeatRefusalPlugin", () => {
     expect((await names.call("__proto__", { a: 1 }, ok)).kind).toBe("deny");
     await names.call("constructor", {}, failed);
     expect((await names.call("constructor", {}, ok)).kind).toBe("deny");
+  });
+
+  test("a successful destructive call forgets the run's failures; a harmless one does not", async () => {
+    const { call } = driver();
+    await call("bash", { cmd: "bun test" }, failed, "r1", { destructive: true });
+    // nothing changed in between: still refused
+    await call("read", { path: "a.ts" }, ok, "r1", { destructive: false });
+    expect((await call("bash", { cmd: "bun test" }, ok, "r1", { destructive: true })).kind).toBe(
+      "deny",
+    );
+    // an edit succeeds: the rerun is allowed again
+    await call("edit", { path: "a.ts" }, ok, "r1", { destructive: true });
+    expect((await call("bash", { cmd: "bun test" }, ok, "r1", { destructive: true })).kind).toBe(
+      "allow",
+    );
+  });
+
+  test("include and exclude pick the guarded tools; nothing is excluded by default", async () => {
+    const only = driver({ include: ["fetch"] });
+    await only.call("fetch", { u: 1 }, failed);
+    await only.call("read", { p: 1 }, failed);
+    expect((await only.call("fetch", { u: 1 }, ok)).kind).toBe("deny");
+    expect((await only.call("read", { p: 1 }, ok)).kind).toBe("allow");
+    const not = driver({ exclude: ["read"] });
+    await not.call("read", { p: 1 }, failed);
+    expect((await not.call("read", { p: 1 }, ok)).kind).toBe("allow");
+    const all = driver();
+    await all.call("read", { p: 1 }, failed);
+    expect((await all.call("read", { p: 1 }, ok)).kind).toBe("deny");
+  });
+
+  test("a __proto__ argument is part of the fingerprint, not a prototype", async () => {
+    const { call } = driver();
+    await call("fetch", JSON.parse('{"__proto__":{"evil":true},"url":"a"}'), failed);
+    // the same url without the __proto__ key is a different call
+    expect((await call("fetch", { url: "a" }, ok)).kind).toBe("allow");
+    expect(
+      (await call("fetch", JSON.parse('{"__proto__":{"evil":true},"url":"a"}'), ok)).kind,
+    ).toBe("deny");
+  });
+
+  test("a failure is recorded under the input beforeToolCall saw and the started input", async () => {
+    // the harness validated/coerced the arguments ({ n: 1 }) but the event carries the raw ones
+    const { call } = driver();
+    await call("page", { n: 1 }, failed, "r1", { startInput: { n: "1" } });
+    expect((await call("page", { n: 1 }, ok)).kind).toBe("deny");
+    expect((await call("page", { n: "1" }, ok)).kind).toBe("deny");
+  });
+
+  test("large arguments are fingerprinted by a fixed-size digest and still told apart", async () => {
+    const { call } = driver();
+    const big = "x".repeat(200_000);
+    await call("write", { body: `${big}a` }, failed);
+    expect((await call("write", { body: `${big}b` }, ok)).kind).toBe("allow");
+    expect((await call("write", { body: `${big}a` }, ok)).kind).toBe("deny");
   });
 });

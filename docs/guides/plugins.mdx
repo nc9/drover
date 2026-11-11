@@ -248,11 +248,21 @@ again. Change the arguments, try a different approach, or stop and report what y
 ```
 
 - **The same call** is the tool name plus its arguments with object keys sorted and strings
-  trimmed, or the tool's `keyFor` key. Changed arguments run normally.
+  trimmed (a `__proto__` key counts like any other), or the tool's `keyFor` key. Changed
+  arguments run normally. The guard keeps a fixed-size digest (two 53-bit non-cryptographic
+  hashes) per failure, not the arguments; a collision could only refuse a different call, never
+  let a repeat through. A failure is recorded under both the arguments the harness validated and
+  the raw ones on the `tool_call_start` event, so a coerced resend still matches.
 - **Failed** is read from structured flags, never from text: a result with `isError`, or a refusal
   by another `beforeToolCall` plugin. Refusals that are not about the call itself are ignored by
   their deny `code`: `tool_call_cap` (a budget) and the guard's own `repeat_refusal` always, plus
   `ignoreDenyCodes`. A later success of the same call forgets the failure.
+- **A successful change forgets everything.** Any successful call to a destructive tool
+  (`ToolDef.destructive`: the built-in `write`, `edit` and `bash`) forgets every failure of the
+  run, because it may have fixed the cause: the test that failed can run again after the edit.
+  Without a change in between, the identical rerun is still refused.
+- **Which tools:** every tool by default. `include: [...]` guards only those, `exclude: [...]`
+  never guards those (and wins over `include`).
 - **Retryable** tools run up to `retryable[tool]` identical repeats before the guard answers.
 - **The message does not quote the tool's earlier text.** Tool output is untrusted, so it is not
   echoed back; the message names the tool, how many times it failed and the call number.
