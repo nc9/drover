@@ -43,7 +43,7 @@ run: the main loop, subagents and the compaction summariser.
   needed. A pi-ai bump that adds the entry later makes the `extraModels` entry
   redundant, not wrong.
 - **Quirks.** A per-provider patch of the pi-ai model: `overrides: { "cloudflare-ai-gateway":
-  { compat: { maxTokensField: "max_completion_tokens" } } }`.
+{ compat: { maxTokensField: "max_completion_tokens" } } }`.
 
 ## What fails over
 
@@ -57,19 +57,19 @@ pi-ai keeps nothing else: the leading status code of the SDK's message (`"402 ..
 on a 429 only, a "Retry-After: N" / "try again in Ns" hint (at most one wait of
 `maxRateLimitWaitMs`, default 10 s).
 
-| Class | Needs | Fails over | Retried in place | Skipped for the rest of the run |
-|---|---|---|---|---|
-| `credits_exhausted` | 402; 403 + `limit_source: openrouter_key_limit`; 429 + `insufficient_quota` | yes | no | yes |
-| `key_refused` | 401; 403 + `code: invalid_api_key` | yes | no | yes |
-| `region_refused` | 403 + `code: unsupported_country_region_territory` | yes | never | yes |
-| `forbidden` | any other 403 (no structured code) | yes | no | **no** |
-| `rate_limited` | 429 | yes | once, if `Retry-After` is at most `maxRateLimitWaitMs` | no |
-| `provider_error` | 5xx | yes | no | no |
-| `timeout` | 504, 408, the SDK's "Request timed out." / "Connection error." | yes | no | no |
-| `malformed_response` | an empty or truncated stream | yes | no | no |
-| `model_unavailable` | 404 | yes | no | no |
-| `invalid_request` | 400, 413, 422 | **no** | no | no |
-| `other` | no usable status | yes, this call only | no | no |
+| Class                | Needs                                                                       | Fails over          | Retried in place                                       | Skipped for the rest of the run |
+| -------------------- | --------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------ | ------------------------------- |
+| `credits_exhausted`  | 402; 403 + `limit_source: openrouter_key_limit`; 429 + `insufficient_quota` | yes                 | no                                                     | yes                             |
+| `key_refused`        | 401; 403 + `code: invalid_api_key`                                          | yes                 | no                                                     | yes                             |
+| `region_refused`     | 403 + `code: unsupported_country_region_territory`                          | yes                 | never                                                  | yes                             |
+| `forbidden`          | any other 403 (no structured code)                                          | yes                 | no                                                     | **no**                          |
+| `rate_limited`       | 429                                                                         | yes                 | once, if `Retry-After` is at most `maxRateLimitWaitMs` | no                              |
+| `provider_error`     | 5xx                                                                         | yes                 | no                                                     | no                              |
+| `timeout`            | 504, 408, the SDK's "Request timed out." / "Connection error."              | yes                 | no                                                     | no                              |
+| `malformed_response` | an empty or truncated stream                                                | yes                 | no                                                     | no                              |
+| `model_unavailable`  | 404                                                                         | yes                 | no                                                     | no                              |
+| `invalid_request`    | 400, 413, 422                                                               | **no**              | no                                                     | no                              |
+| `other`              | no usable status                                                            | yes, this call only | no                                                     | no                              |
 
 `invalid_request` ends the chain: the same request would fail the same way on the next
 provider. A model answer that fails the output schema is not a provider failure; the
@@ -112,7 +112,25 @@ region refusal is `region_refused` and a real `Retry-After` header is honoured. 
 `retryAfterMs` and kept headers are on the final message's `diagnostics`; events and the default message
 carry status and code only, and `includeProviderText: true` opts in to the providers' own text.
 
-Attempt tags are random UUIDs, a response is recorded only for a live attempt, and kept header values are cut to 128 characters. `Retry-After` is read strictly (seconds or an HTTP date); a value above `maxRateLimitWaitMs` or a malformed one is not waited on and the chain fails over. If the global `fetch` cannot be patched (frozen global, some Workers setups) the tap switches itself off, no tag header is sent, and classification falls back to the SDK's leading status: Workers are supported only in that degraded mode.
+Attempt tags are random UUIDs and a response is recorded only for a live attempt. The error
+body is read up to 16 KB (counted in bytes; one large chunk is sliced, so a 5 MB body costs
+16 KB). Kept header values are cut to 128 characters and must be plain (`A-Z a-z 0-9` and
+`._:,=/ -`); any other value is dropped, so a provider cannot smuggle markup or request text
+through a header into the diagnostics. `Retry-After` is read strictly (seconds or an HTTP date);
+a value above `maxRateLimitWaitMs` or a malformed one is not waited on and the chain fails over.
+
+The tap patches `globalThis.fetch` once per process and tags an attempt only while the global is
+still the tap. It switches itself off (no tag header is sent; classification falls back to the
+SDK's leading status) when:
+
+- `fetch` cannot be patched: a frozen or non-writable global. On Cloudflare Workers `fetch` is
+  normally an ordinary writable global, so the tap works there too; the off switch covers
+  runtimes or hosts that lock it down.
+- something replaces `globalThis.fetch` after the tap installed (another wrapper, a test double).
+- two copies of `@droveragent/model` are installed (for example two versions in one bundle): each
+  copy patches `fetch`, the second wraps the first, and the first copy's tap turns itself off, so
+  chains created from that copy classify from the status only. Deduplicate the package to keep
+  structured errors everywhere.
 
 The tap needs the OpenAI SDK to resolve `globalThis.fetch` when its client is created (true for the version
 pi-ai uses); a `streams` entry (custom transport) is not tapped and supplies its own `status` / `error: { code }`

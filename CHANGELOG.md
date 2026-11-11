@@ -42,6 +42,10 @@ All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version t
   as `region_refused` and nothing parses message text. Final error messages carry class, status
   and code only (`includeProviderText` opts in to the provider's text); failures are on the
   message's `diagnostics`.
+- Response tap hardening (#48): kept header values must be plain characters or are
+  dropped; the error-body cap counts bytes and slices a large chunk; the tag is sent only
+  while `globalThis.fetch` is still the tap (a later swap or a second installed copy of
+  `@droveragent/model` turns the older tap off).
 - `provider_failover` event (`retry` / `failover` / `exhausted`, with failure
   class and status, never provider text); `usage` events carry `provider` and
   `model`; `RunResult.usageByProvider` splits usage per serving provider.
