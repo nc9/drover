@@ -40,6 +40,11 @@ export type Manifest = {
   devDependencies?: Record<string, string>;
 };
 
+// `bun scripts/ci.ts pack --out <dir>` writes <dir>/index.json: PackEntry[]
+// in PACKAGE_ORDER, consumed by scripts/release.ts.
+export const PACK_INDEX = "index.json";
+export type PackEntry = { pkg: string; name: string; version: string; tarball: string };
+
 export const DEP_FIELDS = ["dependencies", "peerDependencies", "optionalDependencies"] as const;
 
 export const packageDir = (pkg: string): string => join(REPO_ROOT, "packages", pkg);

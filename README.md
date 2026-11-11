@@ -83,4 +83,4 @@ bun scripts/ci.ts all         # every gate above
 ```
 
 The package build order lives in `scripts/workspace.ts`; a new package must be
-added there (CI fails until it is).
+added there (CI fails until it is). Releases: `RELEASING.md`.

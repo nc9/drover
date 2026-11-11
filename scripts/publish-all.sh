@@ -9,6 +9,9 @@
 # registry (explicit `npm view` check, loudly logged). Auth failures, network
 # errors, and every other publish failure abort.
 #
+# Prefer the release workflow (RELEASING.md): it adds npm provenance. This
+# script is the laptop fallback; prereleases go to the `next` dist-tag.
+#
 # Usage:
 #   scripts/publish-all.sh                 # uses npm automation token in ~/.npmrc (no OTP prompts)
 #   scripts/publish-all.sh --otp=123456    # pass an OTP through to each `bun publish`
@@ -70,7 +73,10 @@ for p in "${ORDER[@]}"; do
   fi
 
   echo "── publishing ${name}@${version} ──"
-  (cd "packages/$p" && bun publish "$@") \
+  # A prerelease (0.3.0-next.1) must never take the `latest` dist-tag.
+  tag_args=()
+  if [[ "$version" == *-* ]]; then tag_args=(--tag next); fi
+  (cd "packages/$p" && bun publish ${tag_args[@]+"${tag_args[@]}"} "$@") \
     || { echo "✗ publish FAILED: ${name}@${version} — aborting; later packages NOT published"; exit 1; }
   published=$((published + 1))
 done

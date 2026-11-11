@@ -1,0 +1,149 @@
+name: Release
+
+# Publishes every @droveragent/* package (lockstep version) to npm.
+#   - push of a v* tag: prepare, then publish behind the npm-publish environment approval
+#   - workflow_dispatch: dry run by default; dry_run=false publishes only from a v* tag ref
+#   - pull_request touching the release tooling: dry run (no environment, no secrets)
+# Owner setup and the release procedure: RELEASING.md.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (npm publish --dry-run, no GitHub Release). false publishes, and only from a v* tag ref."
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/release*.ts"
+      - "scripts/ci.ts"
+      - "scripts/workspace.ts"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: prepare (plan, build, pack, dry-run publish)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      dist_tag: ${{ steps.plan.outputs.dist_tag }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      is_tag: ${{ steps.plan.outputs.is_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # full history: plan checks the tagged commit is on origin/main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.3
+
+      - name: Set up node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Pin npm (trusted publishing needs >= 11.5.1)
+        run: npm install -g npm@11.18.0 && npm --version
+
+      - name: Install (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      # Tag runs refuse unless lockstep at the tag version, CHANGELOG section
+      # present and the commit on origin/main; other refs only warn.
+      - name: Plan (version, dist-tag, release notes)
+        id: plan
+        run: bun scripts/release.ts plan --ref "$GITHUB_REF" --notes "$RUNNER_TEMP/pack/RELEASE_NOTES.md"
+
+      - name: Build (tsc, dependency order)
+        run: bun scripts/ci.ts build
+
+      - name: Pack + verify workspace dep versions
+        run: bun scripts/ci.ts pack --out "$RUNNER_TEMP/pack"
+
+      - name: Dry-run publish (npm publish --dry-run)
+        run: bun scripts/release.ts publish --dir "$RUNNER_TEMP/pack" --dry-run
+
+      - name: Upload tarballs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-pack
+          path: ${{ runner.temp }}/pack
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish (npm, GitHub Release)
+    needs: prepare
+    if: >-
+      needs.prepare.outputs.is_tag == 'true' &&
+      (github.event_name == 'push' ||
+       (github.event_name == 'workflow_dispatch' && inputs.dry_run == false))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Required reviewers on this environment gate every publish (RELEASING.md).
+    environment: npm-publish
+    permissions:
+      contents: write # GitHub Release
+      id-token: write # npm provenance + trusted publishing (OIDC)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.3
+
+      - name: Set up node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Pin npm (trusted publishing needs >= 11.5.1)
+        run: npm install -g npm@11.18.0 && npm --version
+
+      - name: Download tarballs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-pack
+          path: ${{ runner.temp }}/pack
+
+      # Trusted publishing (OIDC) is used when configured on npmjs.com for the
+      # package; otherwise npm falls back to the NPM_TOKEN environment secret.
+      - name: Publish to npm (dependency order, provenance)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: bun scripts/release.ts publish --dir "$RUNNER_TEMP/pack"
+
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "↷ release v$VERSION already exists"
+            exit 0
+          fi
+          flags=()
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease --latest=false); fi
+          gh release create "v$VERSION" --verify-tag --title "v$VERSION" \
+            --notes-file "$RUNNER_TEMP/pack/RELEASE_NOTES.md" "${flags[@]}"
