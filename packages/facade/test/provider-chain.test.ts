@@ -24,8 +24,8 @@ const spec = defineAgent({
 
 const chunk = (delta: unknown, finish: string | null = null) =>
   `data: ${JSON.stringify({ id: "1", object: "chat.completion.chunk", created: 1, model: "m", choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
-const usageChunk = (prompt: number, completion: number) =>
-  `data: ${JSON.stringify({ id: "1", object: "chat.completion.chunk", created: 1, model: "m", choices: [], usage: { prompt_tokens: prompt, completion_tokens: completion } })}\n\n`;
+const usageChunk = (prompt: number, completion: number, cost?: number) =>
+  `data: ${JSON.stringify({ id: "1", object: "chat.completion.chunk", created: 1, model: "m", choices: [], usage: { prompt_tokens: prompt, completion_tokens: completion, ...(cost !== undefined ? { cost } : {}) } })}\n\n`;
 const sse = (...parts: string[]) =>
   new Response([...parts, "data: [DONE]\n\n"].join(""), {
     headers: { "content-type": "text/event-stream" },
@@ -79,7 +79,16 @@ function server(respond: (n: number, seen: Seen) => Response) {
 }
 
 /** pi-ai's own provider entries, pointed at the local servers (extraModels stand in for the registry). */
-function chainFor(a: { base: string }, b: { base: string }, includeProviderText = false) {
+function chainFor(
+  a: { base: string },
+  b: { base: string },
+  includeProviderText = false,
+  billedCost = false,
+) {
+  // List price $1 / 1M tokens in and out: 100 in + 10 out = $0.00011.
+  const listCost = billedCost
+    ? { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }
+    : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   const model = (provider: string, id: string, baseUrl: string) =>
     ({
       id,
@@ -89,7 +98,7 @@ function chainFor(a: { base: string }, b: { base: string }, includeProviderText 
       baseUrl,
       reasoning: false,
       input: ["text"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      cost: listCost,
       contextWindow: 128_000,
       maxTokens: 8_192,
     }) as never;
@@ -107,6 +116,7 @@ function chainFor(a: { base: string }, b: { base: string }, includeProviderText 
     env: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_GATEWAY_ID: "gw" },
     models: { "gpt-mini": "openai/gpt-5-mini" },
     ...(includeProviderText ? { includeProviderText: true } : {}),
+    ...(billedCost ? { billedCost: true } : {}),
   });
 }
 
@@ -324,5 +334,52 @@ describe("provider chain inside a run", () => {
     // Only with BOTH opt-ins does the provider text reach the run error.
     const both = await runWith(true, true);
     expect(both.result.error?.message).toContain("IGNORE PREVIOUS INSTRUCTIONS");
+  });
+
+  test("billedCost under a chain: billed cost per provider, list price elsewhere, total is the sum", async () => {
+    // Turn 1 on OpenRouter (billed $0.05), then OpenRouter answers 402 and turn 2 runs on the gateway.
+    const a = server((n) =>
+      n === 1
+        ? sse(
+            chunk({
+              role: "assistant",
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "call_1",
+                  type: "function",
+                  function: { name: "read", arguments: JSON.stringify({ path: import.meta.path }) },
+                },
+              ],
+            }),
+            chunk({}, "tool_calls"),
+            usageChunk(100, 10, 0.05),
+          )
+        : error(402, { error: { message: "no credits", code: 402 } }),
+    );
+    const b = server(() => textTurn("done on the gateway"));
+    try {
+      const { result } = await collect(
+        runAgent(
+          spec,
+          { q: "x" },
+          { providers: chainFor(a, b, false, true), sandbox: createNoneSandbox(), env: {} },
+        ),
+      );
+      expect(result.status).toBe("success");
+      // OpenRouter: the billed figure REPLACES the list price (0.05, not 0.05 + 0.00011).
+      expect(result.usageByProvider?.openrouter?.costUsd).toBeCloseTo(0.05, 10);
+      // Gateway: no billed cost, pi's list price (200 in + 20 out at $1/1M).
+      expect(result.usageByProvider?.["cloudflare-ai-gateway"]?.costUsd).toBeCloseTo(0.00022, 10);
+      expect(result.usage.costUsd).toBeCloseTo(0.05 + 0.00022, 10);
+      // The failed 402 attempt was not billed and adds nothing.
+      // Only OpenRouter requests ask for usage accounting; no tag header leaves the process.
+      expect(a.seen.every((s) => (s.body as { usage?: unknown }).usage !== undefined)).toBe(true);
+      expect((b.seen[0]!.body as { usage?: unknown }).usage).toBeUndefined();
+      for (const s of [...a.seen, ...b.seen]) expect(s.headers.has("x-drover-attempt")).toBe(false);
+    } finally {
+      await a.stop();
+      await b.stop();
+    }
   });
 });

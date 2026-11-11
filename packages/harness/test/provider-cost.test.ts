@@ -160,7 +160,7 @@ describe("withProviderCost", () => {
       port: 0,
       async fetch(req) {
         bodies.push((await req.json()) as Record<string, unknown>);
-        seenTag ||= req.headers.has("x-drover-cost-tag");
+        seenTag ||= req.headers.has("x-drover-attempt");
         return new Response(sse(0.01), { headers: { "content-type": "text/event-stream" } });
       },
     });
