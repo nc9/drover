@@ -141,7 +141,16 @@ export function createTranslator(
             if (usage.cacheRead) u.cacheReadTokens = usage.cacheRead;
             if (usage.cacheWrite) u.cacheWriteTokens = usage.cacheWrite;
             if (usage.cost?.total !== undefined) u.costUsd = usage.cost.total;
-            events.push({ kind: "usage", runId, turn, usage: u, ts });
+            const served = msg as { provider?: unknown; model?: unknown };
+            events.push({
+              kind: "usage",
+              runId,
+              turn,
+              usage: u,
+              ...(typeof served.provider === "string" ? { provider: served.provider } : {}),
+              ...(typeof served.model === "string" ? { model: served.model } : {}),
+              ts,
+            });
           }
           return events;
         }

@@ -101,6 +101,13 @@ export interface RunOptions {
   onPayload?: HarnessDeps["onPayload"];
   /** Append the provider's raw error text to `ProviderError` messages (default off: it can quote prompt content). */
   includeProviderErrorText?: boolean;
+  /**
+   * Ordered providers with failover (`createProviderChain` from
+   * `@droveragent/model`): a classified provider failure continues the same
+   * model call on the next provider, mid-run included. See
+   * `docs/guides/provider-chain.mdx`.
+   */
+  providers?: HarnessDeps["providers"];
 }
 
 export interface RunHandle<S extends AgentSpec> {
@@ -186,6 +193,7 @@ export function runAgent<S extends AgentSpec<TSchema, TSchema>>(
     ...(options?.memory ? { memory: options.memory } : {}),
     ...(options?.onPayload ? { onPayload: options.onPayload } : {}),
     ...(options?.includeProviderErrorText ? { includeProviderErrorText: true } : {}),
+    ...(options?.providers ? { providers: options.providers } : {}),
   };
 
   const effectiveSpec: S =
@@ -317,6 +325,7 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
     ...(options.memory ? { memory: options.memory } : {}),
     ...(options.onPayload ? { onPayload: options.onPayload } : {}),
     ...(options.includeProviderErrorText ? { includeProviderErrorText: true } : {}),
+    ...(options.providers ? { providers: options.providers } : {}),
   };
 
   const effectiveSpec: S =
@@ -502,3 +511,12 @@ export type {
   RunResult,
 } from "@droveragent/core";
 export { staticRegistry, type AgentRegistry, type PreResolvedModel } from "@droveragent/harness";
+export {
+  cloudflareAiGateway,
+  createProviderChain,
+  openRouter,
+  DEFAULT_FAILOVER_POLICY,
+  type ProviderChain,
+  type ProviderChainOptions,
+  type ProviderSpec,
+} from "@droveragent/model";

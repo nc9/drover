@@ -26,6 +26,21 @@ All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version t
   first assistant message. An empty end after tool work with output tokens
   stays a success.
 
+### Added
+
+- Provider chain with failover (`createProviderChain`, `openRouter`,
+  `cloudflareAiGateway` in `@droveragent/model`; `RunOptions.providers` /
+  `HarnessDeps.providers`). An ordered list of providers per model: a classified
+  failure (out of credits, key refused, region refused, rate limited, 5xx,
+  timeout, malformed response) continues the same call on the next provider,
+  first call or mid-run, without losing conversation or tool state. See
+  `docs/guides/provider-chain.mdx`.
+- `provider_failover` event (`retry` / `failover` / `exhausted`, with failure
+  class and status, never provider text); `usage` events carry `provider` and
+  `model`; `RunResult.usageByProvider` splits usage per serving provider.
+- `makeSummarizer` takes an optional transport; under a chain the compaction
+  summariser fails over too.
+
 ## 0.2.0 — 2026-08-25
 
 `@droveragent/harness` + `@droveragent/facade` only; every other package is

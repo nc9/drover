@@ -20,6 +20,11 @@ export interface RunResult<TOutput = unknown> {
   turns: number;
   durationMs: number;
   usage: Usage;
+  /**
+   * `usage` split by the provider that served each call. Present when the
+   * assistant messages name their provider (always, under a provider chain).
+   */
+  usageByProvider?: Record<string, Usage>;
   /** Tool ids invoked during the run, in order. Duplicates preserved. */
   toolCalls: ReadonlyArray<string>;
   /** Tagged error when `status === "error"`. */
