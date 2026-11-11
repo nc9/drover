@@ -72,7 +72,11 @@ jobs:
         id: plan
         run: bun scripts/release.ts plan --ref "$GITHUB_REF" --notes "$RUNNER_TEMP/pack/RELEASE_NOTES.md"
 
+      # DROVER_RELEASE=1: dist/version.js gets the plain package version, not "+local.<sha>"
+      # (scripts/postbuild-version.ts); `release.ts verify` refuses tarballs without it.
       - name: Build (tsc, dependency order)
+        env:
+          DROVER_RELEASE: "1"
         run: bun scripts/ci.ts build
 
       - name: Pack + verify workspace dep versions

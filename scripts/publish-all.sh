@@ -24,6 +24,9 @@ cd "$(dirname "$0")/.."
 # shellcheck disable=SC2207
 ORDER=($(bun scripts/workspace.ts)) || { echo "✗ package order check failed"; exit 1; }
 
+# A release build: dist/version.js gets the plain version (scripts/postbuild-version.ts).
+export DROVER_RELEASE=1
+
 echo "▶ building all (dependency order)…"
 for p in "${ORDER[@]}"; do
   (cd "packages/$p" && rm -rf dist && bunx tsc -p tsconfig.build.json \

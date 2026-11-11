@@ -10,7 +10,9 @@
 //
 //   bun scripts/release.ts verify --dir <dir> --ref <git ref>
 //     Every packed manifest must carry repository { url, directory } matching
-//     this repo, or npm provenance fails with E422. Refuses on a tag ref.
+//     this repo, or npm provenance fails with E422, and every tarball's
+//     dist/version.js must be stamped with the plain version (a release build,
+//     DROVER_RELEASE=1), not "+local.<sha>". Refuses on a tag ref.
 //
 //   bun scripts/release.ts publish --dir <dir> [--dry-run]
 //     Publishes the tarballs from `bun scripts/ci.ts pack --out <dir>` with npm
@@ -30,6 +32,7 @@ import {
   isPrerelease,
   isValidVersion,
   repositoryProblem,
+  stampedVersionIn,
 } from "./release-lib.ts";
 import {
   PACK_INDEX,
@@ -155,7 +158,15 @@ const repositoryProblems = (dir: string, entries: readonly PackEntry[]): string[
     const raw = exec(["tar", "-xzOf", join(dir, e.tarball), "package/package.json"], dir, true);
     if (raw.code !== 0) return [`${e.pkg}: cannot read package.json from ${e.tarball}`];
     const problem = repositoryProblem(JSON.parse(raw.stdout) as { repository?: unknown }, e.pkg);
-    return problem ? [problem] : [];
+    // The stamped version (scripts/postbuild-version.ts) must be the plain release version:
+    // a "+local.<sha>" build means the tarball was not built with DROVER_RELEASE=1.
+    const v = exec(["tar", "-xzOf", join(dir, e.tarball), "package/dist/version.js"], dir, true);
+    const stamped = v.code === 0 ? stampedVersionIn(v.stdout) : undefined;
+    const versionProblem =
+      stamped === e.version
+        ? undefined
+        : `${e.pkg}: dist/version.js says ${stamped === undefined ? "nothing" : JSON.stringify(stamped)}, expected ${JSON.stringify(e.version)} (build with DROVER_RELEASE=1)`;
+    return [problem, versionProblem].filter((x): x is string => x !== undefined);
   });
 
 //   bun scripts/release.ts verify --dir <pack dir> --ref <git ref>
@@ -165,10 +176,12 @@ const verify = (args: readonly string[]): void => {
   const ref = flag(args, "--ref") ?? fail("verify: --ref <git ref> is required");
   const problems = repositoryProblems(dir, readIndex(dir));
   if (problems.length === 0) {
-    console.log("✓ every packed manifest has the provenance repository field");
+    console.log(
+      "✓ every packed manifest has the provenance repository field and the plain stamped version",
+    );
     return;
   }
-  const text = `packed manifests not publishable with provenance:\n  ${problems.join("\n  ")}`;
+  const text = `packed tarballs not publishable:\n  ${problems.join("\n  ")}`;
   if (ref.startsWith(TAG_PREFIX)) fail(text);
   summary(`⚠ (dry run, a tag would refuse) ${text}`);
 };

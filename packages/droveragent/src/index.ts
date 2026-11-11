@@ -1,3 +1,4 @@
+import "./version.ts";
 // Umbrella entry point for the drover agent harness.
 //
 // Re-exports the public run/resume facade plus `defineAgent` so consumers can

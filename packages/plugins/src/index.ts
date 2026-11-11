@@ -1,3 +1,4 @@
+import "./version.ts";
 export * from "./loop-detect.ts";
 export * from "./step-tracer.ts";
 export * from "./bash-blocklist.ts";

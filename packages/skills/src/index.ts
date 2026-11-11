@@ -1,3 +1,4 @@
+import "./version.ts";
 export * from "./loader.ts";
 export * from "./registry.ts";
 export * from "./skill-load-tool.ts";

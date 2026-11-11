@@ -1,3 +1,4 @@
+import "./version.ts";
 import type { TSchema } from "@sinclair/typebox";
 import { Effect } from "effect";
 import * as path from "node:path";
@@ -517,3 +518,4 @@ export {
   type ProviderChain,
   type ProviderChainOptions,
 } from "@droveragent/model";
+export { droverVersions } from "@droveragent/core";
