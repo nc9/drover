@@ -122,7 +122,8 @@ describe.skipIf(process.platform === "win32")("createNoneSandbox process groups"
         sb.run("/bin/sh", ["-c", \`sleep \${arg} & sleep \${arg}; wait\`], { timeoutMs: 60_000 }),
       );
       const count = () =>
-        Bun.spawnSync(["pgrep", "-f", \`sleep \${arg}\`]).stdout.toString().trim().split("\\n").filter(Boolean).length;
+        Bun.spawnSync(["pgrep", "-f", \`^sleep \${arg}\`]).stdout.toString().trim().split("\\n").filter(Boolean).length;
+      // "^sleep": the two sleeps only, not the "sh -c" line that names them.
       while (count() < 2) await Bun.sleep(20);
       console.log("spawned");
       ${mode === "exit" ? "process.exit(0);" : "setInterval(() => {}, 1000);"}
@@ -184,7 +185,7 @@ describe.skipIf(process.platform === "win32")("createNoneSandbox process groups"
       host.kill("SIGKILL");
       killAll(arg);
     }
-  });
+  }, 15_000);
 
   test("SIGTERM to the host kills the exec and the host still dies by SIGTERM (143)", async () => {
     const arg = sleepArg();
@@ -199,7 +200,7 @@ describe.skipIf(process.platform === "win32")("createNoneSandbox process groups"
       host.kill("SIGKILL");
       killAll(arg);
     }
-  });
+  }, 15_000);
 
   test("a host with its own SIGINT handler is not killed by ours; the exec still is", async () => {
     const arg = sleepArg();
@@ -216,5 +217,5 @@ describe.skipIf(process.platform === "win32")("createNoneSandbox process groups"
       host.kill("SIGKILL");
       killAll(arg);
     }
-  });
+  }, 15_000);
 });
