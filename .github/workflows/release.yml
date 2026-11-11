@@ -21,6 +21,9 @@ on:
       - "scripts/release*.ts"
       - "scripts/ci.ts"
       - "scripts/workspace.ts"
+      - "scripts/publish-all.sh"
+      - "scripts/test/**"
+      - "bun.lock"
 
 permissions:
   contents: read
@@ -74,6 +77,11 @@ jobs:
 
       - name: Pack + verify workspace dep versions
         run: bun scripts/ci.ts pack --out "$RUNNER_TEMP/pack"
+
+      # npm provenance needs repository { url, directory } in every manifest
+      # (E422 otherwise). Refuses on a tag, warns on a dry run.
+      - name: Verify provenance metadata (repository field)
+        run: bun scripts/release.ts verify --dir "$RUNNER_TEMP/pack" --ref "$GITHUB_REF"
 
       - name: Dry-run publish (npm publish --dry-run)
         run: bun scripts/release.ts publish --dir "$RUNNER_TEMP/pack" --dry-run
@@ -139,9 +147,14 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
           PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
         run: |
-          if gh release view "v$VERSION" >/dev/null 2>&1; then
+          # Skip only when the release already exists (re-run); a missing
+          # release proceeds; any other error fails the step.
+          if out=$(gh release view "v$VERSION" --json tagName 2>&1); then
             echo "↷ release v$VERSION already exists"
             exit 0
+          elif ! grep -q "release not found" <<<"$out"; then
+            echo "✗ gh release view failed: $out"
+            exit 1
           fi
           flags=()
           if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease --latest=false); fi

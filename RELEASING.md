@@ -22,30 +22,40 @@ Do these before pushing the first release tag.
    with no protection rules, so a tag pushed before this step would publish
    without an approval.
 
-2. **npm auth: trusted publishing (preferred).** For each package on
-   npmjs.com (Package > Settings > Trusted Publisher > GitHub Actions):
+2. **Tag ruleset (required).** Settings > Rules > Rulesets > New tag ruleset:
+   target `v*`, restrict creations, updates and deletions to the release
+   maintainers (bypass list). Pushing a `v*` tag starts a release, so only the
+   people who may approve one may create one.
+
+3. **npm auth: `NPM_TOKEN` (required for `0.3.0-next.1`).** Create an npm
+   granular access token with read and write access to the `@droveragent`
+   scope and the `droveragent` package, allowed to bypass 2FA for publishing.
+   Store it as the `NPM_TOKEN` secret **on the `npm-publish` environment**
+   (not a repository secret), so only the approved publish job can read it.
+
+   The token is required for the first train: `@droveragent/sandbox-cloudflare`,
+   `@droveragent/storage-d1` and `droveragent` have never been published, and
+   npm only lets you add a trusted publisher to a package that already exists.
+
+4. **npm auth: trusted publishing (after `0.3.0-next.1`).** Once every package
+   exists, add a trusted publisher to each one on npmjs.com (Package >
+   Settings > Trusted Publisher > GitHub Actions):
    - Organization or user: `nc9`
    - Repository: `drover`
    - Workflow filename: `release.yml`
    - Environment name: `npm-publish`
 
    The workflow pins npm 11.18.0 (trusted publishing needs npm 11.5.1 or later)
-   and grants `id-token: write` to the publish job only. Trusted publishing
-   also produces provenance automatically. Once every package works with it,
-   set each package's publishing access to "Require two-factor authentication
-   and disallow tokens".
+   and grants `id-token: write` to the publish job only; npm uses OIDC where a
+   trusted publisher is configured and the token elsewhere. When every package
+   publishes through OIDC, set each package's publishing access to "Require
+   two-factor authentication and disallow tokens" and delete `NPM_TOKEN`.
 
-   A package that has never been published cannot have a trusted publisher
-   yet: publish its first version with the token below (or
-   `scripts/publish-all.sh`), then add the trusted publisher.
-
-3. **npm auth: token fallback.** Create an npm granular access token with
-   read and write access to the `@droveragent` scope and the `droveragent`
-   package, allowed to bypass 2FA for publishing. Store it as the
-   `NPM_TOKEN` secret **on the `npm-publish` environment** (not a repository
-   secret), so only the approved publish job can read it. Packages with a
-   trusted publisher use OIDC; the token covers the rest.
-4. Optional: a tag ruleset restricting who can create `v*` tags.
+5. **Package metadata (#32) must be merged before the first tag.** npm
+   provenance rejects a manifest without
+   `"repository": { "type": "git", "url": "git+https://github.com/nc9/drover.git", "directory": "packages/<dir>" }`
+   (E422). The workflow checks every packed manifest: a tag run refuses, a
+   dry run warns.
 
 ## Cutting a release
 
@@ -58,7 +68,8 @@ Do these before pushing the first release tag.
    bun scripts/release-bump.ts 0.3.0-next.1
    ```
 
-   It refuses an invalid version or a missing CHANGELOG section, sets the
+   It refuses a dirty working tree, an invalid version, a version not greater
+   than the highest current one, or a missing CHANGELOG section. It sets the
    version in every `packages/*/package.json`, rewrites the workspace versions
    in `bun.lock` (plain `bun install`, even `--frozen-lockfile`, never updates
    them, and `bun pm pack` reads them), runs `bun install --frozen-lockfile`,
@@ -74,7 +85,8 @@ Do these before pushing the first release tag.
 
 4. The workflow runs `prepare`: it refuses unless every package is at the tag
    version, the CHANGELOG section exists and the commit is on `main`; then it
-   builds, packs, verifies the packed manifests and runs
+   builds, packs, verifies the packed manifests (workspace dep versions and
+   the provenance `repository` field) and runs
    `npm publish --dry-run` for every package. Read its log, then approve the
    `npm-publish` deployment.
 5. `publish` uploads the tarballs from `prepare` in dependency order with
@@ -82,6 +94,15 @@ Do these before pushing the first release tag.
    stopping at any other failure, then creates the GitHub Release from the
    CHANGELOG section (marked prerelease for a prerelease).
 6. Check: `npm view @droveragent/core dist-tags`.
+
+**First publish of a package as a prerelease.** The npm registry gives a
+package's first version the `latest` dist-tag whatever `--tag` says. After
+publishing a prerelease of a package that had no prior version, the workflow
+runs `npm dist-tag rm <pkg> latest`. If the registry refuses (it may not let the
+only `latest` go), the run summary says so, and `npm install <pkg>` resolves to
+that prerelease until a stable version is published. For `0.3.0-next.1` this
+applies to `@droveragent/sandbox-cloudflare`, `@droveragent/storage-d1` and
+`droveragent`.
 
 If `publish` fails part way, fix the cause and re-run the failed job: packages
 already published are skipped.
@@ -98,6 +119,7 @@ already published are skipped.
   bun scripts/ci.ts build
   bun scripts/ci.ts pack --out /tmp/drover-pack
   bun scripts/release.ts plan --ref refs/heads/main
+  bun scripts/release.ts verify --dir /tmp/drover-pack --ref refs/heads/main
   bun scripts/release.ts publish --dir /tmp/drover-pack --dry-run
   ```
 

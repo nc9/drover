@@ -8,6 +8,10 @@
 //     warnings. Writes version / dist_tag / prerelease / is_tag to
 //     $GITHUB_OUTPUT when set.
 //
+//   bun scripts/release.ts verify --dir <dir> --ref <git ref>
+//     Every packed manifest must carry repository { url, directory } matching
+//     this repo, or npm provenance fails with E422. Refuses on a tag ref.
+//
 //   bun scripts/release.ts publish --dir <dir> [--dry-run]
 //     Publishes the tarballs from `bun scripts/ci.ts pack --out <dir>` with npm
 //     in dependency order (index.json). Skips a name@version only when the
@@ -20,7 +24,13 @@
 // `workspace:*`; npm publish of a package dir would not.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { changelogSection, distTagFor, isPrerelease, isValidVersion } from "./release-lib.ts";
+import {
+  changelogSection,
+  distTagFor,
+  isPrerelease,
+  isValidVersion,
+  repositoryProblem,
+} from "./release-lib.ts";
 import {
   PACK_INDEX,
   PACKAGE_ORDER,
@@ -124,12 +134,53 @@ const registryState = (spec: string, cwd: string): Registry => {
   return fail(`registry check failed for ${spec} (not a 404):\n${r.stdout}${r.stderr}`);
 };
 
-const publish = (args: readonly string[]): void => {
-  const dir = resolve(flag(args, "--dir") ?? fail("publish: --dir <pack dir> is required"));
-  const dryRun = args.includes("--dry-run");
+const readIndex = (dir: string): PackEntry[] => {
   const entries = JSON.parse(readFileSync(join(dir, PACK_INDEX), "utf8")) as PackEntry[];
   const order = entries.map((e) => e.pkg).join(",");
   if (order !== PACKAGE_ORDER.join(",")) fail(`${PACK_INDEX} order does not match PACKAGE_ORDER`);
+  return entries;
+};
+
+// Shown on the workflow run page as well as in the log.
+const summary = (line: string): void => {
+  console.log(line);
+  const file = process.env.GITHUB_STEP_SUMMARY;
+  if (file) appendFileSync(file, `${line}\n`);
+};
+
+// Repository problems in the packed manifests (npm provenance rejects a
+// missing or mismatched repository with E422).
+const repositoryProblems = (dir: string, entries: readonly PackEntry[]): string[] =>
+  entries.flatMap((e) => {
+    const raw = exec(["tar", "-xzOf", join(dir, e.tarball), "package/package.json"], dir, true);
+    if (raw.code !== 0) return [`${e.pkg}: cannot read package.json from ${e.tarball}`];
+    const problem = repositoryProblem(JSON.parse(raw.stdout) as { repository?: unknown }, e.pkg);
+    return problem ? [problem] : [];
+  });
+
+//   bun scripts/release.ts verify --dir <pack dir> --ref <git ref>
+// Tag refs refuse on any problem; other refs (dry runs) warn.
+const verify = (args: readonly string[]): void => {
+  const dir = resolve(flag(args, "--dir") ?? fail("verify: --dir <pack dir> is required"));
+  const ref = flag(args, "--ref") ?? fail("verify: --ref <git ref> is required");
+  const problems = repositoryProblems(dir, readIndex(dir));
+  if (problems.length === 0) {
+    console.log("✓ every packed manifest has the provenance repository field");
+    return;
+  }
+  const text = `packed manifests not publishable with provenance:\n  ${problems.join("\n  ")}`;
+  if (ref.startsWith(TAG_PREFIX)) fail(text);
+  summary(`⚠ (dry run, a tag would refuse) ${text}`);
+};
+
+const publish = (args: readonly string[]): void => {
+  const dir = resolve(flag(args, "--dir") ?? fail("publish: --dir <pack dir> is required"));
+  const dryRun = args.includes("--dry-run");
+  const entries = readIndex(dir);
+  if (!dryRun) {
+    const problems = repositoryProblems(dir, entries);
+    if (problems.length > 0) fail(`refusing to publish:\n  ${problems.join("\n  ")}`);
+  }
 
   const counts = { published: 0, skipped: 0 };
   for (const e of entries) {
@@ -140,6 +191,7 @@ const publish = (args: readonly string[]): void => {
       continue;
     }
     const tag = distTagFor(e.version);
+    const firstPublish = registryState(e.name, dir) === "missing";
     console.log(`── ${dryRun ? "dry-run publishing" : "publishing"} ${spec} (dist-tag ${tag})`);
     // cwd = the pack dir, outside the repo: the repo .npmrc expects NPM_TOKEN,
     // which is unset under trusted publishing.
@@ -157,6 +209,26 @@ const publish = (args: readonly string[]): void => {
       fail(`publish FAILED: ${spec}; aborting, later packages NOT published`);
     }
     counts.published += 1;
+    // The registry gives a package's first version `latest` whatever --tag
+    // says, so a brand-new package published as a prerelease would sit on
+    // `latest`. Try to remove it; the registry may refuse to drop the only
+    // `latest`, in which case say so loudly (RELEASING.md covers it).
+    if (firstPublish && tag !== "latest") {
+      if (dryRun) {
+        summary(
+          `ℹ ${e.name} is new: a real run would also try \`npm dist-tag rm ${e.name} latest\``,
+        );
+        continue;
+      }
+      const rm = exec(["npm", "dist-tag", "rm", e.name, "latest"], dir, true);
+      if (rm.code === 0) summary(`✓ ${e.name} is new: removed the registry-assigned latest tag`);
+      else {
+        summary(
+          `⚠ ${e.name} is new and npm kept \`latest\` -> ${e.version} (dist-tag rm failed: ${rm.stderr.trim().split("\n").at(-1) ?? ""}). ` +
+            `\`npm install ${e.name}\` resolves to this prerelease until a stable version is published.`,
+        );
+      }
+    }
   }
   const verb = dryRun ? "would publish" : "published";
   console.log(
@@ -164,12 +236,12 @@ const publish = (args: readonly string[]): void => {
   );
 };
 
-const COMMANDS: Record<string, (args: readonly string[]) => void> = { plan, publish };
+const COMMANDS: Record<string, (args: readonly string[]) => void> = { plan, verify, publish };
 
 const main = (argv: readonly string[]): void => {
   const [cmd, ...rest] = argv;
   const run = cmd === undefined ? undefined : COMMANDS[cmd];
-  if (!run) fail("usage: bun scripts/release.ts <plan|publish> [flags]");
+  if (!run) fail("usage: bun scripts/release.ts <plan|verify|publish> [flags]");
   run?.(rest);
 };
 

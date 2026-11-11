@@ -70,3 +70,28 @@ export const setManifestVersion = (manifestText: string, version: string): strin
   if (!re.test(manifestText)) throw new Error("package.json has no top-level version field");
   return manifestText.replace(re, `$1${version}$3`);
 };
+
+// npm provenance (E422 otherwise) needs repository.url to match the repo the
+// workflow runs in. Undefined when the packed manifest is fine.
+export const EXPECTED_REPOSITORY_URL = "git+https://github.com/nc9/drover.git";
+
+export const repositoryProblem = (
+  manifest: { name?: string; repository?: unknown },
+  pkg: string,
+): string | undefined => {
+  const repo = manifest.repository;
+  const want = `repository { url: "${EXPECTED_REPOSITORY_URL}", directory: "packages/${pkg}" }`;
+  if (typeof repo !== "object" || repo === null)
+    return `${pkg}: no repository field (need ${want})`;
+  const { url, directory } = repo as { url?: unknown; directory?: unknown };
+  if (url !== EXPECTED_REPOSITORY_URL)
+    return `${pkg}: repository.url is ${String(url)} (need ${want})`;
+  if (directory !== `packages/${pkg}`) {
+    return `${pkg}: repository.directory is ${String(directory)} (need ${want})`;
+  }
+  return undefined;
+};
+
+// Strictly greater, semver precedence (0.3.0-next.1 > 0.2.0, < 0.3.0).
+export const isGreaterVersion = (next: string, current: string): boolean =>
+  Bun.semver.order(next, current) === 1;

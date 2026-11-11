@@ -3,8 +3,10 @@ import {
   changelogSection,
   distTagFor,
   hasChangelogSection,
+  isGreaterVersion,
   isValidVersion,
   lockWorkspaces,
+  repositoryProblem,
   setLockWorkspaceVersions,
   setManifestVersion,
 } from "../release-lib.ts";
@@ -149,5 +151,43 @@ describe("pack check", () => {
         versions,
       ),
     ).toEqual([]);
+  });
+});
+
+describe("bump guards", () => {
+  test("version must be strictly greater", () => {
+    expect(isGreaterVersion("0.3.0-next.1", "0.2.0")).toBe(true);
+    expect(isGreaterVersion("0.3.0-next.10", "0.3.0-next.2")).toBe(true);
+    expect(isGreaterVersion("0.3.0", "0.3.0-next.5")).toBe(true);
+    expect(isGreaterVersion("0.2.0", "0.2.0")).toBe(false);
+    expect(isGreaterVersion("0.3.0-next.1", "0.3.0")).toBe(false);
+    expect(isGreaterVersion("0.1.1", "0.2.0")).toBe(false);
+  });
+});
+
+describe("provenance repository field", () => {
+  const url = "git+https://github.com/nc9/drover.git";
+
+  test("accepts the repo url with the package directory", () => {
+    expect(
+      repositoryProblem({ repository: { type: "git", url, directory: "packages/core" } }, "core"),
+    ).toBeUndefined();
+  });
+
+  test("refuses missing, wrong url, wrong or missing directory", () => {
+    expect(repositoryProblem({}, "core")).toContain("no repository field");
+    expect(repositoryProblem({ repository: "nc9/drover" }, "core")).toContain(
+      "no repository field",
+    );
+    expect(
+      repositoryProblem(
+        { repository: { url: "https://github.com/nc9/drover", directory: "packages/core" } },
+        "core",
+      ),
+    ).toContain("repository.url");
+    expect(
+      repositoryProblem({ repository: { url, directory: "packages/tools" } }, "core"),
+    ).toContain("repository.directory");
+    expect(repositoryProblem({ repository: { url } }, "core")).toContain("repository.directory");
   });
 });

@@ -3,8 +3,9 @@
 //
 //   bun scripts/release-bump.ts <version> [--dry-run]
 //
-// Refuses when the version is not valid semver or CHANGELOG.md has no
-// `## <version>` section. Steps:
+// Refuses when the working tree is dirty, the version is not valid semver or
+// not greater than the highest current package version, or CHANGELOG.md has
+// no `## <version>` section. Steps:
 //   1. set "version" in every packages/*/package.json
 //   2. rewrite the workspace "version" fields in bun.lock (plain `bun install`,
 //      even --frozen-lockfile, never refreshes them, and bun pm pack / bun
@@ -17,6 +18,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   hasChangelogSection,
+  isGreaterVersion,
   isValidVersion,
   lockWorkspaces,
   setLockWorkspaceVersions,
@@ -43,6 +45,19 @@ const main = (argv: readonly string[]): void => {
   if (version === undefined) fail("usage: bun scripts/release-bump.ts <version> [--dry-run]");
   const v = version as string;
   if (!isValidVersion(v)) fail(`not a valid semver version: ${v}`);
+
+  const dirty = Bun.spawnSync(["git", "status", "--porcelain"], { cwd: REPO_ROOT });
+  if (dirty.exitCode !== 0) fail("git status failed");
+  if ((dirty.stdout?.toString() ?? "").trim() !== "") {
+    fail("working tree is dirty; commit or stash first (the bump must be its own diff)");
+  }
+
+  const current = workspacePackages()
+    .map((p) => readManifest(packageDir(p)).version)
+    .reduce((a, b) => (isGreaterVersion(b, a) ? b : a));
+  if (!isGreaterVersion(v, current)) {
+    fail(`${v} is not greater than the current highest package version ${current}`);
+  }
 
   const changelog = readFileSync(join(REPO_ROOT, "CHANGELOG.md"), "utf8");
   if (!hasChangelogSection(changelog, v)) {
