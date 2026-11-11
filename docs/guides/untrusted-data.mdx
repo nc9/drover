@@ -30,26 +30,28 @@ runAgent(spec, input, {
 A tool that builds its own output can call `fence.wrap("page", value)` and be
 listed in `selfFenced`, so it is not wrapped twice.
 
-## Fence by provenance, never by content
+## Fail closed: untrusted unless positively marked trusted
 
-The invariant: **any result of an untrusted tool, and any stored or derived copy
-of one that another tool hands back, reaches the model inside the fence.**
+The invariant: **anything a tool returns is untrusted unless it is positively
+marked trusted; the mark is stored with the data it describes.** Every
+bookkeeping miss (an id never recorded, a mark dropped at run end, a restart, a
+resumed run) over-fences; none can under-fence.
 
-- Results of the listed tools are always wrapped (errors included). The plugin
-  never looks at what the output looks like to decide: output is the untrusted
-  part, and a result that merely contains something fence-shaped (right tag, no
-  nonce, a real opening tag followed by instructions after a closing tag) is
-  wrapped like any other. The only way out is the explicit `selfFenced` list.
-- The plugin remembers, per run, which tool-use ids came from an untrusted tool.
-  A reader tool asked for one of those ids is fenced, whatever slice it returns.
-  `show_tool_result` (the truncate plugin's read-back of an oversized result) is a
-  reader by default; `readers` maps other tool names to their id field.
-- Put `untrustedResultsPlugin` **after** `truncatePlugin` in `plugins`: it is then
-  the outer wrapper, so the truncated head and its marker are fenced and the
-  stored overflow is only reachable through a fenced reader. The other order is
-  still safe (reads are fenced) but a slice then carries a fence inside a fence.
-- A tool of your own that returns a stored or derived copy of an untrusted result
-  (a cache, a summary tool) must be added to `readers`, or fence its output itself.
+- Results of the listed tools are always wrapped, errors and defects included
+  (an upstream error can echo a page title). The plugin never looks at what the
+  output looks like: a result that contains something fence-shaped is wrapped like
+  any other. The only way out of wrapping is the explicit `selfFenced` list, and
+  those tools still count as untrusted for the rule below.
+- Every other tool call is marked trusted (by run and tool-use id). A reader tool
+  (a stored or derived copy by id: `show_tool_result` by default, `readers` to add
+  others) returns its output fenced unless the id it was asked for is marked
+  trusted. An id the plugin never saw, or one whose mark was cleared, is fenced.
+- The mark lives in the plugin, per run, and is cleared at run end. Data that
+  outlives it (a truncate store shared across runs, a resumed run) reads back
+  fenced; the cost of that is over-fencing trusted data, never leaking untrusted.
+- Put `untrustedResultsPlugin` **after** `truncatePlugin` so the truncated head
+  and its marker are fenced too. A tool of your own that returns a derived copy of
+  an untrusted result must be added to `readers`.
 
 ## What the fence does to text
 
