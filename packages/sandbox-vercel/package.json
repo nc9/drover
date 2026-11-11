@@ -2,8 +2,20 @@
   "name": "@droveragent/sandbox-vercel",
   "version": "0.1.0",
   "private": false,
+  "license": "MIT",
+  "author": "Nik Cubrilovic",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nc9/drover.git",
+    "directory": "packages/sandbox-vercel"
+  },
+  "homepage": "https://nc9.github.io/drover/",
+  "bugs": {
+    "url": "https://github.com/nc9/drover/issues"
+  },
   "files": [
-    "dist"
+    "dist",
+    "LICENSE"
   ],
   "type": "module",
   "main": "./dist/index.js",

@@ -2,6 +2,17 @@
   "name": "@droveragent/core",
   "version": "0.1.0",
   "private": false,
+  "license": "MIT",
+  "author": "Nik Cubrilovic",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nc9/drover.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://nc9.github.io/drover/",
+  "bugs": {
+    "url": "https://github.com/nc9/drover/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "exports": {
@@ -42,7 +53,8 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "LICENSE"
   ],
   "publishConfig": {
     "access": "public"
