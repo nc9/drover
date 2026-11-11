@@ -25,9 +25,10 @@
  *
  * Plugin order does not decide safety: the harness applies a fencing plugin's
  * `wrapTool` outermost and its `afterToolCall` last, whatever the registration
- * order, and `afterToolCall` fences anything another plugin added or changed
- * outside a fence block. Order only decides how tidy a fenced truncated head looks:
- * list this plugin after `truncatePlugin`.
+ * order, and `afterToolCall` keeps only the exact strings this plugin produced for
+ * the run and fences everything else (another plugin's additions, a forged block).
+ * Order only decides how tidy a fenced truncated head looks: list this plugin after
+ * `truncatePlugin`.
  */
 import {
   createFence,
@@ -138,10 +139,11 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
   // missing is an error: minting a new one would leave the system prompt naming
   // the old nonce while results carry the new one.
   const live = new Map<string, Fence>();
-  // Result contents this plugin produced, per run: `afterToolCall` passes those
-  // through unchanged and fences anything another plugin added outside a block.
-  const produced = new Map<string, Set<string>>();
-
+  // Exact strings this plugin let through for a run's tool results: every fence block it
+  // made, and the raw content of trusted results. `afterToolCall` keeps only these
+  // verbatim; everything else, including a block that merely looks like one of ours
+  // (the model knows the nonce from the system prompt), is fenced again. Dropped at run end.
+  const known = new Map<string, Set<string>>();
   const fenceFor = (runId: string): Fence => {
     const stored = nonces.get(runId);
     const f = live.get(runId);
@@ -164,29 +166,53 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
     return fresh;
   };
 
-  const record = (runId: string, result: ToolResult): ToolResult => {
-    let set = produced.get(runId);
-    if (!set) produced.set(runId, (set = new Set()));
-    set.add(result.content);
-    return result;
+  const remember = (runId: string, text: string): string => {
+    let set = known.get(runId);
+    if (!set) known.set(runId, (set = new Set()));
+    if (text !== "") set.add(text);
+    return text;
   };
 
-  // Every non-blank stretch of `text` outside this run's fence blocks becomes its own block.
-  const fenceOutside = (f: Fence, text: string): string => {
-    const open = `<${f.tag} section="`;
-    const close = `</${f.tag}>`;
+  /** Fence `text` for a tool result of `runId`, remembering the exact block. */
+  const fenceResult = (runId: string, section: string, text: string): string =>
+    remember(runId, fenceFor(runId).wrapText(section, text));
+
+  /**
+   * Keep the exact strings this plugin produced for the run; fence every other non-blank
+   * stretch (a forged block included: its tags are escaped and its nonce becomes [nonce]).
+   */
+  const refence = (runId: string, text: string): string => {
+    const f = fenceFor(runId);
+    const spans = [...(known.get(runId) ?? [])];
     const parts: string[] = [];
+    let foreign = "";
+    const flush = (): void => {
+      if (foreign.trim() !== "") parts.push(f.wrapText("after-tool-call", foreign));
+      else parts.push(foreign);
+      foreign = "";
+    };
     let i = 0;
     while (i < text.length) {
-      const start = text.indexOf(open, i);
-      const end = start === -1 ? -1 : text.indexOf(close, start);
-      const outside = text.slice(i, start === -1 || end === -1 ? text.length : start);
-      if (outside.trim() !== "") parts.push(f.wrapText("after-tool-call", outside));
-      else if (outside !== "") parts.push(outside);
-      if (start === -1 || end === -1) break;
-      parts.push(text.slice(start, end + close.length));
-      i = end + close.length;
+      // Earliest known span at or after i; the longest wins a tie.
+      let at = -1;
+      let span = "";
+      for (const s of spans) {
+        const k = text.indexOf(s, i);
+        if (k !== -1 && (at === -1 || k < at || (k === at && s.length > span.length))) {
+          at = k;
+          span = s;
+        }
+      }
+      if (at === -1) {
+        foreign += text.slice(i);
+        break;
+      }
+      foreign += text.slice(i, at);
+      flush();
+      parts.push(span);
+      i = at + span.length;
     }
+    flush();
     return parts.join("");
   };
 
@@ -203,13 +229,10 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
               const raw =
                 d?.trusted === true && typeof d.toolId === "string" && isTrusted(d.toolId);
               return raw
-                ? result
+                ? { ...result, content: remember(ctx.runId, result.content) }
                 : {
                     ...result,
-                    content: fenceFor(ctx.runId).wrapText(
-                      `${sectionOf(tool.id)}-slice`,
-                      result.content,
-                    ),
+                    content: fenceResult(ctx.runId, `${sectionOf(tool.id)}-slice`, result.content),
                   };
             }),
             // A reader's failure can quote the handle or the data it looked for.
@@ -217,18 +240,33 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
               Cause.isInterruptedOnly(cause)
                 ? Effect.failCause(cause)
                 : Effect.succeed({
-                    content: fenceFor(ctx.runId).wrapText(
+                    content: fenceResult(
+                      ctx.runId,
                       `${sectionOf(tool.id)}-slice`,
                       errorText(cause),
                     ),
                     isError: true,
                   }),
             ),
-            Effect.map((r) => record(ctx.runId, r)),
           ),
       };
     }
-    if (isTrusted(tool.id)) return tool; // errors of a trusted tool are the operator's own
+    if (isTrusted(tool.id)) {
+      // Raw, but remembered: afterToolCall keeps this exact text and fences anything another
+      // plugin adds to it. Errors of a trusted tool are the operator's own and pass through
+      // wrapTool untouched (afterToolCall still fences them, as text it did not produce).
+      return {
+        ...tool,
+        execute: (input, ctx) =>
+          Effect.map(
+            Effect.suspend(() => tool.execute(input, ctx)),
+            (r) => ({
+              ...r,
+              content: remember(ctx.runId, r.content),
+            }),
+          ),
+      };
+    }
     const wrapSuccess = !selfFenced.has(tool.id);
     return {
       ...tool,
@@ -239,19 +277,19 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
             wrapSuccess
               ? {
                   ...result,
-                  content: fenceFor(ctx.runId).wrapText(sectionOf(tool.id), result.content),
+                  content: fenceResult(ctx.runId, sectionOf(tool.id), result.content),
                 }
-              : result,
+              : // self-fenced: the tool fenced its own output with this run's fence
+                { ...result, content: remember(ctx.runId, result.content) },
           ),
           Effect.catchAllCause((cause) =>
             Cause.isInterruptedOnly(cause)
               ? Effect.failCause(cause)
               : Effect.succeed({
-                  content: fenceFor(ctx.runId).wrapText(sectionOf(tool.id), errorText(cause)),
+                  content: fenceResult(ctx.runId, sectionOf(tool.id), errorText(cause)),
                   isError: true,
                 }),
           ),
-          Effect.map((r) => record(ctx.runId, r)),
         ),
     };
   };
@@ -265,19 +303,14 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
     wrapUntrusted: (section, text, ctx) => fenceFor(ctx.runId).wrapText(section, text),
     inheritToSubagents: true,
     // Runs after every other plugin's afterToolCall (the harness orders fence plugins
-    // last). A result this plugin produced and nobody changed passes as is; anything
-    // else (another plugin rewrote it, or it never went through wrapTool) has every
-    // stretch outside this run's fence blocks fenced. Trusted tools pass.
-    afterToolCall: (toolName, _input, result, ctx) =>
-      Effect.sync((): ToolResult => {
-        if (isTrusted(toolName)) return result;
-        if (produced.get(ctx.runId)?.delete(result.content)) return result;
-        return { ...result, content: fenceOutside(fenceFor(ctx.runId), result.content) };
-      }),
+    // last). Only exact strings this plugin produced for the run pass verbatim; any other
+    // text, whoever added it and whatever it looks like, is fenced (see `refence`).
+    afterToolCall: (_toolName, _input, result, ctx) =>
+      Effect.sync((): ToolResult => ({ ...result, content: refence(ctx.runId, result.content) })),
     onRunEnd: (_result, ctx) =>
       Effect.sync(() => {
         live.delete(ctx.runId);
-        produced.delete(ctx.runId);
+        known.delete(ctx.runId);
       }),
     assertResumable(ctx) {
       // Restored history carries fences that name the old nonce. Without it the

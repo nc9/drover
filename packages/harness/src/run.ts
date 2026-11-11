@@ -827,10 +827,29 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           // Fencing plugins run last: they see (and fence) every other rewrite.
           for (const p of fencersLast(plugins)) {
             if (!p.afterToolCall) continue;
-            const next = await Effect.runPromise(
-              Effect.either(p.afterToolCall(aCtx.toolCall.name, aCtx.args, current, ctx)),
+            const before = current;
+            const exit = await Effect.runPromiseExit(
+              Effect.suspend(() => p.afterToolCall!(aCtx.toolCall.name, aCtx.args, before, ctx)),
             );
-            if (next._tag === "Right") current = next.right;
+            if (exit._tag === "Success") {
+              current = exit.value;
+              continue;
+            }
+            // A failed (or throwing) plugin keeps the result as it was. A failed FENCING
+            // plugin fails closed: never pass an earlier plugin's rewrite on unfenced.
+            if (p.wrapUntrusted) {
+              try {
+                current = {
+                  ...before,
+                  content: p.wrapUntrusted("after-tool-call", before.content, ctx),
+                };
+              } catch {
+                current = {
+                  content: "[tool result withheld: the untrusted-data fence failed]",
+                  isError: true,
+                };
+              }
+            }
           }
           const out: {
             content?: Array<{ type: "text"; text: string }>;

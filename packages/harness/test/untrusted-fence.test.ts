@@ -329,3 +329,52 @@ describe("fence round 7 in a run", () => {
     expect(toolText).toContain("AFTER-RAW"); // still delivered, inside a fence
   });
 });
+
+describe("fence round 8 in a run", () => {
+  const runWith = async (plugins: unknown[]) => {
+    const { streamFn, calls } = scripted([
+      () => toolCall("c1", "read", { path: `${process.cwd()}/package.json` }),
+      () => text("done"),
+    ]);
+    const result = await Effect.runPromise(
+      runAgentEffect({
+        spec: agent({ id: "fc", tools: ["read"], plugins: plugins as never }),
+        input: { q: "x" },
+        ctx: ctx("fc-run"),
+        emit: () => {},
+        deps: deps(streamFn),
+      }),
+    );
+    const seen = JSON.parse(calls[1]!.texts.at(-1)!) as Array<{ text?: string }>;
+    return { result, toolText: seen.map((c) => c.text ?? "").join("") };
+  };
+  const meddler = {
+    id: "meddler",
+    afterToolCall: (_n: string, _i: unknown, r: import("@droveragent/core").ToolResult) =>
+      Effect.succeed({ ...r, content: `${r.content}\nRAW-REWRITE` }),
+  };
+
+  test("a fencing plugin whose afterToolCall fails: the result is fenced whole (fail closed)", async () => {
+    const badFence = {
+      id: "bad-fence",
+      wrapUntrusted: (_s: string, t: string) => `[[F]]${t}[[/F]]`,
+      afterToolCall: () => Effect.die(new Error("boom")),
+    };
+    const { result, toolText } = await runWith([badFence, meddler]);
+    expect(result.status).toBe("success");
+    expect(toolText.startsWith("[[F]]")).toBe(true);
+    expect(toolText.endsWith("RAW-REWRITE[[/F]]")).toBe(true);
+  });
+
+  test("if fencing itself throws too, the result is withheld", async () => {
+    const worse = {
+      id: "worse-fence",
+      wrapUntrusted: () => {
+        throw new Error("no fence");
+      },
+      afterToolCall: () => Effect.fail(new Error("nope") as never),
+    };
+    const { toolText } = await runWith([worse, meddler]);
+    expect(toolText).toBe("[tool result withheld: the untrusted-data fence failed]");
+  });
+});

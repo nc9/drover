@@ -63,11 +63,17 @@ const spec = defineAgent({
   tool refused for its name or schema cannot be called by name).
 
 Plugin order does not decide safety. The harness applies a fencing plugin's
-`wrapTool` outermost and runs its `afterToolCall` after every other plugin's, and
-that `afterToolCall` fences any text another plugin added or rewrote outside a fence
-block (so a plugin's note, such as the tool-call cap's, arrives as a fenced block).
-List the fence after truncate only so the truncated head and its marker are fenced
-inside one block.
+`wrapTool` outermost and runs its `afterToolCall` after every other plugin's. That
+`afterToolCall` keeps verbatim only the exact strings the plugin itself produced for
+the run (its fence blocks, the raw text of trusted results) and fences everything
+else. Text another plugin added or rewrote, including on a trusted tool's result, is
+fenced, and so is a block that only looks like one of ours: the model knows the nonce
+from the system prompt, so a later plugin that echoes model-chosen text could forge
+one, and a forged block is fenced again (its tags escaped, its nonce shown as
+`[nonce]`). A plugin note such as the tool-call cap's arrives as a fenced block. If
+the fencing plugin's `afterToolCall` fails, the harness fails closed: the whole result
+is fenced, or withheld if fencing itself fails. List the fence after truncate only so
+the truncated head and its marker are fenced inside one block.
 
 ## Nonces and resume
 
@@ -147,6 +153,12 @@ takes a string or any JSON-able value; `wrapText` is the whole-text variant.
   (argument-validation errors that echo arguments, unknown-tool text,
   `beforeToolCall` deny reasons, output-schema retry feedback) are not fenced.
   They are authored by the model or the operator, but may quote their input.
+- **Other plugins' text.** A plugin's `systemPromptAddendum` and its `beforeToolCall`
+  deny reasons reach the model raw: they are operator or plugin text. A plugin that
+  puts outside text into either is responsible for fencing it (`wrapUntrusted`, or
+  `plugin.fenceFor(runId)`).
+- **Trusted tools' errors.** A trusted tool's own error text is not produced by the
+  fence plugin, so it reaches the model fenced, like any other unrecognised text.
 - **Text a host adds** through `appendMessages` or builds into prompts itself.
 - **Stored overflow.** The truncate store never evicts (use a short-lived process
   or your own store). An entry stored without run metadata (a legacy `set()`
