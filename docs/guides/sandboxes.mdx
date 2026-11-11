@@ -190,3 +190,26 @@ When auditing a new tool:
    inject under capability-checked sandboxes.
 3. Does it read or write a user-supplied path? Use `readFile`/`writeFile`
    directly; they enforce the boundary.
+
+## Workers and other bundler targets: `@droveragent/facade/core`
+
+The default `@droveragent/facade` entry falls back to a just-bash sandbox, which imports a Node-only filesystem layer, so it does not bundle for the browser/Workers target. Import from the `core` subpath instead. Same `runAgent` / `resumeAgent`, but `sandbox` is required and `cwd` / `env` default to `"/"` / `{}` (no `process`):
+
+```ts
+import { runAgent } from "@droveragent/facade/core";
+
+runAgent(spec, input, { sandbox: "none", models, storage });
+```
+
+`sandbox: "none"` means no filesystem and no shell: every sandbox operation fails with a `SandboxError` and `bash` is never composed. Use it when all tools are custom or MCP tools. (This is not `createNoneSandbox()` from `@droveragent/sandbox`, which is the in-process host-filesystem adapter.) Pass any `SandboxAdapter` for something else, e.g. `@droveragent/sandbox-cloudflare`.
+
+The bundle still includes pi-ai's provider graph (each provider is a lazy dynamic import, which bundlers follow). To ship one provider, mark the other SDKs external:
+
+```sh
+bun build entry.ts --target=browser --minify \
+  --external 'node:*' --external @opentelemetry/api \
+  --external @anthropic-ai/sdk --external @google/genai --external @mistralai/mistralai \
+  --external '@aws-sdk/*' --external '@smithy/*' --external proxy-agent --external undici
+```
+
+That keeps `openai` (OpenAI-compatible and OpenRouter models). Swap the externals to keep another provider. Cloudflare Workers also need `nodejs_compat` (the harness imports `node:path`).
