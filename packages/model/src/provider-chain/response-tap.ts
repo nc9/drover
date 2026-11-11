@@ -46,9 +46,12 @@ export interface AttemptResponse {
 }
 
 const records = new Map<string, AttemptResponse>();
+/** Tags of attempts still running. A response for any other tag is ignored, so nothing is stored after `dispose()`. */
+const live = new Set<string>();
 let installed = false;
+const MAX_HEADER_CHARS = 128;
 
-const newTag = (): string => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+const newTag = (): string => crypto.randomUUID();
 
 async function readBounded(res: { body: ReadableStream<Uint8Array> | null }): Promise<unknown> {
   const body = res.body;
@@ -79,10 +82,11 @@ async function readBounded(res: { body: ReadableStream<Uint8Array> | null }): Pr
   }
 }
 
-function install(): void {
-  if (installed) return;
-  installed = true;
+/** Patch `globalThis.fetch` once. False when the global cannot be patched (frozen, or a runtime that forbids it): the tap is then off and no tag header is sent. */
+function install(): boolean {
+  if (installed) return true;
   const original = globalThis.fetch;
+  if (typeof original !== "function") return false;
   const tapped = async (
     input: Parameters<typeof fetch>[0],
     init?: RequestInit,
@@ -92,24 +96,38 @@ function install(): void {
     );
     const tag = headers.get(TAG_HEADER);
     if (!tag) return original(input, init);
+    const tracked = live.has(tag);
     headers.delete(TAG_HEADER); // never leaves the process
     const res = await original(input instanceof Request ? new Request(input, { headers }) : input, {
       ...init,
       headers,
     });
-    if (res.ok) return res;
+    if (res.ok || !tracked) return res;
     const kept: Record<string, string> = {};
     for (const name of KEPT_HEADERS) {
       const v = res.headers.get(name);
-      if (v !== null) kept[name] = v;
+      if (v !== null) kept[name] = v.slice(0, MAX_HEADER_CHARS);
     }
     const record: AttemptResponse = { status: res.status, headers: kept };
     // Read a bounded COPY: the SDK still gets the original body.
     Object.assign(record, structuredFromBody(await readBounded(res.clone())));
-    records.set(tag, record);
+    if (live.has(tag)) records.set(tag, record);
     return res;
   };
-  globalThis.fetch = Object.assign(tapped, original) as typeof fetch;
+  try {
+    // Copy own properties (Bun's `fetch.preconnect` is non-enumerable) before the swap.
+    for (const key of Reflect.ownKeys(original)) {
+      if (key === "length" || key === "name" || key === "prototype") continue;
+      const d = Object.getOwnPropertyDescriptor(original, key);
+      if (d) Object.defineProperty(tapped, key, d);
+    }
+    globalThis.fetch = tapped as typeof fetch;
+    if (globalThis.fetch !== tapped) return false;
+  } catch {
+    return false;
+  }
+  installed = true;
+  return true;
 }
 
 /** One attempt's tap: add `header` to the request, `take()` the failed response afterwards. */
@@ -120,25 +138,34 @@ export interface AttemptTap {
 }
 
 export function startAttemptTap(): AttemptTap {
-  install();
+  if (!install()) return { header: {}, take: () => undefined, dispose: () => {} };
   const tag = newTag();
+  live.add(tag);
   return {
     header: { [TAG_HEADER]: tag },
     take: () => records.get(tag),
-    dispose: () => void records.delete(tag),
+    dispose: () => {
+      live.delete(tag);
+      records.delete(tag);
+    },
   };
 }
 
 /** `Retry-After` in ms from the kept headers: `retry-after-ms`, or seconds, or an HTTP date. */
 export function retryAfterFromHeaders(h: Record<string, string>): number | undefined {
-  const ms = Number(h["retry-after-ms"]);
-  if (h["retry-after-ms"] !== undefined && Number.isFinite(ms) && ms >= 0) return Math.round(ms);
-  const raw = h["retry-after"];
+  const rawMs = h["retry-after-ms"];
+  if (rawMs !== undefined && /^\d{1,12}(\.\d+)?$/.test(rawMs.trim()))
+    return Math.round(Number(rawMs));
+  const raw = h["retry-after"]?.trim();
   if (raw === undefined) return undefined;
-  const secs = Number(raw);
-  if (Number.isFinite(secs) && secs >= 0) return Math.round(secs * 1000);
-  const at = Date.parse(raw);
-  return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
+  if (/^\d{1,12}(\.\d+)?$/.test(raw)) return Math.round(Number(raw) * 1000);
+  // An HTTP date ("Wed, 21 Oct 2026 07:28:00 GMT"); anything else that is present is malformed.
+  if (/^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(raw)) {
+    const at = Date.parse(raw);
+    if (Number.isFinite(at)) return Math.max(0, at - Date.now());
+  }
+  // Present but malformed: treated as beyond any cap, so the chain fails over instead of waiting.
+  return Number.MAX_SAFE_INTEGER;
 }
 
 /** The structured RawFailure for a tapped response, with the SDK's message kept for the run's own text. */

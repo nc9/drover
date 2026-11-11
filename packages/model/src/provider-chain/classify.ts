@@ -82,6 +82,7 @@ export function classifyFailure(provider: string, raw: RawFailure): ProviderFail
     message: text.length > 300 ? `${text.slice(0, 300)}...` : text,
   };
   if (raw.code && KNOWN_CODES.has(raw.code)) out.code = raw.code;
+  // Message text is a last resort and only for a 429 without a header; the chain caps any wait.
   const wait = raw.retryAfterMs ?? (status === 429 ? parseRetryAfterMs(text) : undefined);
   if (wait !== undefined) out.retryAfterMs = wait;
   if (raw.headers && Object.keys(raw.headers).length > 0) out.headers = raw.headers;

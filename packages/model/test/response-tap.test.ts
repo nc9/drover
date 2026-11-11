@@ -14,6 +14,7 @@ import {
   retryAfterFromHeaders,
   type ProviderFailoverNotice,
 } from "../src/index.ts";
+import { startAttemptTap } from "../src/provider-chain/response-tap.ts";
 
 void createAssistantMessageEventStream;
 
@@ -190,7 +191,8 @@ describe("response tap: structured errors over the real transport", () => {
       const e = await run(chainTo({ openrouter: `${echo.base}/v1` }));
       expect(e.notices[0]).toMatchObject({
         action: "exhausted",
-        failureClass: "key_refused",
+        // A 403 with no known structured code is "forbidden" (not benched), never credits/region.
+        failureClass: "forbidden",
         status: 403,
       });
       const l = await run(chainTo({ openrouter: `${limit.base}/v1` }));
@@ -263,5 +265,45 @@ describe("response tap: structured errors over the real transport", () => {
     expect(retryAfterFromHeaders({})).toBeUndefined();
     const future = new Date(Date.now() + 5_000).toUTCString();
     expect(retryAfterFromHeaders({ "retry-after": future })!).toBeGreaterThan(2_000);
+  });
+
+  test("a malformed Retry-After is never an immediate retry; it is beyond any cap", () => {
+    for (const bad of ["foo 5", "5 foo", "-3", "NaN", "1e9", "Infinity"])
+      expect(retryAfterFromHeaders({ "retry-after": bad })!).toBeGreaterThan(600_000);
+    expect(retryAfterFromHeaders({ "retry-after": "999999999999" })!).toBeGreaterThan(600_000);
+  });
+
+  test("tags are UUIDs, are ignored after dispose, and a late response is not stored", async () => {
+    const tap = startAttemptTap();
+    const tag = Object.values(tap.header)[0]!;
+    expect(tag).toMatch(/^[0-9a-f-]{36}$/);
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => new Response('{"error":{"code":"x"}}', { status: 403 }),
+    });
+    try {
+      tap.dispose();
+      await fetch(`http://127.0.0.1:${server.port}/`, { headers: tap.header });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(tap.take()).toBeUndefined();
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("kept header values are capped at 128 chars", async () => {
+    const tap = startAttemptTap();
+    const server = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response("{}", { status: 500, headers: { "x-request-id": "a".repeat(5000) } }),
+    });
+    try {
+      await fetch(`http://127.0.0.1:${server.port}/`, { headers: tap.header });
+      expect(tap.take()!.headers["x-request-id"]).toHaveLength(128);
+    } finally {
+      tap.dispose();
+      server.stop(true);
+    }
   });
 });
