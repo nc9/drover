@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # full history: the format gate diffs against the PR base / push "before" sha
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.3
+
+      - name: Install (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      - name: Lint (oxlint)
+        run: bun scripts/ci.ts lint
+
+      # The repo is not fully oxfmt-formatted yet: only files changed by the
+      # PR / push are checked. workflow_dispatch diffs against origin/main.
+      - name: Format check (oxfmt, changed files)
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$BASE" ]; then
+            bun scripts/ci.ts format --base "$BASE"
+          else
+            bun scripts/ci.ts format
+          fi
+
+      - name: Build (tsc, dependency order)
+        run: bun scripts/ci.ts build
+
+      - name: Typecheck (tsgo, per workspace)
+        run: bun scripts/ci.ts typecheck
+
+      - name: Pack check (workspace dep versions in packed manifests)
+        run: bun scripts/ci.ts pack
+
+      - name: Test (bun test, per package)
+        run: bun scripts/ci.ts test

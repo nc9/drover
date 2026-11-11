@@ -1,5 +1,4 @@
 import { Effect } from "effect";
-import type { RunStatus } from "@droveragent/core";
 
 import {
   type ClaimedJob,
@@ -83,9 +82,7 @@ export function createMemoryQueue(): QueueAdapter {
         const j = jobs.get(jobId);
         if (!j) return Effect.fail(new QueueError({ op: "heartbeat", message: "not found" }));
         if (j.status !== "leased" || j.leaseWorker !== workerId) {
-          return Effect.fail(
-            new QueueError({ op: "heartbeat", message: "lease no longer held" }),
-          );
+          return Effect.fail(new QueueError({ op: "heartbeat", message: "lease no longer held" }));
         }
         j.leaseExpiresAt = Date.now() + leaseDurationMs;
         return Effect.void;
@@ -181,7 +178,4 @@ export function createMemoryQueue(): QueueAdapter {
       }),
     close: () => Effect.void,
   };
-
-  // exhaustiveness check for RunStatus typing import
-  void (null as unknown as RunStatus);
 }
