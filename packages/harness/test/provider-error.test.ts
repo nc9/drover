@@ -19,6 +19,7 @@ import {
 import type { AgentMessage, StreamFn } from "@mariozechner/pi-agent-core";
 
 import { runAgentEffect } from "../src/run.ts";
+import { staticRegistry } from "../src/task-tool.ts";
 import { providerFailure, scrubProviderErrorText } from "../src/provider-failure.ts";
 import type { HarnessDeps } from "../src/deps.ts";
 
@@ -123,6 +124,18 @@ const am = (over: Record<string, unknown>) => ({
   ...over,
 });
 
+/** Checkpoint writes are fire-and-forget: poll until one lands (2 s cap). */
+const latestCheckpoint = async (
+  storage: ReturnType<typeof createMemoryStorage>,
+  runId: string,
+  triesLeft = 200,
+): Promise<unknown> => {
+  const cp = await Effect.runPromise(storage.loadLatestCheckpoint(runId));
+  if (cp || triesLeft <= 0) return cp;
+  await new Promise((r) => setTimeout(r, 10));
+  return latestCheckpoint(storage, runId, triesLeft - 1);
+};
+
 const schemas = {
   open: Type.Unknown(),
   strict: Type.Object({ ok: Type.Boolean() }),
@@ -135,11 +148,12 @@ describe("provider errors fail the run", () => {
       expect(result.status).toBe("error");
       expect(result.error?.tag).toBe("ProviderError");
       expect(result.error?.message).toBe("provider error 402");
+      expect(result.error?.status).toBe(402);
       // Raw provider text stays out of the result and every event.
       expect(JSON.stringify([result.error, events])).not.toContain("more credits");
       expect(result.output).toBeUndefined();
       const err = events.find((e) => e.kind === "error");
-      expect(err).toMatchObject({ kind: "error", tag: "ProviderError" });
+      expect(err).toMatchObject({ kind: "error", tag: "ProviderError", status: 402 });
       expect(events.some((e) => e.kind === "output_validated")).toBe(false);
       expect(events.at(-1)).toMatchObject({ kind: "run_end", status: "error" });
     });
@@ -149,6 +163,7 @@ describe("provider errors fail the run", () => {
       expect(result.status).toBe("error");
       expect(result.error?.tag).toBe("ProviderError");
       expect(result.error?.message).toContain("empty");
+      expect(result.error?.status).toBeUndefined();
       expect(events.find((e) => e.kind === "error")).toMatchObject({ tag: "ProviderError" });
       expect(events.some((e) => e.kind === "output_validated")).toBe(false);
     });
@@ -206,15 +221,173 @@ describe("provider errors fail the run", () => {
     });
     expect(call).toBe(2);
     expect(result.status).toBe("error");
-    expect(result.error).toEqual({ tag: "ProviderError", message: "provider error 402" });
+    expect(result.error).toEqual({
+      tag: "ProviderError",
+      message: "provider error 402",
+      status: 402,
+    });
     expect(events.find((e) => e.kind === "error")).toMatchObject({ tag: "ProviderError" });
+  });
+
+  test("an empty closing postSuccess reply is not a failure (only stopReason error is)", async () => {
+    let call = 0;
+    const okThenEmpty: StreamFn = () => {
+      call += 1;
+      const s = createAssistantMessageEventStream();
+      const m = call === 1 ? msg({ content: [{ type: "text", text: '{"ok":true}' }] }) : msg({});
+      s.push({ type: "start", partial: m });
+      s.push({ type: "done", reason: "stop", message: m });
+      s.end();
+      return s;
+    };
+    const { result } = await run(schemas.strict, okThenEmpty, {}, fakeModel, {
+      postSuccess: [{ kind: "prompt", text: "now lint" }],
+    });
+    expect(call).toBe(2);
+    expect(result.status).toBe("success");
+    expect(result.output).toEqual({ ok: true });
+  });
+
+  /** Turn 1: a tool call; turn 2: `second`. */
+  const toolThen = (second: AssistantMessage): StreamFn => {
+    let call = 0;
+    return () => {
+      call += 1;
+      const s = createAssistantMessageEventStream();
+      const m =
+        call === 1
+          ? msg({
+              stopReason: "toolUse",
+              content: [{ type: "toolCall", id: "c1", name: "nope", arguments: {} }],
+              usage: { ...zeroUsage, output: 5 },
+            })
+          : second;
+      s.push({ type: "start", partial: m });
+      s.push({ type: "done", reason: m.stopReason as "stop", message: m });
+      s.end();
+      return s;
+    };
+  };
+
+  test("an empty end_turn with output tokens after tool work stays a success", async () => {
+    const { result } = await run(
+      schemas.open,
+      toolThen(msg({ content: [], usage: { ...zeroUsage, output: 7 } })),
+    );
+    expect(result.status).toBe("success");
+    expect(result.finalText).toBe("");
+  });
+
+  test("a dead stream (empty, zero output tokens) after tool work is a ProviderError", async () => {
+    const { result } = await run(schemas.open, toolThen(msg({ content: [] })));
+    expect(result.status).toBe("error");
+    expect(result.error?.message).toBe("provider returned an empty completion (no content)");
+  });
+
+  test("stopReason length with thinking only: model hit max tokens before answering", async () => {
+    const lengthThinking: StreamFn = () => {
+      const s = createAssistantMessageEventStream();
+      const m = msg({
+        stopReason: "length",
+        content: [{ type: "thinking", thinking: "still thinking" }],
+        usage: { ...zeroUsage, output: 8_192 },
+      });
+      s.push({ type: "start", partial: m });
+      s.push({ type: "done", reason: "length", message: m });
+      s.end();
+      return s;
+    };
+    const { result } = await run(schemas.open, lengthThinking);
+    expect(result.status).toBe("error");
+    expect(result.error).toEqual({
+      tag: "ProviderError",
+      message: "model hit max tokens before answering",
+    });
+  });
+
+  test("a subagent child hitting 402: the parent sees a status-only tool error", async () => {
+    const child = defineAgent({
+      id: "child",
+      systemPrompt: "child-agent",
+      inputSchema: Type.Object({ prompt: Type.String() }),
+      outputSchema: Type.Unknown(),
+      model: MODEL_NAME,
+      tools: [],
+    });
+    const parent = defineAgent({
+      id: "parent",
+      systemPrompt: "parent-agent",
+      inputSchema: Type.Object({ q: Type.String() }),
+      outputSchema: Type.Unknown(),
+      model: MODEL_NAME,
+      tools: [],
+      subagents: { allowed: ["child"] },
+    });
+    let parentCalls = 0;
+    const streamFn: StreamFn = (model, context, options) => {
+      if (String(context.systemPrompt).includes("child-agent"))
+        return errorStream(model, context, options);
+      parentCalls += 1;
+      const s = createAssistantMessageEventStream();
+      const m =
+        parentCalls === 1
+          ? msg({
+              stopReason: "toolUse",
+              content: [
+                {
+                  type: "toolCall",
+                  id: "t1",
+                  name: "task",
+                  arguments: { agent_type: "child", prompt: "go" },
+                },
+              ],
+              usage: { ...zeroUsage, output: 5 },
+            })
+          : msg({ content: [{ type: "text", text: "parent done" }] });
+      s.push({ type: "start", partial: m });
+      s.push({ type: "done", reason: m.stopReason as "stop", message: m });
+      s.end();
+      return s;
+    };
+    const events: HarnessEvent[] = [];
+    const result = await Effect.runPromise(
+      runAgentEffect({
+        spec: parent,
+        input: { q: "hi" },
+        ctx: {
+          runId: "parent-run",
+          depth: 0,
+          cwd: process.cwd(),
+          env: {},
+          signal: new AbortController().signal,
+        },
+        emit: (e) => events.push(e),
+        deps: {
+          sandbox: createNoneSandbox(),
+          preResolvedModels: new Map([[MODEL_NAME, { model: fakeModel, apiKey: "sk-fake" }]]),
+          streamFn,
+          agentRegistry: staticRegistry({ child }),
+        },
+      }),
+    );
+    expect(result.status).toBe("success");
+    expect(result.finalText).toBe("parent done");
+    const end = events.find((e) => e.kind === "tool_call_end" && e.toolName === "task") as
+      | Extract<HarnessEvent, { kind: "tool_call_end" }>
+      | undefined;
+    expect(end?.result.isError).toBe(true);
+    expect(end?.result.content).toBe(
+      "subagent child finished with status=error: provider error 402",
+    );
+    expect(events.find((e) => e.kind === "subagent_end")).toMatchObject({ status: "error" });
+    expect(JSON.stringify(events)).not.toContain("more credits");
   });
 
   test("storage (run row, events, checkpoints) carries no provider text by default", async () => {
     const storage = createMemoryStorage();
     const { result } = await run(schemas.open, errorStream, { storage });
     expect(result.error?.tag).toBe("ProviderError");
-    await new Promise((r) => setTimeout(r, 10)); // checkpoint writes are fire-and-forget
+    expect(await latestCheckpoint(storage, "pe-run")).not.toBeNull();
     const stored = await Effect.runPromise(
       Effect.all([
         storage.loadRun("pe-run"),
@@ -257,12 +430,13 @@ describe("provider errors over a real HTTP transport (local server, pi-ai OpenAI
           expect(result.error).toEqual({
             tag: "ProviderError",
             message: `provider error ${status}`,
+            status,
           });
           const errIdx = events.findIndex((e) => e.kind === "error");
           expect(errIdx).toBeGreaterThanOrEqual(0);
           expect(errIdx).toBeLessThan(events.findIndex((e) => e.kind === "run_end"));
-          await new Promise((r) => setTimeout(r, 10));
-          const cp = await Effect.runPromise(storage.loadLatestCheckpoint("pe-run"));
+          const cp = await latestCheckpoint(storage, "pe-run");
+          expect(cp).not.toBeNull();
           expect(JSON.stringify([result, events, cp])).not.toContain("hostile page");
         });
       });
@@ -293,25 +467,41 @@ describe("providerFailure classification", () => {
     ).toBeNull();
     expect(providerFailure(am({ content: [{ type: "text", text: "hi" }] }), false)).toBeNull();
     expect(
-      providerFailure(am({ content: [{ type: "thinking", thinking: "hmm" }] }), false),
+      providerFailure(am({ content: [{ type: "thinking", thinking: "hmm" }] }), false)?.message,
     ).toContain("empty");
-    expect(providerFailure(am({ content: [{ type: "text", text: "  " }] }), false)).toContain(
-      "empty",
-    );
-    expect(providerFailure(null, false)).toContain("no assistant message");
+    expect(
+      providerFailure(am({ content: [{ type: "text", text: "  " }] }), false)?.message,
+    ).toContain("empty");
+    expect(providerFailure(null, false)?.message).toContain("no assistant message");
+    // Not the first assistant message, output tokens > 0: an empty end after tool work.
+    expect(providerFailure(am({ content: [], usage: { output: 3 } }), false, false)).toBeNull();
+    expect(
+      providerFailure(am({ content: [], usage: { output: 0 } }), false, false)?.message,
+    ).toContain("empty");
+    expect(
+      providerFailure(
+        am({
+          stopReason: "length",
+          content: [{ type: "thinking", thinking: "x" }],
+          usage: { output: 9 },
+        }),
+        false,
+        false,
+      )?.message,
+    ).toBe("model hit max tokens before answering");
     expect(providerFailure(am({ stopReason: "aborted", content: [] }), false)).toBeNull();
   });
 
   test("status comes only from the leading code, never from a number inside the text", () => {
     expect(
       providerFailure(am({ stopReason: "error", errorMessage: "529 Overloaded" }), false),
-    ).toBe("provider error 529");
+    ).toEqual({ message: "provider error 529", status: 529 });
     expect(
       providerFailure(
         am({ stopReason: "error", errorMessage: "Provider finish_reason: page 404 quoted" }),
         false,
       ),
-    ).toBe("provider error");
+    ).toEqual({ message: "provider error" });
   });
 
   test("scrubProviderErrorText replaces raw errorMessage in checkpoint history", () => {

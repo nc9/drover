@@ -9,6 +9,7 @@ import {
   dropToolResults,
   estimateTokens,
   initCompactionState,
+  makeSummarizer,
   maybeCompact,
   renderTranscript,
   selectHeadTail,
@@ -410,6 +411,58 @@ describe("maybeCompact", () => {
           m.content.startsWith(COMPACTION_SUMMARY_MARKER),
       ),
     ).toBe(true);
+  });
+
+  test("a provider error on the summary call (HTTP 503) keeps the history: CompactionError, no provider text", async () => {
+    let hits = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        hits += 1;
+        return Response.json(
+          { error: { message: "overloaded; transcript said SECRET-TRANSCRIPT" } },
+          // retry-after-ms 0: the SDK's own retries run immediately.
+          { status: 503, headers: { "retry-after-ms": "0" } },
+        );
+      },
+    });
+    try {
+      const model = {
+        id: "sum/model",
+        name: "sum",
+        api: "openai-completions",
+        provider: "openrouter",
+        baseUrl: `http://127.0.0.1:${server.port}/v1`,
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 8_192,
+      } as unknown as Parameters<typeof makeSummarizer>[0];
+      const { events, emit } = collector();
+      const msgs = convo();
+      const out = await maybeCompact({
+        messages: msgs,
+        policy: { strategy: ["summarize"], preserve: PRESERVE, summaryPrompt: "go" },
+        contextWindow: 1000,
+        currentTurn: 1,
+        state: initCompactionState(),
+        runId: "r",
+        emit,
+        manual: {},
+        summarize: makeSummarizer(model, "sk-fake"),
+      });
+      expect(hits).toBeGreaterThanOrEqual(1);
+      expect(out).toBe(msgs); // history kept, not replaced by "(no summary available)"
+      expect(compactionEvents(events).length).toBe(0);
+      const errs = events.filter((e) => e.kind === "error");
+      expect(errs).toHaveLength(1);
+      expect(errs[0]).toMatchObject({ tag: "CompactionError" });
+      expect((errs[0] as { message: string }).message).toContain("provider error 503");
+      expect(JSON.stringify(events)).not.toContain("SECRET-TRANSCRIPT");
+    } finally {
+      server.stop(true);
+    }
   });
 
   test("never throws: a summariser failure returns original + emits CompactionError", async () => {

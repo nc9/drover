@@ -14,6 +14,7 @@
  * to call a tool instead of writing the summary.
  */
 import { COMPACTION_SUMMARY_MARKER } from "@droveragent/core";
+import { providerError } from "../provider-failure.ts";
 import { completeSimple } from "@mariozechner/pi-ai";
 import type { KnownApi, Message, Model, SimpleStreamOptions } from "@mariozechner/pi-ai";
 
@@ -93,6 +94,13 @@ export function makeSummarizer(
         ...(onPayload ? { onPayload } : {}),
       },
     );
+    // pi reports a failed call as a reply with `stopReason: "error"` (it does
+    // not throw). Committing that as "(no summary available)" would drop the
+    // head of the history; throw instead so the orchestrator emits
+    // `CompactionError` and the run continues uncompacted. Status-only: the
+    // provider's text can quote the transcript being summarised.
+    const failed = providerError(reply, false);
+    if (failed) throw new Error(`summary call failed: ${failed.message}`);
     return blockText(reply.content);
   };
 }
