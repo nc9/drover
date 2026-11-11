@@ -43,10 +43,15 @@ export const LOOKALIKE_BRACKETS: readonly number[] = [
 
 /**
  * Invisible characters that carry hidden payloads or break lines and that the
- * Cc/Cf classes miss: variation selectors (Mn) and the Unicode line and
+ * Cc/Cf classes miss: variation selectors (Mn), the combining grapheme joiner,
+ * Mongolian free variation selectors, the Hangul filler, and the Unicode line and
  * paragraph separators (Zl, Zp). Each becomes a space (U+2028/2029: a newline).
  */
 export const INVISIBLE_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0x034f, 0x034f],
+  [0x115f, 0x1160],
+  [0x180b, 0x180d],
+  [0x3164, 0x3164],
   [0xfe00, 0xfe0f],
   [0xe0100, 0xe01ef],
   [0x2028, 0x2029],
@@ -60,6 +65,9 @@ const INVISIBLE = new RegExp(
   INVISIBLE_RANGES.map(([a, b]) => `[\\u{${a.toString(16)}}-\\u{${b.toString(16)}}]`).join("|"),
   "gu",
 );
+
+/** A surrogate half with no partner: some providers reject a request that carries one. */
+const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
 
 const MAX_DEPTH = 12;
 const MAX_ARRAY = 2000;
@@ -110,7 +118,7 @@ export function createFence(opts: FenceOptions = {}): Fence {
   const tag = `untrusted-data-${nonce}`;
 
   const clean = (v: string, max: number = fieldMax): string => {
-    let t = v.normalize("NFKC");
+    let t = v.normalize("NFKC").replace(LONE_SURROGATE, "\ufffd");
     t = t
       .replace(CONTROL, (c) => (c === "\n" || c === "\t" ? c : " "))
       .replace(INVISIBLE, (c) => (c === "\u2028" || c === "\u2029" ? "\n" : " "))

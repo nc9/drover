@@ -64,7 +64,10 @@ export interface UntrustedResultsOptions {
   readers?: ReadonlyArray<string>;
   /** Per-string bound for the fences. */
   maxFieldChars?: FenceOptions["maxFieldChars"];
-  /** Nonce persistence. Default: in memory, per plugin instance. */
+  /**
+   * Nonce persistence. Default: in memory, per plugin instance (resume works in the
+   * same process only; a resume that cannot find the nonce is refused).
+   */
   nonces?: NonceStore;
   /** Section label for a tool's block. Default: the tool name. */
   section?: (toolName: string) => string;
@@ -79,11 +82,28 @@ export interface UntrustedResultsPlugin extends HarnessPlugin {
 
 const MAX_REMEMBERED_NONCES = 10_000;
 
+/** Tools whose output is derived from untrusted text or can quote it: never trustable. */
+export const NEVER_TRUSTED: ReadonlyArray<string> = [
+  "task",
+  "recall",
+  "show_tool_result",
+  "skill_load",
+];
+
+/** In-memory nonce store. Least recently used goes first, so a live run keeps its nonce. */
 function memoryNonces(): NonceStore {
   const map = new Map<string, string>();
   return {
-    get: (id) => map.get(id),
+    get(id) {
+      const n = map.get(id);
+      if (n !== undefined) {
+        map.delete(id);
+        map.set(id, n);
+      }
+      return n;
+    },
     set(id, nonce) {
+      map.delete(id);
       map.set(id, nonce);
       if (map.size > MAX_REMEMBERED_NONCES) map.delete(map.keys().next().value as string);
     },
@@ -92,6 +112,13 @@ function memoryNonces(): NonceStore {
 
 export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): UntrustedResultsPlugin {
   const trusted = new Set(opts.trusted ?? []);
+  for (const id of NEVER_TRUSTED) {
+    if (trusted.has(id)) {
+      throw new Error(
+        `untrustedResultsPlugin: "${id}" cannot be on the trusted list: its output is derived from or quotes untrusted text.`,
+      );
+    }
+  }
   const selfFenced = new Set(opts.selfFenced ?? []);
   const readers = new Set(opts.readers ?? ["show_tool_result"]);
   const nonces = opts.nonces ?? memoryNonces();
@@ -110,6 +137,7 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
         nonce,
         ...(opts.maxFieldChars !== undefined ? { maxFieldChars: opts.maxFieldChars } : {}),
       });
+      // A cache only: an evicted fence is rebuilt from the same stored nonce.
       fences.set(runId, f);
       if (fences.size > MAX_REMEMBERED_NONCES) fences.delete(fences.keys().next().value as string);
     }
@@ -122,7 +150,7 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
       return {
         ...tool,
         execute: (input, ctx) =>
-          tool.execute(input, ctx).pipe(
+          Effect.suspend(() => tool.execute(input, ctx)).pipe(
             Effect.map((result): ToolResult => {
               const d = result.data as { trusted?: unknown; toolId?: unknown } | undefined;
               const raw =
@@ -157,7 +185,8 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
     return {
       ...tool,
       execute: (input, ctx) =>
-        tool.execute(input, ctx).pipe(
+        // suspend: a tool that throws before returning an Effect is still caught below.
+        Effect.suspend(() => tool.execute(input, ctx)).pipe(
           Effect.map((result) =>
             wrapSuccess
               ? {
@@ -186,6 +215,16 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
     systemPromptAddendum: (ctx: RunContext) => fenceFor(ctx.runId).note(),
     wrapUntrusted: (section, text, ctx) => fenceFor(ctx.runId).wrapText(section, text),
     inheritToSubagents: true,
+    assertResumable(ctx) {
+      // Restored history carries fences that name the old nonce. Without it the
+      // new nonce would leave that history looking like ordinary text.
+      if (nonces.get(ctx.runId) === undefined) {
+        throw new Error(
+          "untrustedResultsPlugin: cannot resume run " +
+            `${ctx.runId}: its fence nonce is unknown. Pass a persistent \`nonces\` store.`,
+        );
+      }
+    },
   };
 }
 

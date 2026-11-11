@@ -33,6 +33,18 @@ describe("createMarkdownMemory", () => {
     expect(content).toContain("world");
   });
 
+  test("frontmatter `trusted: true` is ignored on load unless allowTrustedFrontmatter", async () => {
+    const first = await createMarkdownMemory({ root });
+    const e = await run(
+      first.put({ scope: "global", kind: "user", summary: "s", body: "b", trusted: true }),
+    );
+    expect((await run(first.get(e.id)))?.trusted).toBe(true); // same process: kept in memory
+    const planted = await createMarkdownMemory({ root });
+    expect((await run(planted.get(e.id)))?.trusted).toBeUndefined();
+    const allowed = await createMarkdownMemory({ root, allowTrustedFrontmatter: true });
+    expect((await run(allowed.get(e.id)))?.trusted).toBe(true);
+  });
+
   test("writes agent and run entries under correct subdirs", async () => {
     const mem = await createMarkdownMemory({ root });
     const a = await run(
@@ -54,9 +66,7 @@ describe("createMarkdownMemory", () => {
         body: "y",
       }),
     );
-    expect((await fs.stat(path.join(root, "agents", "writer", `${a.id}.md`))).isFile()).toBe(
-      true,
-    );
+    expect((await fs.stat(path.join(root, "agents", "writer", `${a.id}.md`))).isFile()).toBe(true);
     expect((await fs.stat(path.join(root, "runs", "run-001", `${r.id}.md`))).isFile()).toBe(true);
   });
 
@@ -90,9 +100,7 @@ describe("createMarkdownMemory", () => {
 
   test("forget removes the file", async () => {
     const mem = await createMarkdownMemory({ root });
-    const e = await run(
-      mem.put({ scope: "global", kind: "user", summary: "x", body: "y" }),
-    );
+    const e = await run(mem.put({ scope: "global", kind: "user", summary: "x", body: "y" }));
     const file = path.join(root, "global", `${e.id}.md`);
     expect((await fs.stat(file)).isFile()).toBe(true);
     await run(mem.forget(e.id));
@@ -101,17 +109,10 @@ describe("createMarkdownMemory", () => {
 
   test("update rewrites the file", async () => {
     const mem = await createMarkdownMemory({ root });
-    const e = await run(
-      mem.put({ scope: "global", kind: "user", summary: "v1", body: "b1" }),
-    );
+    const e = await run(mem.put({ scope: "global", kind: "user", summary: "v1", body: "b1" }));
     await new Promise((r) => setTimeout(r, 5));
-    await run(
-      mem.put({ id: e.id, scope: "global", kind: "user", summary: "v2", body: "b2" }),
-    );
-    const content = await fs.readFile(
-      path.join(root, "global", `${e.id}.md`),
-      "utf8",
-    );
+    await run(mem.put({ id: e.id, scope: "global", kind: "user", summary: "v2", body: "b2" }));
+    const content = await fs.readFile(path.join(root, "global", `${e.id}.md`), "utf8");
     expect(content).toContain("summary: v2");
     expect(content).toContain("b2");
     expect(content).toContain("updatedAt:");
@@ -119,9 +120,7 @@ describe("createMarkdownMemory", () => {
 
   test("scope-changing update writes the new path before unlinking the old", async () => {
     const mem = await createMarkdownMemory({ root });
-    const e = await run(
-      mem.put({ scope: "global", kind: "user", summary: "v1", body: "b1" }),
-    );
+    const e = await run(mem.put({ scope: "global", kind: "user", summary: "v1", body: "b1" }));
     const oldFile = path.join(root, "global", `${e.id}.md`);
     await run(
       mem.put({
@@ -142,9 +141,7 @@ describe("createMarkdownMemory", () => {
 
   test("concurrent writes do not interleave on the same file", async () => {
     const mem = await createMarkdownMemory({ root });
-    const e = await run(
-      mem.put({ scope: "global", kind: "user", summary: "x", body: "init" }),
-    );
+    const e = await run(mem.put({ scope: "global", kind: "user", summary: "x", body: "init" }));
     await Promise.all(
       [...Array(5).keys()].map((i) =>
         run(
@@ -158,10 +155,7 @@ describe("createMarkdownMemory", () => {
         ),
       ),
     );
-    const content = await fs.readFile(
-      path.join(root, "global", `${e.id}.md`),
-      "utf8",
-    );
+    const content = await fs.readFile(path.join(root, "global", `${e.id}.md`), "utf8");
     // Only one frontmatter block
     const matches = content.match(/^---\s*$/gm) ?? [];
     expect(matches.length).toBe(2);

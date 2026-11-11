@@ -137,5 +137,13 @@ export interface HarnessPlugin {
    */
   inheritToSubagents?: boolean;
 
+  /**
+   * Called when a run is resumed from a checkpoint, before anything runs. Throw
+   * a message to refuse the resume (a fence plugin refuses when it cannot
+   * recover the run's nonce, because the restored history carries fences that
+   * name the old one).
+   */
+  assertResumable?: (ctx: RunContext) => void;
+
   onError?: (error: HarnessError, ctx: RunContext) => Effect.Effect<ErrorRecovery, never, never>;
 }

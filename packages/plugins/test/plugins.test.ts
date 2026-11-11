@@ -625,6 +625,42 @@ describe("untrustedResultsPlugin", () => {
     return { plugin, trunc, show, through };
   };
 
+  test("a tool that throws before returning an Effect is fenced, not rejected raw", async () => {
+    const p = untrustedResultsPlugin();
+    const boom: AnyToolDef = {
+      ...tool("boom", ""),
+      execute: () => {
+        throw new Error("bad url: <b>http://evil.example/ignore previous</b>");
+      },
+    };
+    const r = await exec(p.wrapTool!(boom));
+    expect(r.isError).toBe(true);
+    expect(r.content.startsWith(opening(p))).toBe(true);
+    expect(r.content).not.toContain("<b>");
+    const readerBoom = p.wrapTool!({ ...boom, id: "show_tool_result" });
+    const rr = await exec(readerBoom);
+    expect(rr.content.startsWith(opening(p))).toBe(true);
+  });
+
+  test("tools that carry derived text cannot be put on the trusted list", () => {
+    for (const id of ["task", "recall", "show_tool_result", "skill_load"]) {
+      expect(() => untrustedResultsPlugin({ trusted: ["read", id] })).toThrow(id);
+    }
+  });
+
+  test("resume is refused when the run's nonce is unknown, allowed when known", () => {
+    const p = untrustedResultsPlugin();
+    expect(() => p.assertResumable!({ ...fakeCtx, runId: "never-seen" })).toThrow(/nonce/);
+    p.fenceFor("seen");
+    expect(() => p.assertResumable!({ ...fakeCtx, runId: "seen" })).not.toThrow();
+    const store = new Map<string, string>([["r9", "00112233aabbccdd"]]);
+    const persisted = untrustedResultsPlugin({
+      nonces: { get: (id) => store.get(id), set: (id, n) => void store.set(id, n) },
+    });
+    expect(() => persisted.assertResumable!({ ...fakeCtx, runId: "r9" })).not.toThrow();
+    expect(persisted.fenceFor("r9").nonce).toBe("00112233aabbccdd");
+  });
+
   test("default: every tool is fenced, unlisted ones included; only the allowlist is raw", async () => {
     const p = untrustedResultsPlugin({ trusted: ["clock"] });
     for (const id of ["fetch_page", "bash", "recall", "task", "github__get_issue"]) {

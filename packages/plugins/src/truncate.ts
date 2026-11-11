@@ -195,23 +195,28 @@ export function truncatePlugin(opts: TruncateOptions = {}): TruncatePlugin {
     return {
       ...tool,
       execute: (input: unknown, ctx) =>
-        Effect.map(tool.execute(input, ctx), (result) => {
-          const bytes = Buffer.byteLength(result.content, "utf8");
-          if (bytes <= maxBytes) return result;
-          const handle =
-            store.set(ctx.toolUseId, result.content, {
-              trusted: isTrusted(tool.id),
-              runId: ctx.runId,
-              toolId: tool.id,
-            }) ?? ctx.toolUseId;
-          const head = Buffer.from(result.content, "utf8").subarray(0, headBytes).toString("utf8");
-          return {
-            ...result,
-            content:
-              `${head}\n\n[truncated — tool result was ${bytes} bytes; first ${headBytes} bytes shown. ` +
-              `Call show_tool_result({ toolUseId: "${handle}", byteRange: [START, END] }) to read more.]`,
-          };
-        }),
+        Effect.map(
+          Effect.suspend(() => tool.execute(input, ctx)),
+          (result) => {
+            const bytes = Buffer.byteLength(result.content, "utf8");
+            if (bytes <= maxBytes) return result;
+            const handle =
+              store.set(ctx.toolUseId, result.content, {
+                trusted: isTrusted(tool.id),
+                runId: ctx.runId,
+                toolId: tool.id,
+              }) ?? ctx.toolUseId;
+            const head = Buffer.from(result.content, "utf8")
+              .subarray(0, headBytes)
+              .toString("utf8");
+            return {
+              ...result,
+              content:
+                `${head}\n\n[truncated — tool result was ${bytes} bytes; first ${headBytes} bytes shown. ` +
+                `Call show_tool_result({ toolUseId: "${handle}", byteRange: [START, END] }) to read more.]`,
+            };
+          },
+        ),
     };
   };
 

@@ -131,6 +131,18 @@ describe("cleaning table", () => {
     }
   });
 
+  test("a lone surrogate in mid-text is replaced, a valid pair is kept", () => {
+    const out = inner(fence.wrap("p", "a\ud800x\udc00y\u{1F600}z"));
+    expect(out).toBe("a\ufffdx\ufffdy\u{1F600}z");
+    expect(out).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
+  });
+
+  test("cleaning stays idempotent with the extended tables", () => {
+    const f = createFence({ nonce: "n" });
+    const once = f.clean("a\u034fb\u180bc\u3164d\ud800e\u00abf");
+    expect(f.clean(once)).toBe(once);
+  });
+
   test("a cut inside a surrogate pair leaves no lone surrogate", () => {
     const f = createFence({ nonce: "n", maxFieldChars: 3 });
     const out = inner(f.wrap("p", "ab\u{1F600}"));

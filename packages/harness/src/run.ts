@@ -10,6 +10,7 @@ import {
   InputValidationError,
   LifecycleError,
   OutputValidationError,
+  PluginError,
   type RunContext,
   type RunResult,
   type RunStatus,
@@ -273,6 +274,22 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     const plugins: ReadonlyArray<import("@droveragent/core").HarnessPlugin> = autoMemoryPlugin
       ? [...explicitPlugins, autoMemoryPlugin]
       : explicitPlugins;
+    if (isResume) {
+      for (const p of plugins) {
+        try {
+          p.assertResumable?.(ctx);
+        } catch (e) {
+          return yield* Effect.fail(
+            new PluginError({
+              runId: ctx.runId,
+              pluginId: p.id,
+              hook: "assertResumable",
+              message: e instanceof Error ? e.message : String(e),
+            }),
+          );
+        }
+      }
+    }
     const storage = deps.storage;
     // Seq counter continues from the checkpoint to avoid collisions with the
     // events that were already persisted before pause. We add a small gap so

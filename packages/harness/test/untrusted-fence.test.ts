@@ -225,3 +225,36 @@ describe("derived text", () => {
     expect(await Effect.runPromise(renderMemoryIndex(adapter, "a"))).not.toContain(tag);
   });
 });
+
+describe("resume with the fence plugin", () => {
+  test("a resume whose nonce cannot be recovered is refused before any model call", async () => {
+    const plugin = untrustedResultsPlugin(); // fresh in-memory store: never saw this run
+    const { streamFn, calls } = scripted([() => text("never")]);
+    const result = await Effect.runPromise(
+      Effect.either(
+        runAgentEffect({
+          spec: agent({ id: "p", plugins: [plugin] }),
+          input: { q: "x" },
+          ctx: ctx("resumed-run"),
+          emit: () => {},
+          deps: deps(streamFn),
+          resumeFrom: {
+            runId: "resumed-run",
+            seq: 1,
+            messages: [],
+            usage: { inputTokens: 0, outputTokens: 0 },
+            toolCalls: [],
+            retriesUsed: 0,
+            ts: Date.now(),
+          },
+        }),
+      ),
+    );
+    expect(result._tag).toBe("Left");
+    if (result._tag === "Left") {
+      expect((result.left as { _tag: string })._tag).toBe("PluginError");
+      expect((result.left as { message: string }).message).toMatch(/nonce/);
+    }
+    expect(calls.length).toBe(0);
+  });
+});

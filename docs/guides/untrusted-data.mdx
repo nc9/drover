@@ -65,9 +65,11 @@ truncated head and its marker are fenced too.
 Each run, and each subagent run, has its own nonce, kept in a `NonceStore`
 (`untrustedResultsPlugin({ nonces })`; default: in memory). A resumed run in the
 same process keeps its nonce, so history fenced before the pause still matches the
-note. Across processes, pass a store backed by your own storage. A host that does
-not do that gets a new nonce on resume: blocks from before the pause are then
-still escaped and bounded, but the model is told a different nonce.
+note. Across processes, pass a store backed by your own storage. Resuming a run
+whose nonce the plugin cannot recover is **refused** (a `PluginError` from
+`assertResumable`), because the restored history would carry fences that name the
+old nonce while the note names a new one. The in-memory store keeps the 10,000 most
+recently used runs, so a live run does not lose its nonce.
 
 ## What the fence does to text
 
@@ -78,13 +80,41 @@ still escaped and bounded, but the model is told a different nonce.
 | fullwidth brackets (`＜`) | NFKC turns them into ASCII first, then escaped |
 | guillemets, math and CJK brackets, `˂˃`, `⟪⟫`, `⦉⦊`, ornaments (`LOOKALIKE_BRACKETS`) | visible `[U+XXXX]` placeholder |
 | zero-width, bidi override, control characters | space (newline and tab kept) |
-| variation selectors, U+2028, U+2029 (`INVISIBLE_RANGES`) | space (U+2028/2029: newline) |
+| variation selectors, Mongolian FVS, U+034F, Hangul fillers, U+2028, U+2029 (`INVISIBLE_RANGES`) | space (U+2028/2029: newline) |
+| a lone surrogate half | U+FFFD (some providers reject a request that carries one) |
 | very long strings, huge arrays, deep objects | bounded (`maxFieldChars`, default 2000; 2000 items; 500 keys; depth 12; no lone surrogate left by a cut) |
 
 The two tables are exported and tested one code point at a time. `wrap(section, body)`
 takes a string or any JSON-able value; `wrapText` is the whole-text variant.
 
 ## What it does not do
+
+- **Trust is per tool, so it can launder.** A trusted `read_file`, `bash` or
+  `grep` returns raw text that the agent wrote earlier from fenced web content,
+  or that a download put on disk. "Derived stays untrusted" does not hold across
+  the filesystem. Do not trust filesystem or shell tools unless the sandbox is
+  read-only and holds only the operator's own files. `task`, `recall`,
+  `show_tool_result` and `skill_load` carry derived text, so listing one in
+  `trusted` throws at construction.
+- **Persistence channels.** Instruction files (`loadInstructionFiles`, read from
+  the working directory) and skill names and descriptions go into the system
+  prompt unfenced: they are treated as the operator's. Any tool that can write
+  under the working directory can plant text there for the next run. The markdown
+  memory adapter ignores `trusted: true` in a file's frontmatter unless it was
+  opened with `allowTrustedFrontmatter: true`, for the same reason.
+- **Tool descriptions.** MCP tool descriptions (server-supplied) are cleaned and
+  bounded to 500 characters before the model sees them, but are not fenced; only
+  connect servers you would run code from.
+- **Harness-made tool errors.** Errors produced outside a tool's `execute`
+  (argument-validation errors that echo arguments, unknown-tool text,
+  `beforeToolCall` deny reasons, output-schema retry feedback) are not fenced.
+  They are authored by the model or the operator, but may quote their input.
+- **Text a host adds** through `appendMessages` or builds into prompts itself.
+- **Stored overflow.** The truncate store never evicts (use a short-lived process
+  or your own store). An entry stored without run metadata (a legacy `set()`
+  call) can be read by any run, always as untrusted. If the fence plugin is listed
+  before truncate, a truncated head can cut inside a fence and leave it unclosed
+  (still data, never trusted).
 
 A fence lowers the odds that injected text steers the model. It does not make the
 text safe. Keep the tools of an agent that reads outside text unable to do harm

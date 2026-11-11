@@ -1,5 +1,12 @@
 import { Type, type TSchema } from "@sinclair/typebox";
-import { type AnyToolDef, defineTool, SandboxError, type ToolResult } from "@droveragent/core";
+import {
+  type AnyToolDef,
+  createFence,
+  defineTool,
+  escapeTags,
+  SandboxError,
+  type ToolResult,
+} from "@droveragent/core";
 import { Effect } from "effect";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -139,6 +146,20 @@ interface McpToolDescriptor {
   inputSchema?: unknown;
 }
 
+/** Longest server-supplied tool description the model sees. */
+export const MAX_MCP_DESCRIPTION_CHARS = 500;
+
+const descriptionCleaner = createFence({ nonce: "" });
+
+/**
+ * A server-supplied tool description goes into the model's tool list, outside any
+ * fence, so it is cleaned (NFKC, control and look-alike characters, angle brackets
+ * escaped) and bounded: a poisoned description cannot hide or hijack much.
+ */
+export function sanitizeToolDescription(text: string): string {
+  return escapeTags(descriptionCleaner.clean(text, MAX_MCP_DESCRIPTION_CHARS));
+}
+
 function mcpToolToDroverTool(
   serverId: string,
   client: Client,
@@ -156,7 +177,9 @@ function mcpToolToDroverTool(
   const prefixed = prefixedToolName(serverId, tool.name);
   return defineTool({
     id: prefixed,
-    description: tool.description ?? `MCP tool ${tool.name} on server ${serverId}`,
+    description: sanitizeToolDescription(
+      tool.description ?? `MCP tool ${tool.name} on server ${serverId}`,
+    ),
     inputSchema: schema,
     execute: (input, ctx): Effect.Effect<ToolResult, SandboxError, never> =>
       Effect.tryPromise({
