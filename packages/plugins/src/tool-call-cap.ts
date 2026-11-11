@@ -62,15 +62,32 @@ interface RunCounts {
  * - An allowed call counts even if the tool then fails (it ran). Register this plugin AFTER
  *   other `beforeToolCall` gates: a call this plugin allowed but a later plugin denied still
  *   counts.
+ * - Counts are per run id and kept across pause/resume (dropped at any other run end). They
+ *   live in memory: a resume in another process starts from zero.
  * - Counts are per run id: one instance can serve concurrent runs. A subagent is a separate
  *   run: the parent's `task` call counts once in the parent, and the child is capped only
  *   if its own spec carries a cap plugin.
  * - The refusal is harness-made text (cap, count, tool name), never the tool's input; the
- *   near-cap note is appended after the tool result, outside any untrusted-data fence.
+ *   near-cap note is appended to the tool result text.
  *
  * Pair with a turn budget (`quota.maxTurns`) so a model that ignores the refusal still ends.
  */
+const assertCap = (what: string, v: number | undefined): void => {
+  if (v !== undefined && !(Number.isFinite(v) && v >= 0)) {
+    throw new Error(`toolCallCapPlugin: ${what} must be a finite number >= 0, got ${String(v)}`);
+  }
+};
+
 export function toolCallCapPlugin(opts: ToolCallCapOptions): ToolCallCapPlugin {
+  assertCap("maxCalls", opts.maxCalls);
+  for (const [name, v] of Object.entries(opts.perTool ?? {})) assertCap(`perTool.${name}`, v);
+  if (opts.warnAt !== undefined && opts.warnAt !== false) {
+    if (!(Number.isFinite(opts.warnAt) && opts.warnAt > 0 && opts.warnAt <= 1)) {
+      throw new Error(
+        `toolCallCapPlugin: warnAt must be in (0, 1] or false, got ${String(opts.warnAt)}`,
+      );
+    }
+  }
   const message = opts.message ?? defaultMessage;
   const warnAt = opts.warnAt === undefined ? 0.8 : opts.warnAt;
   const runs = new Map<string, RunCounts>();
@@ -92,16 +109,22 @@ export function toolCallCapPlugin(opts: ToolCallCapOptions): ToolCallCapPlugin {
     if (warnAt === false) return undefined;
     const notes: string[] = [];
     const max = opts.maxCalls;
-    if (max !== undefined && !s.warned.has("") && s.total < max && s.total >= max * warnAt) {
+    // No `< max` guard: with parallel tool execution every beforeToolCall of a turn runs
+    // before any afterToolCall, so the count can already be at the cap here.
+    if (max !== undefined && !s.warned.has("") && s.total >= max * warnAt) {
       s.warned.add("");
-      notes.push(`${s.total} of ${max} tool calls used in this run; ${max - s.total} left.`);
+      notes.push(
+        `${s.total} of ${max} tool calls used in this run; ${Math.max(0, max - s.total)} left.`,
+      );
     }
     const cap = toolCap(toolName);
     const used = s.byTool.get(toolName) ?? 0;
     const key = `tool:${toolName}`;
-    if (cap !== undefined && !s.warned.has(key) && used < cap && used >= cap * warnAt) {
+    if (cap !== undefined && !s.warned.has(key) && used >= cap * warnAt) {
       s.warned.add(key);
-      notes.push(`${used} of ${cap} ${toolName} calls used in this run; ${cap - used} left.`);
+      notes.push(
+        `${used} of ${cap} ${toolName} calls used in this run; ${Math.max(0, cap - used)} left.`,
+      );
     }
     return notes.length > 0
       ? `[tool call budget: ${notes.join(" ")} Plan to finish with what you have.]`
@@ -143,7 +166,11 @@ export function toolCallCapPlugin(opts: ToolCallCapOptions): ToolCallCapPlugin {
       }
       return { total: s.total, byTool };
     },
-    // Free the counters when the run ends.
-    onRunEnd: (_result, ctx) => Effect.sync(() => void runs.delete(ctx.runId)),
+    // Free the counters when the run ends, but not on pause: a resume reuses the run id
+    // and must keep its count, or every pause/resume would reset the cap.
+    onRunEnd: (result, ctx) =>
+      Effect.sync(() => {
+        if (result.status !== "paused") runs.delete(ctx.runId);
+      }),
   };
 }

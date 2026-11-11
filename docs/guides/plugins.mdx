@@ -197,8 +197,9 @@ runAgent(spec, input, { plugins: [cap] }); // appended after spec.plugins, so af
 
 What the model sees:
 
-- On the call that reaches 80% of a cap (`warnAt`, default `0.8`, `false` for none), once per
-  cap, a note appended to that tool's result:
+- Once per cap, on the first result after 80% of it is used (`warnAt`, default `0.8`, `false`
+  for none), a note appended to that tool's result text (with parallel calls the count may
+  already be at the cap):
   `[tool call budget: 24 of 30 tool calls used in this run; 6 left. Plan to finish with what you have.]`
 - On a call over a cap, a tool error instead of the tool running, and the run goes on:
   `tool call cap reached: 30 of 30 tool calls used in this run. Do not call more tools; give your final answer with what you have.`
@@ -211,10 +212,14 @@ Counting rules:
   overshoot the cap. A refused call is not counted; an allowed call counts even if the tool then
   fails. Register the cap AFTER other `beforeToolCall` gates: a call it allowed that a later
   plugin denies still counts.
-- Counts are per run id and freed at run end; `cap.usage(runId)` returns `{ total, byTool }` for a
-  live run. A subagent is its own run: the parent's `task` call counts once in the parent, and the
+- Counts are per run id, kept across pause and resume (the run id is reused) and freed at any
+  other run end; `cap.usage(runId)` returns `{ total, byTool }` for a live or paused run. They
+  live in memory: a run resumed in another process starts counting from zero. A subagent is its own run: the parent's `task` call counts once in the parent, and the
   child is capped only if the child's spec carries a cap plugin.
-- The refusal and the near-cap note are harness-made text, not tool output, so an untrusted-data
-  fence does not wrap them. They hold only the cap, the counts and the tool name (which the model
-  chose).
+- The refusal is harness-made text (a `beforeToolCall` deny reason). The near-cap note is
+  appended to the tool result text; with the untrusted-data fence plugin on, it reaches the model
+  inside a fence block like the rest of the result. Both hold only the cap, the counts and the
+  tool name (which the model chose), never the tool's input.
+- `maxCalls` and `perTool` values must be finite and `>= 0`, and `warnAt` in `(0, 1]` or `false`;
+  anything else throws at construction.
 

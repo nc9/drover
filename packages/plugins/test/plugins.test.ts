@@ -560,4 +560,34 @@ describe("toolCallCapPlugin", () => {
     await Effect.runPromise(p.onRunEnd!({} as never, fakeCtx));
     expect(p.usage(fakeCtx.runId)).toBeUndefined();
   });
+  test("pause keeps the counts, so a resumed run is still capped; other run ends clear them", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 2 });
+    await call(p, "a");
+    await call(p, "a");
+    await Effect.runPromise(p.onRunEnd!({ status: "paused" } as never, fakeCtx));
+    expect(p.usage(fakeCtx.runId)?.total).toBe(2);
+    // resume: same run id
+    expect((await call(p, "a")).kind).toBe("deny");
+    await Effect.runPromise(p.onRunEnd!({ status: "success" } as never, fakeCtx));
+    expect(p.usage(fakeCtx.runId)).toBeUndefined();
+  });
+
+  test("parallel execution: all beforeToolCalls first, then afterToolCalls; the note still comes once", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 5 });
+    const decisions = await Promise.all(Array.from({ length: 6 }, () => call(p, "a")));
+    expect(decisions.filter((d) => d.kind === "allow").length).toBe(5);
+    const notes: string[] = [];
+    for (let i = 0; i < 5; i++) notes.push((await after(p, "a")).content);
+    expect(notes.filter((c) => c.includes("tool call budget"))).toHaveLength(1);
+    expect(notes[0]).toContain("5 of 5 tool calls used in this run; 0 left.");
+  });
+
+  test("non-finite or negative caps (and a bad warnAt) are rejected at construction", () => {
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => toolCallCapPlugin({ maxCalls: bad })).toThrow("maxCalls");
+      expect(() => toolCallCapPlugin({ perTool: { fetch: bad } })).toThrow("perTool.fetch");
+    }
+    expect(() => toolCallCapPlugin({ maxCalls: 3, warnAt: 1.5 })).toThrow("warnAt");
+    expect(() => toolCallCapPlugin({ maxCalls: 0, perTool: { fetch: 0 } })).not.toThrow();
+  });
 });
