@@ -193,8 +193,9 @@ describe("provider chain inside a run", () => {
 
       const fo = events.find((e) => e.kind === "provider_failover");
       // pi-ai flattens the error to text and drops the body's code, so over this transport a
-      // 403 is a key refusal; a transport that keeps the code gets "region_refused".
-      expect(fo).toMatchObject({ failureClass: "key_refused", status: 403 });
+      // 403 is only "forbidden" (fails over, not benched); a transport that keeps the code
+      // gets "region_refused".
+      expect(fo).toMatchObject({ failureClass: "forbidden", status: 403 });
       // Not retried in place.
       expect(a.seen).toHaveLength(2);
 
@@ -219,8 +220,19 @@ describe("provider chain inside a run", () => {
           { providers: chainFor(a, b), sandbox: createNoneSandbox(), env: {} },
         ),
       );
-      // Both failures are in the trace. Turning the chain's final error message
-      // into a failed run is the harness's job (provider errors fail the run).
+      // The run fails and its error lists both attempts, class and status only.
+      expect(result.status).toBe("error");
+      expect(result.error).toEqual({
+        tag: "ProviderError",
+        message:
+          "provider error 401 (openrouter: credits_exhausted 402; cloudflare-ai-gateway: key_refused 401)",
+        status: 401,
+      });
+      expect(events.find((e) => e.kind === "error")).toMatchObject({
+        tag: "ProviderError",
+        status: 401,
+      });
+      expect(JSON.stringify([result, events])).not.toMatch(/no credits|bad token/);
       expect(result.usageByProvider).toBeUndefined();
       expect(
         events

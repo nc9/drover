@@ -15,12 +15,13 @@ export interface Usage {
 
 /**
  * Why a provider call failed, as the provider chain classifies it. The table
- * of which classes fail over lives in `@droveragent/model` (`DEFAULT_FAILOVER_POLICY`).
+ * of which classes fail over lives in `@droveragent/model` (`FAILOVER`).
  */
 export type ProviderFailureClass =
   | "credits_exhausted"
   | "key_refused"
   | "region_refused"
+  | "forbidden"
   | "rate_limited"
   | "provider_error"
   | "timeout"

@@ -58,11 +58,14 @@ export function structuredFromBody(body: unknown): Pick<RawFailure, "code" | "li
 /**
  * Classify one failed call, status first:
  * 402, or 403 + `limit_source: openrouter_key_limit`, or 429 + `insufficient_quota` -> credits_exhausted;
- * 403 + the region code -> region_refused; 401 or any other 403 -> key_refused; 429 -> rate_limited;
+ * 403 + the region code -> region_refused; 401 or 403 + `invalid_api_key` -> key_refused; any
+ * other 403 -> forbidden (fails over, never benches: over the plain transport a bare 403 may be a
+ * region, moderation or key refusal and only a structured field tells them apart); 429 -> rate_limited;
  * 404 -> model_unavailable; 504/408 or the SDK's own transport strings -> timeout; other 5xx -> provider_error;
  * 400/413/422 -> invalid_request; anything else -> other.
- * pi-ai flattens the error and drops the body, so over the plain transport a 403 is key_refused
- * (it still fails over); a custom stream or a response tap supplies `code`/`limitSource`.
+ * pi-ai flattens the error and drops the body, so over the plain transport the status is read from
+ * the leading code of the SDK text (`"403 ..."`, the only place pi-ai keeps it) and a 403 is
+ * `forbidden`; a custom stream or a response tap supplies `code`/`limitSource`.
  */
 export function classifyFailure(provider: string, raw: RawFailure): ProviderFailure {
   const text = raw.message ?? "";
@@ -93,7 +96,8 @@ function pick(text: string, status: number | null, raw: RawFailure): ProviderFai
   if (status === 402) return "credits_exhausted";
   if (status === 403) {
     if (raw.code === REGION_REFUSAL_CODE) return "region_refused";
-    return raw.limitSource === "openrouter_key_limit" ? "credits_exhausted" : "key_refused";
+    if (raw.limitSource === "openrouter_key_limit") return "credits_exhausted";
+    return raw.code === "invalid_api_key" ? "key_refused" : "forbidden";
   }
   if (status === 401) return "key_refused";
   if (status === 429)
@@ -127,6 +131,7 @@ export const FAILOVER: Readonly<
   credits_exhausted: { failover: true, bench: true },
   key_refused: { failover: true, bench: true },
   region_refused: { failover: true, bench: true },
+  forbidden: { failover: true },
   rate_limited: { failover: true, retrySame: true },
   provider_error: { failover: true },
   timeout: { failover: true },

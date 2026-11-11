@@ -33,7 +33,10 @@ All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version t
   names (`["openrouter", "cloudflare-ai-gateway"]`) resolved from pi-ai's registry; ids,
   per-provider quirks and missing models are data (`ids`, `overrides`, `extraModels`). A
   failure classified status-first from structured fields (never message text) continues
-  the same call on the next provider, first call or mid-run. See `docs/guides/provider-chain.mdx`.
+  the same call on the next provider, first call or mid-run; credits, key and region skip the
+  provider for the rest of the run, a bare 403 (`forbidden`) does not. When every provider
+  fails the run ends `ProviderError` listing each attempt's class and status. See
+  `docs/guides/provider-chain.mdx`.
 - `provider_failover` event (`retry` / `failover` / `exhausted`, with failure
   class and status, never provider text); `usage` events carry `provider` and
   `model`; `RunResult.usageByProvider` splits usage per serving provider.

@@ -564,7 +564,8 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       value: resumeFrom ? { ...resumeFrom.usage } : { inputTokens: 0, outputTokens: 0 },
     };
     // Usage split by serving provider, from the assistant messages' `provider`.
-    const usageByProvider: Record<string, Usage> = {};
+    // Null prototype: provider names are data (`__proto__` must be a plain key).
+    const usageByProvider: Record<string, Usage> = Object.create(null) as Record<string, Usage>;
     let retriesUsed = resumeFrom ? resumeFrom.retriesUsed : 0;
     const outputRetries = spec.outputRetries ?? DEFAULT_OUTPUT_RETRIES;
     const quota = spec.quota ?? {};
@@ -654,7 +655,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           lastUsage.value = next;
           const served = (e.message as { provider?: unknown }).provider;
           if (typeof served === "string" && (u.input || u.output || u.cacheRead || u.cacheWrite)) {
-            const prev = usageByProvider[served] ?? { inputTokens: 0, outputTokens: 0 };
+            const prev = Object.hasOwn(usageByProvider, served)
+              ? usageByProvider[served]!
+              : { inputTokens: 0, outputTokens: 0 };
             const slot: Usage = {
               inputTokens: prev.inputTokens + (u.input ?? 0),
               outputTokens: prev.outputTokens + (u.output ?? 0),

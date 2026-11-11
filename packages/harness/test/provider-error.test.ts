@@ -136,6 +136,8 @@ const latestCheckpoint = async (
   return latestCheckpoint(storage, runId, triesLeft - 1);
 };
 
+const d = (details: Record<string, unknown>) => ({ type: "provider_failure", details });
+
 const schemas = {
   open: Type.Unknown(),
   strict: Type.Object({ ok: Type.Boolean() }),
@@ -504,6 +506,29 @@ describe("providerFailure classification", () => {
     ).toEqual({ message: "provider error" });
   });
 
+  test("a provider chain's diagnostics list every attempt, structured fields only", () => {
+    const chainMsg = am({
+      stopReason: "error",
+      errorMessage: "all providers failed: SECRET text",
+      diagnostics: [
+        d({ provider: "openrouter", failureClass: "credits_exhausted", status: 402 }),
+        d({ provider: "cf", failureClass: "region_refused", status: 403, code: "unsupported_x" }),
+        d({ provider: "evil name with spaces", failureClass: "other", status: 500 }),
+        { type: "something_else", details: { provider: "x" } },
+      ],
+    });
+    expect(providerFailure(chainMsg, false)).toEqual({
+      message:
+        "provider error 403 (openrouter: credits_exhausted 402; cf: region_refused 403 unsupported_x)",
+      status: 403,
+    });
+    expect(providerFailure(chainMsg, true)?.message).toEndWith(
+      ": all providers failed: SECRET text",
+    );
+    const scrubbed = scrubProviderErrorText([chainMsg] as unknown as AgentMessage[]);
+    expect(JSON.stringify(scrubbed)).not.toContain("SECRET");
+  });
+
   test("scrubProviderErrorText replaces raw errorMessage in checkpoint history", () => {
     const history = [
       { role: "user", content: "hi", timestamp: 1 },
@@ -516,4 +541,23 @@ describe("providerFailure classification", () => {
     expect((out[2] as { errorMessage?: string }).errorMessage).toBe("aborted");
     expect(JSON.stringify(out)).not.toContain("secret");
   });
+});
+
+test("usageByProvider keys are data: a provider named __proto__ is an own key", async () => {
+  const proto: StreamFn = () => {
+    const s = createAssistantMessageEventStream();
+    const m = msg({
+      provider: "__proto__" as never,
+      content: [{ type: "text", text: "hi" }],
+      usage: { ...zeroUsage, input: 3, output: 2, totalTokens: 5 },
+    });
+    s.push({ type: "start", partial: m });
+    s.push({ type: "done", reason: "stop", message: m });
+    s.end();
+    return s;
+  };
+  const { result } = await run(schemas.open, proto);
+  expect(result.status).toBe("success");
+  expect(Object.hasOwn(result.usageByProvider!, "__proto__")).toBe(true);
+  expect(result.usageByProvider!["__proto__"]).toEqual({ inputTokens: 3, outputTokens: 2 });
 });

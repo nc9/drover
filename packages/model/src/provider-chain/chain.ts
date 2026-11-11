@@ -117,6 +117,30 @@ function errorMessage(
   };
 }
 
+/** `provider: class (status code)`, plus the provider's own text only when opted in. */
+function describeFailure(x: ProviderFailure, includeText: boolean): string {
+  const detail = [x.status, x.code].filter((v) => v !== null && v !== undefined).join(" ");
+  const head = `${x.provider}: ${x.failureClass}${detail ? ` (${detail})` : ""}`;
+  return includeText && x.message ? `${head}: ${x.message}` : head;
+}
+
+/** Class, status and allow-listed code per failure: the fields the harness builds its error from. */
+function failureDiagnostics(
+  failures: readonly ProviderFailure[],
+): NonNullable<AssistantMessage["diagnostics"]> {
+  return failures.map((x) => ({
+    type: "provider_failure",
+    timestamp: Date.now(),
+    details: {
+      provider: x.provider,
+      failureClass: x.failureClass,
+      status: x.status,
+      ...(x.code ? { code: x.code } : {}),
+      ...(x.retryAfterMs !== undefined ? { retryAfterMs: x.retryAfterMs } : {}),
+    },
+  }));
+}
+
 /** Structured hints a thrown transport error may carry (SDK errors, custom fetchers). */
 function rawFromThrown(err: unknown): RawFailure {
   const e = err as {
@@ -199,6 +223,14 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
         out.end();
       };
 
+      /** A failure after content was delivered: the message keeps its partial content, the text is class-only. */
+      const failedAfterContent = (msg: AssistantMessage, f: ProviderFailure): AssistantMessage => ({
+        ...msg,
+        stopReason: "error",
+        errorMessage: describeFailure(f, options.includeProviderText === true),
+        diagnostics: failureDiagnostics([f]),
+      });
+
       /** One call to one provider. Events are held until the first content event, so a failure before it is retryable elsewhere. */
       const attempt = async (
         provider: string,
@@ -234,8 +266,15 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
           for await (const ev of inner) {
             if (ev.type === "start" && !committed) held.push(ev);
             else if (ev.type === "error") {
-              // A caller abort, or a failure after content was delivered, passes through unchanged.
-              if (ev.reason === "aborted" || committed) return (send(ev), out.end(), null);
+              // A caller abort passes through unchanged. A failure after content was
+              // delivered is not replayed elsewhere; its text is replaced like any other.
+              if (ev.reason === "aborted") return (send(ev), out.end(), null);
+              if (committed) {
+                const f = classifyFailure(provider, {
+                  message: ev.error.errorMessage ?? "provider error",
+                });
+                return (end(failedAfterContent(ev.error, f)), null);
+              }
               return failed({ message: ev.error.errorMessage ?? "provider error" }, ev.error);
             } else if (ev.type === "done") {
               const empty = ev.message.content.length === 0 && !ev.message.usage?.output;
@@ -249,7 +288,15 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
           }
         } catch (err) {
           if (committed)
-            return (end(errorMessage(call.model, provider, (err as Error).message)), null);
+            return (
+              end(
+                failedAfterContent(
+                  errorMessage(call.model, provider, ""),
+                  classifyFailure(provider, rawFromThrown(err)),
+                ),
+              ),
+              null
+            );
           return failed(rawFromThrown(err));
         }
         if (committed)
@@ -331,13 +378,8 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
               break;
             }
             notify({ ...base, action: "exhausted", to: null });
-            const show = (x: ProviderFailure): string => {
-              const detail = [x.status, x.code]
-                .filter((v) => v !== null && v !== undefined)
-                .join(" ");
-              const head = `${x.provider}: ${x.failureClass}${detail ? ` (${detail})` : ""}`;
-              return options.includeProviderText && x.message ? `${head}: ${x.message}` : head;
-            };
+            const show = (x: ProviderFailure): string =>
+              describeFailure(x, options.includeProviderText === true);
             const text =
               failures.length === 1 && !rule.failover
                 ? show(failures[0]!)
@@ -346,17 +388,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
               ...(last ?? errorMessage(canonical, provider, "")),
               stopReason: "error",
               errorMessage: text,
-              diagnostics: failures.map((x) => ({
-                type: "provider_failure",
-                timestamp: Date.now(),
-                details: {
-                  provider: x.provider,
-                  failureClass: x.failureClass,
-                  status: x.status,
-                  ...(x.code ? { code: x.code } : {}),
-                  ...(x.retryAfterMs !== undefined ? { retryAfterMs: x.retryAfterMs } : {}),
-                },
-              })),
+              diagnostics: failureDiagnostics(failures),
             });
           }
         }

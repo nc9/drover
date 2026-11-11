@@ -155,11 +155,11 @@ describe("classifyFailure: status first, structured fields only", () => {
   const cases: [string, string, string, number | null][] = [
     ["402", "402 This request requires more credits", "credits_exhausted", 402],
     ["401", "401 Invalid API key", "key_refused", 401],
-    ["403", "403 Forbidden", "key_refused", 403],
+    ["403", "403 Forbidden", "forbidden", 403],
     [
       "403, body code lost to flattening",
       "403 Country, region, or territory not supported",
-      "key_refused",
+      "forbidden",
       403,
     ],
     ["429", "429 Rate limit reached", "rate_limited", 429],
@@ -193,6 +193,10 @@ describe("classifyFailure: status first, structured fields only", () => {
       "credits_exhausted",
     );
     expect(classifyFailure("p", { message: "402" }).failureClass).toBe("credits_exhausted");
+    expect(classifyFailure("p", { message: "403 x", code: "invalid_api_key" })).toMatchObject({
+      failureClass: "key_refused",
+      code: "invalid_api_key",
+    });
   });
 
   test("a structured code without its status classifies nothing", () => {
@@ -256,7 +260,7 @@ describe("provider chain", () => {
   const failover: [string, Script, string, number | null][] = [
     ["402", { kind: "error", message: "402 no credits" }, "credits_exhausted", 402],
     ["401", { kind: "error", message: "401 bad key" }, "key_refused", 401],
-    ["403 flattened", { kind: "error", message: "403 Forbidden" }, "key_refused", 403],
+    ["403 flattened", { kind: "error", message: "403 Forbidden" }, "forbidden", 403],
     ["region (structured)", regionThrow(), "region_refused", 403],
     ["5xx", { kind: "error", message: "503 overloaded" }, "provider_error", 503],
     ["timeout", { kind: "error", message: "Request timed out." }, "timeout", null],
@@ -376,6 +380,25 @@ describe("provider chain", () => {
     const partial = await run(chainOf([a, b]));
     expect([b.calls.length, partial.notices, partial.result.stopReason]).toEqual([0, [], "error"]);
     expect(partial.events.some((e) => e.type === "text_delta")).toBe(true);
+    // The provider's text is replaced by class/status, as on every other path.
+    expect(partial.result.errorMessage).toBe("a: provider_error (502)");
+    expect(partial.result.diagnostics?.[0]?.details).toMatchObject({
+      provider: "a",
+      failureClass: "provider_error",
+      status: 502,
+    });
+    const [e2, f2] = [
+      fake("a", [{ kind: "partial-then-error", message: "502 SECRET-PROMPT echoed" }]),
+      fake("b", [{ kind: "ok" }]),
+    ];
+    const hidden = await run(chainOf([e2, f2]));
+    expect(JSON.stringify(hidden.result)).not.toContain("SECRET-PROMPT");
+    const [e3, f3] = [
+      fake("a", [{ kind: "partial-then-error", message: "502 SECRET-PROMPT echoed" }]),
+      fake("b", [{ kind: "ok" }]),
+    ];
+    const shown = await run(chainOf([e3, f3], { includeProviderText: true }));
+    expect(shown.result.errorMessage).toContain("SECRET-PROMPT");
 
     const [c, d] = [fake("c", [{ kind: "error", message: "402 x" }]), fake("d", [{ kind: "ok" }])];
     const { events } = await run(chainOf([c, d]));
@@ -397,6 +420,16 @@ describe("provider chain", () => {
     expect(second.result.provider).toBe("b");
     const other = await call(bind(chain)); // another run asks it again
     expect([a.calls.length, other.result.provider]).toEqual([2, "a"]);
+  });
+
+  test("a bare 403 (plain transport) fails over but does not bench the provider", async () => {
+    const [a, b] = [
+      fake("a", [{ kind: "error", message: "403 Forbidden" }, { kind: "ok" }]),
+      fake("b", [{ kind: "ok" }]),
+    ];
+    const runOne = bind(chainOf([a, b]));
+    expect((await call(runOne)).result.provider).toBe("b");
+    expect((await call(runOne)).result.provider).toBe("a"); // asked first again in the same run
   });
 
   test("other classes are never benched; a benched provider is still the last resort", async () => {
