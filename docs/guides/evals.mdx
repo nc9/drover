@@ -44,7 +44,7 @@ export const scenario: Scenario<typeof spec> = {
   name: "Summarise an incident report",
   inspiredBy: "generic",
   description: "Read a doc and produce a 3-bullet summary.",
-  fixtureDir: "summarize-doc",   // optional: evals/fixtures/<name>/
+  fixtureDir: "summarize-doc", // optional: evals/fixtures/<name>/
   spec,
   input: { file: "incident.md" },
 };
@@ -93,6 +93,7 @@ cd apps/eval-viewer && bun run dev
 ```
 
 Hash-routed pages:
+
 - `/` — every runset with chip-grid jumpoffs to scenarios
 - `#/r/<runset>` — runset table
 - `#/r/<runset>/<scenario>` — full scenario detail with timeline
@@ -105,20 +106,31 @@ show input + result.
 ## Record and replay provider responses
 
 `@droveragent/eval` records a run's model responses and replays them offline (no network,
-no cost) through the `streamFn` seam (`HarnessDeps.streamFn`, or the facade's
-`RunOptions.streamFn`):
+no cost) through the harness's `streamFn` seam (`HarnessDeps.streamFn`):
 
 ```ts
+import { Effect } from "effect";
+import { runAgentEffect } from "@droveragent/harness";
 import { createRecorder, recordStream, replayStream } from "@droveragent/eval";
 import { streamSimple } from "@mariozechner/pi-ai";
 
 const rec = createRecorder();
-await runAgent(spec, input, { streamFn: recordStream(streamSimple, rec.sink) }).result;
+await Effect.runPromise(
+  runAgentEffect({
+    spec,
+    input,
+    ctx,
+    emit,
+    deps: { ...deps, streamFn: recordStream(streamSimple, rec.sink) },
+  }),
+);
 await Bun.write("run.json", JSON.stringify(rec.recording()));
 
 // later, in CI (no network):
 const recording = JSON.parse(await Bun.file("run.json").text());
-const result = await runAgent(spec, input, { streamFn: replayStream(recording) }).result;
+const result = await Effect.runPromise(
+  runAgentEffect({ spec, input, ctx, emit, deps: { ...deps, streamFn: replayStream(recording) } }),
+);
 ```
 
 Make one `recordStream` / `replayStream` per run; subagents share it.
@@ -147,9 +159,9 @@ prompt) is replaced by its status-only form (`provider error 402`) unless
 `recordStream(real, sink, { keepProviderText: true })`; the live run is unaffected.
 
 <Warning>
-A recording contains the full model responses and, through tool results echoed in them,
-whatever private data the run touched. Do not commit recordings of private data. Record
-against synthetic data, or scrub with `recordStream(real, sink, { redact })`.
+  A recording contains the full model responses and, through tool results echoed in them, whatever
+  private data the run touched. Do not commit recordings of private data. Record against synthetic
+  data, or scrub with `recordStream(real, sink, {redact})`.
 </Warning>
 
 ## A fake provider with failures
@@ -163,20 +175,20 @@ import { fakeProvider, faults, reply } from "@droveragent/eval";
 
 const fake = fakeProvider([
   reply.toolCall("read", { path: "a.md" }),
-  faults.credits(),            // 402
+  faults.credits(), // 402
   reply.text("done"),
 ]);
 ```
 
-| Step | What the run sees |
-| --- | --- |
-| `faults.credits()` | 402: `ProviderError`, `provider error 402` |
-| `faults.forbidden({ region? })` | 403 (a region refusal with `region: true, structured: true`) |
-| `faults.rateLimited(seconds)` | 429 with `Retry-After` |
-| `faults.serverError(status = 503)` | a 5xx |
-| `faults.timeout()` | the SDK's "Request timed out." (no status) |
-| `faults.empty()` | a completion with no content and zero usage |
-| `reply.text(text)` / `reply.toolCall(name, args)` | a normal answer; tool-call ids are `call_<n>` |
+| Step                                              | What the run sees                                            |
+| ------------------------------------------------- | ------------------------------------------------------------ |
+| `faults.credits()`                                | 402: `ProviderError`, `provider error 402`                   |
+| `faults.forbidden({ region? })`                   | 403 (a region refusal with `region: true, structured: true`) |
+| `faults.rateLimited(seconds)`                     | 429 with `Retry-After`                                       |
+| `faults.serverError(status = 503)`                | a 5xx                                                        |
+| `faults.timeout()`                                | the SDK's "Request timed out." (no status)                   |
+| `faults.empty()`                                  | a completion with no content and zero usage                  |
+| `reply.text(text)` / `reply.toolCall(name, args)` | a normal answer; tool-call ids are `call_<n>`                |
 
 Failures are pi-shaped by default: an `error` event with `errorMessage` `"<status> <text>"`,
 which is what pi-ai produces over the real transport. `structured: true` throws an error

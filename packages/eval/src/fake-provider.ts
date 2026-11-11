@@ -4,7 +4,7 @@
  * script, including the failures real providers produce. No network.
  *
  *   const fake = fakeProvider([faults.credits(), reply.text("done")]);
- *   runAgent(spec, input, { streamFn: fake.streamFn });           // no chain
+ *   runAgentEffect({ ...args, deps: { ...deps, streamFn: fake.streamFn } }); // no chain
  *   createProviderChain({ providers: ["openrouter", "x"], streams: { openrouter: fake.streamFn, ... } });
  *
  * Failures are pi-shaped by default: an `error` event whose `errorMessage` is

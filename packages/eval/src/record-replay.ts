@@ -4,10 +4,10 @@
  * same events, same output, no network, no cost — for evals and CI.
  *
  *   const rec = createRecorder();
- *   await runAgent(spec, input, { streamFn: recordStream(realStreamFn, rec.sink) }).result;
+ *   await runAgentEffect({ ...args, deps: { ...deps, streamFn: recordStream(real, rec.sink) } });
  *   await Bun.write("run.json", JSON.stringify(rec.recording()));
  *   // later, offline:
- *   await runAgent(spec, input, { streamFn: replayStream(JSON.parse(text)) }).result;
+ *   await runAgentEffect({ ...args, deps: { ...deps, streamFn: replayStream(JSON.parse(text)) } });
  *
  * Turns are keyed by conversation, not global order: `thread` is a hash of the
  * system prompt and the first message (one per agent run, so each subagent has
