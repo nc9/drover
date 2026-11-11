@@ -27,8 +27,29 @@ runAgent(spec, input, {
 });
 ```
 
-A tool that builds its own output can call `fence.wrap("page", value)` directly;
-`untrustedResultsPlugin` skips content that is already fenced.
+A tool that builds its own output can call `fence.wrap("page", value)` and be
+listed in `selfFenced`, so it is not wrapped twice.
+
+## Fence by provenance, never by content
+
+The invariant: **any result of an untrusted tool, and any stored or derived copy
+of one that another tool hands back, reaches the model inside the fence.**
+
+- Results of the listed tools are always wrapped (errors included). The plugin
+  never looks at what the output looks like to decide: output is the untrusted
+  part, and a result that merely contains something fence-shaped (right tag, no
+  nonce, a real opening tag followed by instructions after a closing tag) is
+  wrapped like any other. The only way out is the explicit `selfFenced` list.
+- The plugin remembers, per run, which tool-use ids came from an untrusted tool.
+  A reader tool asked for one of those ids is fenced, whatever slice it returns.
+  `show_tool_result` (the truncate plugin's read-back of an oversized result) is a
+  reader by default; `readers` maps other tool names to their id field.
+- Put `untrustedResultsPlugin` **after** `truncatePlugin` in `plugins`: it is then
+  the outer wrapper, so the truncated head and its marker are fenced and the
+  stored overflow is only reachable through a fenced reader. The other order is
+  still safe (reads are fenced) but a slice then carries a fence inside a fence.
+- A tool of your own that returns a stored or derived copy of an untrusted result
+  (a cache, a summary tool) must be added to `readers`, or fence its output itself.
 
 ## What the fence does to text
 
