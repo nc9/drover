@@ -17,6 +17,8 @@ import { COMPACTION_SUMMARY_MARKER } from "@droveragent/core";
 import { completeSimple } from "@mariozechner/pi-ai";
 import type { KnownApi, Message, Model, SimpleStreamOptions } from "@mariozechner/pi-ai";
 
+import { providerError } from "../provider-failure.ts";
+
 /** Produce summary text for the head messages. Injected into the orchestrator. */
 export type SummarizeFn = (
   head: ReadonlyArray<Message>,
@@ -93,7 +95,18 @@ export function makeSummarizer(
         ...(onPayload ? { onPayload } : {}),
       },
     );
-    return blockText(reply.content);
+    // pi reports a failed call as a reply with `stopReason: "error"` (it does
+    // not throw). Committing that as "(no summary available)" would drop the
+    // head of the history; throw instead so the orchestrator emits
+    // `CompactionError` and the run continues uncompacted. Status-only: the
+    // provider's text can quote the transcript being summarised.
+    const failed = providerError(reply, false);
+    if (failed) throw new Error(`summary call failed: ${failed.message}`);
+    // An empty reply ("length" with the budget spent on thinking, or an empty
+    // "stop") would also commit "(no summary available)" and lose the head.
+    const text = blockText(reply.content);
+    if (text.trim() === "") throw new Error("summary call returned no text");
+    return text;
   };
 }
 

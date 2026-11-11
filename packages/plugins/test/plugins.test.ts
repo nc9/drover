@@ -59,17 +59,13 @@ describe("bashBlocklistPlugin", () => {
 
   test("denies rm -rf /", async () => {
     const p = bashBlocklistPlugin();
-    const d = await Effect.runPromise(
-      p.beforeToolCall!("bash", { command: "rm -rf /" }, fakeCtx),
-    );
+    const d = await Effect.runPromise(p.beforeToolCall!("bash", { command: "rm -rf /" }, fakeCtx));
     expect(d.kind).toBe("deny");
   });
 
   test("denies sudo", async () => {
     const p = bashBlocklistPlugin();
-    const d = await Effect.runPromise(
-      p.beforeToolCall!("bash", { command: "sudo ls /" }, fakeCtx),
-    );
+    const d = await Effect.runPromise(p.beforeToolCall!("bash", { command: "sudo ls /" }, fakeCtx));
     expect(d.kind).toBe("deny");
   });
 
@@ -83,9 +79,7 @@ describe("bashBlocklistPlugin", () => {
 
   test("warnOnly mode allows", async () => {
     const p = bashBlocklistPlugin({ warnOnly: true });
-    const d = await Effect.runPromise(
-      p.beforeToolCall!("bash", { command: "rm -rf /" }, fakeCtx),
-    );
+    const d = await Effect.runPromise(p.beforeToolCall!("bash", { command: "rm -rf /" }, fakeCtx));
     expect(d.kind).toBe("allow");
   });
 });
@@ -109,18 +103,12 @@ describe("circuitBreakerPlugin", () => {
   test("success resets the counter", async () => {
     const p = circuitBreakerPlugin({ failureThreshold: 2 });
     await Effect.runPromise(p.beforeToolCall!("t", {}, fakeCtx));
-    await Effect.runPromise(
-      p.afterToolCall!("t", {}, { content: "boom", isError: true }, fakeCtx),
-    );
+    await Effect.runPromise(p.afterToolCall!("t", {}, { content: "boom", isError: true }, fakeCtx));
     await Effect.runPromise(p.beforeToolCall!("t", {}, fakeCtx));
-    await Effect.runPromise(
-      p.afterToolCall!("t", {}, { content: "ok", isError: false }, fakeCtx),
-    );
+    await Effect.runPromise(p.afterToolCall!("t", {}, { content: "ok", isError: false }, fakeCtx));
     // Next failure shouldn't trip yet
     await Effect.runPromise(p.beforeToolCall!("t", {}, fakeCtx));
-    await Effect.runPromise(
-      p.afterToolCall!("t", {}, { content: "boom", isError: true }, fakeCtx),
-    );
+    await Effect.runPromise(p.afterToolCall!("t", {}, { content: "boom", isError: true }, fakeCtx));
     const next = await Effect.runPromise(p.beforeToolCall!("t", {}, fakeCtx));
     expect(next.kind).toBe("allow");
   });
@@ -145,9 +133,7 @@ describe("writePolicyPlugin", () => {
 
   test("passes through tools not on the list", async () => {
     const p = writePolicyPlugin({ scopedWritePaths: ["/tmp/safe"] });
-    const d = await Effect.runPromise(
-      p.beforeToolCall!("read", { path: "/etc/passwd" }, fakeCtx),
-    );
+    const d = await Effect.runPromise(p.beforeToolCall!("read", { path: "/etc/passwd" }, fakeCtx));
     expect(d.kind).toBe("allow");
   });
 
@@ -161,6 +147,29 @@ describe("writePolicyPlugin", () => {
 });
 
 describe("stepTracerPlugin", () => {
+  test("an error step carries the ProviderError status when the event has one", async () => {
+    const tracer = stepTracerPlugin();
+    const now = Date.now();
+    const err = (status?: number) =>
+      Effect.runPromise(
+        tracer.plugin.onEvent!(
+          {
+            kind: "error",
+            runId: "r",
+            tag: "ProviderError",
+            message: "provider error",
+            ...(status !== undefined ? { status } : {}),
+            ts: now,
+          },
+          fakeCtx,
+        ),
+      );
+    await err(402);
+    await err();
+    expect(tracer.steps[0]!.meta).toEqual({ message: "provider error", status: 402 });
+    expect(tracer.steps[1]!.meta).toEqual({ message: "provider error" });
+  });
+
   test("collects steps from event stream", async () => {
     const tracer = stepTracerPlugin();
     const now = Date.now();
@@ -171,10 +180,7 @@ describe("stepTracerPlugin", () => {
       ),
     );
     await Effect.runPromise(
-      tracer.plugin.onEvent!(
-        { kind: "turn_start", runId: "r", turn: 1, ts: now + 1 },
-        fakeCtx,
-      ),
+      tracer.plugin.onEvent!({ kind: "turn_start", runId: "r", turn: 1, ts: now + 1 }, fakeCtx),
     );
     expect(tracer.steps.length).toBe(2);
     expect(tracer.steps[0]!.kind).toBe("run_start");
@@ -216,7 +222,10 @@ describe("confirmGatePlugin", () => {
   });
 
   test("allowlist mode approves and denies", async () => {
-    const ok = confirmGatePlugin({ mode: { kind: "allowlist", tools: ["bash"] }, resolve: approve });
+    const ok = confirmGatePlugin({
+      mode: { kind: "allowlist", tools: ["bash"] },
+      resolve: approve,
+    });
     expect((await Effect.runPromise(ok.beforeToolCall!("bash", {}, fakeCtx))).kind).toBe("allow");
     const no = confirmGatePlugin({ mode: { kind: "allowlist", tools: ["bash"] }, resolve: reject });
     expect((await Effect.runPromise(no.beforeToolCall!("bash", {}, fakeCtx))).kind).toBe("deny");
@@ -310,9 +319,7 @@ describe("truncatePlugin", () => {
   test("show_tool_result returns stashed overflow", async () => {
     const p = truncatePlugin();
     await Effect.runPromise(p.plugin.wrapTool!(bigTool).execute({}, toolCtx("c3")));
-    const r = await Effect.runPromise(
-      showTool(p).execute({ toolUseId: "c3" }, toolCtx("c4")),
-    );
+    const r = await Effect.runPromise(showTool(p).execute({ toolUseId: "c3" }, toolCtx("c4")));
     expect(r.content).toContain("end of content");
     expect(r.isError).toBeUndefined();
   });
@@ -328,9 +335,7 @@ describe("truncatePlugin", () => {
 
   test("show_tool_result errors on unknown id", async () => {
     const p = truncatePlugin();
-    const r = await Effect.runPromise(
-      showTool(p).execute({ toolUseId: "missing" }, toolCtx("c7")),
-    );
+    const r = await Effect.runPromise(showTool(p).execute({ toolUseId: "missing" }, toolCtx("c7")));
     expect(r.isError).toBe(true);
   });
 

@@ -108,19 +108,45 @@ export function stepTracerPlugin(): StepTracer {
         });
         return;
       case "subagent_start":
-        steps.push({ ts: e.ts, turn: 0, kind: "subagent", name: e.agentId, meta: { childRunId: e.childRunId, phase: "start" } });
+        steps.push({
+          ts: e.ts,
+          turn: 0,
+          kind: "subagent",
+          name: e.agentId,
+          meta: { childRunId: e.childRunId, phase: "start" },
+        });
         return;
       case "subagent_end":
-        steps.push({ ts: e.ts, turn: 0, kind: "subagent", name: "(end)", meta: { childRunId: e.childRunId, status: e.status, phase: "end" } });
+        steps.push({
+          ts: e.ts,
+          turn: 0,
+          kind: "subagent",
+          name: "(end)",
+          meta: { childRunId: e.childRunId, status: e.status, phase: "end" },
+        });
         return;
       case "output_retry":
-        steps.push({ ts: e.ts, turn: 0, kind: "output_retry", meta: { attempt: e.attempt, reason: e.reason } });
+        steps.push({
+          ts: e.ts,
+          turn: 0,
+          kind: "output_retry",
+          meta: { attempt: e.attempt, reason: e.reason },
+        });
         return;
       case "run_end":
         steps.push({ ts: e.ts, turn: 0, kind: "run_end", meta: { status: e.status } });
         return;
       case "error":
-        steps.push({ ts: e.ts, turn: 0, kind: "error", name: e.tag, meta: { message: e.message } });
+        steps.push({
+          ts: e.ts,
+          turn: 0,
+          kind: "error",
+          name: e.tag,
+          meta: {
+            message: e.message,
+            ...(e.status !== undefined ? { status: e.status } : {}),
+          },
+        });
         return;
       default:
         return;

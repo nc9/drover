@@ -99,6 +99,8 @@ export interface RunOptions {
    * channel.
    */
   onPayload?: HarnessDeps["onPayload"];
+  /** Append the provider's raw error text to `ProviderError` messages (default off: it can quote prompt content). */
+  includeProviderErrorText?: boolean;
 }
 
 export interface RunHandle<S extends AgentSpec> {
@@ -183,6 +185,7 @@ export function runAgent<S extends AgentSpec<TSchema, TSchema>>(
     ...(options?.commands ? { commands: options.commands } : {}),
     ...(options?.memory ? { memory: options.memory } : {}),
     ...(options?.onPayload ? { onPayload: options.onPayload } : {}),
+    ...(options?.includeProviderErrorText ? { includeProviderErrorText: true } : {}),
   };
 
   const effectiveSpec: S =
@@ -313,6 +316,7 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
     ...(options.commands ? { commands: options.commands } : {}),
     ...(options.memory ? { memory: options.memory } : {}),
     ...(options.onPayload ? { onPayload: options.onPayload } : {}),
+    ...(options.includeProviderErrorText ? { includeProviderErrorText: true } : {}),
   };
 
   const effectiveSpec: S =

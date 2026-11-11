@@ -81,7 +81,7 @@ interface RunResult<TOutput = unknown> {
   durationMs: number;
   usage: { inputTokens: number; outputTokens: number; costUsd?: number; ... };
   toolCalls: readonly string[];
-  error?: { tag: string; message: string };
+  error?: { tag: string; message: string; status?: number }; // status: ProviderError only
 }
 ```
 
@@ -99,7 +99,47 @@ called. The Promise resolution NEVER rejects — typed errors fold into
 | `QuotaExceededError` | a run budget (turns / duration / cost) was exhausted |
 | `CancelledError` | caller aborted |
 | `PausedForConfirmationError` | confirm-gate triggered (reserved for runtime) |
-| `ModelError` | routing miss / circuit open / provider error / auth |
+| `ModelError` | model resolution failed (routing miss / circuit open) |
+| `ProviderError` | a model call failed (HTTP 4xx/5xx) or returned an empty completion; `RunResult.error` only, see below |
 | `SandboxError` | sandbox refused or failed an exec/read/write |
 | `StorageError` | storage adapter failure |
 | `PluginError` | plugin hook threw |
+
+## Provider failures (`ProviderError`)
+
+pi-ai does not throw when a model call fails: it ends the stream with an
+assistant message whose `stopReason` is `"error"`. drover turns that into a
+failed run instead of an empty success. The run ends `status: "error"` with
+`error.tag: "ProviderError"`, an `error` event is emitted before `run_end`,
+and no output decode is attempted. When the provider reported an HTTP status,
+it is also a number on `error.status` and on the `error` event's `status`
+(absent when unknown).
+
+| final assistant message | `error.message` | `status` |
+| --- | --- | --- |
+| `stopReason: "error"` with an HTTP status (402, 401, 503, ...) | `provider error 402` | `402` |
+| `stopReason: "error"` with no leading status | `provider error` | absent |
+| `stopReason: "length"`, no tool call and no non-blank text | `model hit max tokens before answering` | absent |
+| no tool call and no non-blank text, and either zero output tokens or the run's first assistant message | `provider returned an empty completion (no content)` | absent |
+| none at all | `provider returned no assistant message` | absent |
+
+An answer is a tool call or non-blank text; thinking alone is not. A message
+with only tool calls is not an empty completion. An empty end that follows
+tool work and reports output tokens stays a success (a model may finish with
+an empty turn). `stopReason: "aborted"` is never a `ProviderError`: a caller
+abort ends `cancelled` and a budget breach ends `quota`, as before.
+
+The `postSuccess` closing turn fails the run only on `stopReason: "error"`;
+an empty closing reply does not (the output is already captured). A
+subagent whose run ends `ProviderError` returns a tool error to its parent
+carrying the same status-only message. A failed compaction summary call
+(`stopReason: "error"`) is a `CompactionError` event: the run continues with
+its history uncompacted.
+
+By default the message carries the status and nothing else. The provider's
+raw text can quote prompt content (for example words from a fetched page), so
+it stays out of `RunResult.error`, the `error` event, the stored run row and
+stored checkpoints (the checkpoint keeps the status-only form in
+`errorMessage`). Pass `includeProviderErrorText: true` (`HarnessDeps`, or the
+facade's `RunOptions` / `ResumeOptions`) to append it:
+`provider error 402: 402 This request requires more credits...`.

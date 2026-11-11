@@ -429,7 +429,7 @@ function rowToRun(row: Record<string, unknown>): RunRow {
   if (row.error != null) {
     const parsed = parseJson(row.error);
     if (parsed && typeof parsed === "object") {
-      out.error = parsed as { tag: string; message: string };
+      out.error = parsed as { tag: string; message: string; status?: number };
     }
   }
   if (row.ended_at != null) out.endedAt = toNumber(row.ended_at);

@@ -48,6 +48,12 @@ import {
   type SummarizeFn,
 } from "./compaction/index.ts";
 import { runLifecycleSteps } from "./lifecycle.ts";
+import {
+  providerError,
+  providerFailure,
+  scrubProviderErrorText,
+  type ProviderMessage,
+} from "./provider-failure.ts";
 import type { HarnessDeps } from "./deps.ts";
 import { mcpActive, memoryActive, skillsActive, subagentsActive } from "./capability-gates.ts";
 import type { AgentLoopConfig, AgentMessage } from "@mariozechner/pi-agent-core";
@@ -529,6 +535,20 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       emitDeltas ? { emitDeltas } : undefined,
     );
     const lastAssistant: { text: string | null } = { text: null };
+    // The final assistant message as pi reported it. A provider failure is an
+    // assistant message with `stopReason: "error"` (pi does not throw), or an
+    // empty completion; either must fail the run, never read as success.
+    const lastAssistantMsg: { value: ProviderMessage | null } = { value: null };
+    // Assistant messages so far (resumed history included): an empty end is
+    // only a failure on the first one or with zero output tokens.
+    const assistantCount = {
+      value: resumeFrom
+        ? (resumeFrom.messages as ReadonlyArray<{ role?: string }>).filter(
+            (m) => m.role === "assistant",
+          ).length
+        : 0,
+    };
+    const includeProviderErrorText = deps.includeProviderErrorText === true;
     const lastUsage: { value: Usage } = {
       value: resumeFrom ? { ...resumeFrom.usage } : { inputTokens: 0, outputTokens: 0 },
     };
@@ -558,7 +578,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           storage.saveCheckpoint({
             runId: ctx.runId,
             seq: turn,
-            messages: messagesSnapshot.value,
+            messages: includeProviderErrorText
+              ? messagesSnapshot.value
+              : scrubProviderErrorText(messagesSnapshot.value),
             usage: lastUsage.value,
             toolCalls: [...toolCalls],
             retriesUsed,
@@ -572,6 +594,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       // Track last assistant text live for output validation.
       if (e.type === "message_end") {
         const msg = e.message;
+        if (msg && msg.role === "assistant") {
+          lastAssistantMsg.value = msg as ProviderMessage;
+          assistantCount.value += 1;
+        }
         if (msg && msg.role === "assistant" && Array.isArray(msg.content)) {
           lastAssistant.text = null;
           for (let i = msg.content.length - 1; i >= 0; i--) {
@@ -931,15 +957,22 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     //      tripwire on the happy path)
     //   4. quota breach → quota
     //   5. genuine loop crash → error
-    //   6. no final text → error
-    //   7. final text fails schema → error
+    //   6. provider failure (stopReason error, max tokens before an answer,
+    //      or an empty completion) → error `ProviderError`
+    //   7. no final text → error (schema-bearing agents)
+    //   8. final text fails schema → error
     // A quota abort makes pi throw, so `loopError` is set on every breach —
     // a genuine crash is `loopError && !breach`.
     let output: AgentOutput<S> | undefined;
     let status: RunStatus = "success";
-    let errorOut: { tag: string; message: string } | undefined;
+    let errorOut: { tag: string; message: string; status?: number } | undefined;
 
     const finalText = lastAssistant.text;
+    const finalFailure = providerFailure(
+      lastAssistantMsg.value,
+      includeProviderErrorText,
+      assistantCount.value <= 1,
+    );
 
     if (pauseFlag?.requested) {
       status = "paused";
@@ -961,10 +994,15 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       } else if (loopError) {
         status = "error";
         errorOut = { tag: "LoopError", message: (loopError as Error).message };
+      } else if (finalFailure) {
+        status = "error";
+        errorOut = { tag: "ProviderError", ...finalFailure };
       } else if (isOpenSchema(spec.outputSchema)) {
         // No structured-output contract — the run succeeds on a clean natural
-        // end. `finalText` may be empty (the agent's last act was a tool call
-        // with no trailing prose); `output` stays undefined either way.
+        // end. `finalText` may be empty: the agent's last act was a tool call
+        // with no trailing prose, or an empty turn after tool work (output
+        // tokens > 0, not the first assistant message; see `providerFailure`).
+        // `output` stays undefined either way.
         safeEmit({ kind: "output_validated", runId: ctx.runId, ts: Date.now() });
       } else if (!finalText || finalText.trim().length === 0) {
         // Schema-bearing agent with nothing to decode.
@@ -1067,6 +1105,19 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             status = "error";
             errorOut = { tag: "LoopError", message: (loopError as Error).message };
           }
+        } else {
+          // The closing turn is a model call too: a provider error there (402
+          // mid post-processing) fails the run. Only `stopReason: "error"`:
+          // an empty closing reply is not a failure, the output is captured.
+          const closingMsg = lastAssistantMsg.value;
+          const postError =
+            closingMsg?.stopReason === "error"
+              ? providerError(closingMsg, includeProviderErrorText)
+              : null;
+          if (postError) {
+            status = "error";
+            errorOut = { tag: "ProviderError", ...postError };
+          }
         }
         // Re-aggregate usage — the `postSuccess` turns consumed tokens too.
         usage.inputTokens = lastUsage.value.inputTokens;
@@ -1090,6 +1141,16 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
 
     const durationMs = Date.now() - startedAt;
     const endedAt = Date.now();
+    if (errorOut?.tag === "ProviderError") {
+      safeEmit({
+        kind: "error",
+        runId: ctx.runId,
+        tag: errorOut.tag,
+        message: errorOut.message,
+        ...(errorOut.status !== undefined ? { status: errorOut.status } : {}),
+        ts: endedAt,
+      });
+    }
     safeEmit({ kind: "run_end", runId: ctx.runId, status, ts: endedAt });
 
     // Final persistence pass — write terminal status + output/error + cumulative

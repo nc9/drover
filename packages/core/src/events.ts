@@ -152,7 +152,15 @@ export type HarnessEvent =
       warnings: ReadonlyArray<string>;
       ts: number;
     }
-  | { kind: "error"; runId: string; tag: string; message: string; ts: number };
+  | {
+      kind: "error";
+      runId: string;
+      tag: string;
+      message: string;
+      /** HTTP status of a `ProviderError`, when the provider reported one. */
+      status?: number;
+      ts: number;
+    };
 
 /** Narrow on `kind`. */
 export type EventOfKind<K extends HarnessEvent["kind"]> = Extract<HarnessEvent, { kind: K }>;

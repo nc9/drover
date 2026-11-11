@@ -23,5 +23,10 @@ export interface RunResult<TOutput = unknown> {
   /** Tool ids invoked during the run, in order. Duplicates preserved. */
   toolCalls: ReadonlyArray<string>;
   /** Tagged error when `status === "error"`. */
-  error?: { tag: string; message: string };
+  error?: {
+    tag: string;
+    message: string;
+    /** HTTP status of a `ProviderError`, when the provider reported one. */
+    status?: number;
+  };
 }

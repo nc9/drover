@@ -2,6 +2,30 @@
 
 All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version together.
 
+## Unreleased
+
+### Fixed
+
+- A provider failure is never a success (#16). pi reports HTTP errors (402,
+  401, 5xx, ...) as an assistant message with `stopReason: "error"` rather than
+  throwing; that used to return `status: "success"` with empty `finalText`. The
+  run (main loop, or a `stopReason: "error"` in the `postSuccess` turn) now
+  ends `status: "error"`, `error.tag: "ProviderError"`, a status-only message
+  (`provider error 402`) and a numeric `error.status`, with an `error` event
+  before `run_end` and no output decode. A failed compaction summary call is a
+  `CompactionError` and keeps the history (it used to commit "(no summary
+  available)"). Raw provider text stays out of the result, events, run row and
+  checkpoints unless `includeProviderErrorText: true`.
+
+### Changed (behavioural)
+
+- An answerless final message now fails the run with `ProviderError` (#16):
+  `stopReason: "length"` with no tool call or text (thinking only) is "model
+  hit max tokens before answering", and an empty completion (no tool call, no
+  non-blank text) is an error when it has zero output tokens or is the run's
+  first assistant message. An empty end after tool work with output tokens
+  stays a success.
+
 ## 0.2.0 — 2026-08-25
 
 `@droveragent/harness` + `@droveragent/facade` only; every other package is
