@@ -2,13 +2,33 @@
   "name": "@droveragent/mcp",
   "version": "0.1.0",
   "private": false,
+  "homepage": "https://nc9.github.io/drover/",
+  "bugs": {
+    "url": "https://github.com/nc9/drover/issues"
+  },
+  "license": "MIT",
+  "author": "Nik Cubrilovic",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nc9/drover.git",
+    "directory": "packages/mcp"
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
   "type": "module",
   "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     }
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
@@ -21,13 +41,5 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@sinclair/typebox": "^0.34.0",
     "effect": "^3.10.0"
-  },
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "files": [
-    "dist"
-  ],
-  "publishConfig": {
-    "access": "public"
   }
 }

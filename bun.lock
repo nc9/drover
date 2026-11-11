@@ -78,6 +78,9 @@
         "@droveragent/core": "workspace:*",
         "@droveragent/facade": "workspace:*",
       },
+      "devDependencies": {
+        "@sinclair/typebox": "^0.34.0",
+      },
     },
     "packages/eval": {
       "name": "@droveragent/eval",

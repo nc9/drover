@@ -70,9 +70,9 @@ runId is active.
 ## Wire it on
 
 ```ts
-import { defineAgent } from "@drover/core";
-import { createMarkdownMemory } from "@drover/memory";
-import { runAgent } from "@drover/facade";
+import { defineAgent } from "@droveragent/core";
+import { createMarkdownMemory } from "@droveragent/memory";
+import { runAgent } from "@droveragent/facade";
 
 const writer = defineAgent({
   id: "writer",
@@ -316,7 +316,7 @@ import {
   loadInstructionFiles,
   renderInstructionsBlock,
   seedInstructionFiles,
-} from "@drover/memory";
+} from "@droveragent/memory";
 
 const files = await loadInstructionFiles({ cwd, root, filenames: ["RULES.md"] });
 const block = renderInstructionsBlock(files);   // → system-prompt markdown

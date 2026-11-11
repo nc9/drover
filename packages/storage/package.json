@@ -2,8 +2,25 @@
   "name": "@droveragent/storage",
   "version": "0.1.1",
   "private": false,
+  "homepage": "https://nc9.github.io/drover/",
+  "bugs": {
+    "url": "https://github.com/nc9/drover/issues"
+  },
+  "license": "MIT",
+  "author": "Nik Cubrilovic",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nc9/drover.git",
+    "directory": "packages/storage"
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
   "type": "module",
   "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -22,6 +39,9 @@
       "import": "./dist/migrations.js"
     }
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "typecheck": "tsgo --noEmit",
     "test": "bun test",
@@ -32,13 +52,5 @@
     "@droveragent/core": "workspace:*",
     "@libsql/client": "^0.17.3",
     "effect": "^3.10.0"
-  },
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "files": [
-    "dist"
-  ],
-  "publishConfig": {
-    "access": "public"
   }
 }

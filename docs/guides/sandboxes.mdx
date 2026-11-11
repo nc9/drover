@@ -19,7 +19,7 @@ Every run gets a `just-bash` sandbox unless you pass `options.sandbox`. The
 facade mounts the run's cwd read-write:
 
 ```ts
-import { createJustBashSandbox } from "@drover/sandbox-just-bash";
+import { createJustBashSandbox } from "@droveragent/sandbox-just-bash";
 
 const sandbox = createJustBashSandbox({
   mounts: [{ source: process.cwd(), target: process.cwd(), mode: "readwrite" }],
@@ -71,7 +71,7 @@ For untrusted code at scale, still layer an OS sandbox underneath.
 runners, CI — or when isolation already exists at another layer.
 
 ```ts
-import { createNoneSandbox } from "@drover/sandbox";
+import { createNoneSandbox } from "@droveragent/sandbox";
 
 const sandbox = createNoneSandbox({
   allowedRoots: ["/tmp/safe"],

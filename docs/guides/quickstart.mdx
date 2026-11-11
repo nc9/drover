@@ -20,7 +20,7 @@ JSON, and reports its tokens + cost.
     export OPENROUTER_API_KEY=sk-or-v1-...
     ```
 
-    See `@drover/model` for using a different provider.
+    See `@droveragent/model` for using a different provider.
   </Step>
 </Steps>
 
@@ -29,7 +29,7 @@ JSON, and reports its tokens + cost.
 <CodeGroup>
 
 ```bash bun
-bun add @drover/core @drover/facade @drover/sandbox
+bun add droveragent @sinclair/typebox
 ```
 
 </CodeGroup>
@@ -38,8 +38,7 @@ bun add @drover/core @drover/facade @drover/sandbox
 
 ```ts title="quickstart.ts"
 import { Type } from "@sinclair/typebox";
-import { defineAgent } from "@drover/core";
-import { runAgent } from "@drover/facade";
+import { defineAgent, runAgent } from "droveragent";
 
 const echo = defineAgent({
   id: "echo",
@@ -86,7 +85,7 @@ tokens: 179/24
   <Step title="Input validation">
     drover decoded `{ word: "drover" }` against your `inputSchema` before
     calling the model. Validation failure short-circuits with an
-    `InputValidationError` — the model never sees malformed input.
+    `InputValidationError`: the model never sees malformed input.
   </Step>
   <Step title="Model dispatch">
     `"cheap"` resolved through the alias map to
@@ -101,7 +100,7 @@ tokens: 179/24
   </Step>
   <Step title="Terminal status">
     `result.status` is one of `success`, `quota`, `cancelled`,
-    `paused`, or `error`. `result.error` populates on the error path —
+    `paused`, or `error`. `result.error` populates on the error path:
     the Promise never rejects.
   </Step>
 </Steps>
@@ -110,10 +109,10 @@ tokens: 179/24
 
 <CardGroup cols={2}>
   <Card title="Add tools" href="/guides/writing-an-agent" icon="wrench">
-    Compose `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls` — or
+    Compose `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls`, or
     write your own.
   </Card>
   <Card title="Concepts" href="/guides/concepts" icon="book">
-    AgentSpec, RunContext, HarnessEvent, plugins — the mental model.
+    AgentSpec, RunContext, HarnessEvent, plugins: the mental model.
   </Card>
 </CardGroup>

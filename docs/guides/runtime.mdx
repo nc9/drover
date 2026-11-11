@@ -3,7 +3,7 @@ title: Runtime
 description: Worker pool + lease queue + RunApi. Turns drover into a server.
 ---
 
-`@drover/runtime` is the opt-in piece that adds a durable job queue,
+`@droveragent/runtime` is the opt-in piece that adds a durable job queue,
 worker pool with crash recovery, and a programmatic API. Without it
 drover is a library; with it, drover hosts a durable agent-runner.
 
@@ -21,15 +21,15 @@ drover is a library; with it, drover hosts a durable agent-runner.
 
 ```ts
 import { Type } from "@sinclair/typebox";
-import { defineAgent } from "@drover/core";
-import { staticRegistry } from "@drover/facade";
+import { defineAgent } from "@droveragent/core";
+import { staticRegistry } from "@droveragent/facade";
 import {
   createLibsqlQueue,
   createRunApi,
   createWorkerPool,
-} from "@drover/runtime";
-import { createLibsqlStorage } from "@drover/storage";
-import { createNoneSandbox } from "@drover/sandbox";
+} from "@droveragent/runtime";
+import { createLibsqlStorage } from "@droveragent/storage";
+import { createNoneSandbox } from "@droveragent/sandbox";
 
 const echo = defineAgent({
   id: "echo",

@@ -56,7 +56,7 @@ Any other frontmatter keys are preserved verbatim under `spec.extra`.
 ## Build a registry
 
 ```ts
-import { createSkillRegistry, scanSkillDirs } from "@drover/skills";
+import { createSkillRegistry, scanSkillDirs } from "@droveragent/skills";
 
 const specs = await scanSkillDirs(["./skills", "./node_modules/@my-org/shared-skills"]);
 const skills = createSkillRegistry(specs);
@@ -130,7 +130,7 @@ skills.list();                  // SkillSpec[]
 ```
 
 ```ts
-import { listSkillResources, readSkillResource } from "@drover/skills";
+import { listSkillResources, readSkillResource } from "@droveragent/skills";
 
 const spec = skills.get("pdf-processing")!;
 const res = await listSkillResources(spec);

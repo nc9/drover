@@ -1,86 +1,96 @@
 # drover
 
-A declarative, strongly-typed, Effect-native agent harness library for TypeScript.
+[![CI](https://github.com/nc9/drover/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/nc9/drover/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/droveragent.svg)](https://www.npmjs.com/package/droveragent)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Define agents as JSON-serialisable specs. The API surface is Effect-first, with a `Promise`/`AsyncIterable` facade as a fallback for non-Effect consumers. TypeBox schemas, `pi-agent-core` underneath. Headless — no TUI.
+A declarative, strongly typed, Effect-native agent harness for TypeScript. Define agents as JSON-serialisable specs, run them headless, stream normalised events.
 
 **Docs:** https://nc9.github.io/drover/
 
-## Features
+## Install
 
-- **Declarative agent specs** — `defineAgent({...})` returns a JSON-serialisable, TypeBox-typed `AgentSpec`; dynamic agents use the same shape.
-- **Effect-first API** — internals and public surface speak `Effect`; `Promise`/`AsyncIterable` facade kept as a fallback.
-- **Schemaed agent loop** — typed input/output, output retry budget on schema-decode failures.
-- **Streaming events** — normalised `HarnessEvent` stream as an `AsyncIterable`.
-- **Plugin hooks** — `HarnessPlugin` bundles: `beforeToolCall` / `afterToolCall` / `wrapTool` / `onEvent` / `onError` / `onRunStart` / `onRunEnd`.
-- **Built-in plugins** — loop-detect, step-tracer, bash-blocklist, circuit-breaker, write-policy, phase-recorder, confirm-gate, output-validate.
-- **Built-in tools** — bash, read, write, edit, grep, …
-- **Subagents** — `taskTool` factory; depth ≤ 2, fan-out ≤ 3 caps; child lifecycle events on the parent stream.
-- **Skills** — `SKILL.md` loader + `skill_load` tool, progressive disclosure.
-- **Commands & lifecycle** — markdown prompt macros (host-pushed) run as deterministic `init` / `postSuccess` steps around the loop.
-- **Instruction files** — `AGENTS.md` / `CLAUDE.md` loaders.
-- **MCP** — stdio + HTTP transports, tool-name prefixing, per-agent allowlist.
-- **Model layer** — pi-ai wrapper, alias resolver, routing interface, circuit breaker.
-- **Pause / resume** — durable checkpoints; resume validates run id / status / agent id / spec hash before replay.
-- **Storage** — libsql default + `StorageAdapter`; in-memory adapter for tests.
-- **Sandbox** — `SandboxAdapter` interface; just-bash virtual sandbox by default (isolated, docker-style mounts, `bash`-safe), plus in-process `none`.
-- **Runtime (opt-in)** — worker pool, lease queue, `RunApi`, crash recovery.
-- **Evals** — `ScenarioRunner`, `Scorer`, `Reporter`, plus the eval-viewer app.
+```bash
+bun add droveragent @sinclair/typebox
+```
 
-## Status
+Drover runs on [Bun](https://bun.sh) 1.3+. Default model aliases route through OpenRouter, so set `OPENROUTER_API_KEY` before running.
 
-Pre-alpha. Public surface stabilising; do not depend on it yet.
+## Quickstart
+
+<!-- quickstart:start -->
+
+```ts
+import { Type } from "@sinclair/typebox";
+import { defineAgent, runAgent } from "droveragent";
+
+const echo = defineAgent({
+  id: "echo",
+  systemPrompt: "Reply with a JSON object matching the outputSchema. No prose.",
+  inputSchema: Type.Object({ word: Type.String() }),
+  outputSchema: Type.Object({ upper: Type.String(), length: Type.Integer() }),
+  model: "cheap",
+  tools: [],
+  quota: { maxTurns: 2 },
+});
+
+const handle = runAgent(echo, { word: "drover" });
+
+for await (const event of handle.events) {
+  if (event.kind === "assistant_text") console.log(event.text);
+}
+
+const result = await handle.result;
+console.log(result.status, result.output, result.usage);
+```
+
+<!-- quickstart:end -->
+
+The same file lives at [`packages/droveragent/examples/quickstart.ts`](packages/droveragent/examples/quickstart.ts) and is typechecked in CI. For a full walkthrough see the [quickstart guide](https://nc9.github.io/drover/guides/quickstart).
+
+## What you get
+
+- Typed agent specs (TypeBox) with schemaed input and output and an output retry budget.
+- A normalised `HarnessEvent` stream, plus plugin hooks around every tool call and run.
+- Built-in tools, subagents, skills, commands, MCP, pause and resume, storage and an opt-in runtime.
+- A sandbox interface with a just-bash virtual sandbox by default.
+- An eval suite and viewer.
 
 ## Packages
 
-| Package                    | Purpose                                                                      |
-| -------------------------- | ---------------------------------------------------------------------------- |
-| `drover/core`              | `AgentSpec`, `HarnessEvent`, `RunContext`, tagged errors                     |
-| `drover/harness`           | `pi-agent-core` integration, run loop, compaction                            |
-| `drover/facade`            | `Promise` + `AsyncIterable` wrapper around the Effect surface                |
-| `drover/plugins`           | Built-in `HarnessPlugin` bundles (loop-detect, confirm-gate, step-tracer, …) |
-| `drover/tools`             | Built-in `ToolDef` library (bash, read, write, edit, grep, …)                |
-| `drover/skills`            | `SKILL.md` loader + `skill_load` tool                                        |
-| `drover/commands`          | Markdown command loader + registry — host-pushed prompt macros               |
-| `drover/mcp`               | MCP runtime, per-agent allowlist, transport adapters                         |
-| `drover/model`             | pi-ai wrapper, alias resolver, routing interface, circuit breaker            |
-| `drover/sandbox`           | `SandboxAdapter` interface; in-process `none` impl                           |
-| `drover/sandbox-just-bash` | just-bash virtual sandbox (default) — isolated, docker-style mounts          |
-| `drover/storage`           | `StorageAdapter` interface; default libsql impl                              |
-| `drover/runtime`           | (opt-in) worker pool, lease queue, run API, crash recovery                   |
-| `drover/eval`              | `ScenarioRunner`, `Scorer`, `Reporter`                                       |
+<!-- packages:start -->
 
-## v0 surface
+| Package                           | What it is                                                            | Status  |
+| --------------------------------- | --------------------------------------------------------------------- | ------- |
+| `droveragent`                     | Umbrella entry point: `defineAgent` and `runAgent`                    | Preview |
+| `@droveragent/core`               | `AgentSpec`, `HarnessEvent`, `RunContext`, tagged errors              | Preview |
+| `@droveragent/harness`            | Effect-native run loop, compaction, registry                          | Preview |
+| `@droveragent/facade`             | `Promise` and `AsyncIterable` wrapper over the Effect surface         | Preview |
+| `@droveragent/plugins`            | Built-in plugin bundles (loop-detect, confirm-gate, step-tracer, ...) | Preview |
+| `@droveragent/tools`              | Built-in tools (bash, read, write, edit, grep, ...)                   | Preview |
+| `@droveragent/skills`             | `SKILL.md` loader and `skill_load` tool                               | Preview |
+| `@droveragent/commands`           | Markdown command loader and registry                                  | Preview |
+| `@droveragent/prompt`             | Prompt templates and cache analyzer                                   | Preview |
+| `@droveragent/memory`             | Agent memory                                                          | Preview |
+| `@droveragent/mcp`                | MCP runtime, per-agent allowlist, transports                          | Preview |
+| `@droveragent/model`              | Model aliases, routing interface, circuit breaker                     | Preview |
+| `@droveragent/sandbox`            | `SandboxAdapter` interface and in-process `none` implementation       | Preview |
+| `@droveragent/sandbox-just-bash`  | just-bash virtual sandbox (default)                                   | Preview |
+| `@droveragent/sandbox-vercel`     | Vercel sandbox adapter                                                | Preview |
+| `@droveragent/sandbox-cloudflare` | Cloudflare sandbox adapter                                            | Preview |
+| `@droveragent/storage`            | `StorageAdapter` interface, memory and libsql implementations         | Preview |
+| `@droveragent/storage-d1`         | Cloudflare D1 storage adapter                                         | Preview |
+| `@droveragent/runtime`            | Opt-in worker pool, lease queue, run API, crash recovery              | Preview |
+| `@droveragent/eval`               | `ScenarioRunner`, `Scorer`, `Reporter`                                | Preview |
 
-Shipped: `core`, `harness`, `facade`, `model`, `sandbox` +
-`sandbox-just-bash` (default), `tools`, `plugins` (loop-detect,
-step-tracer, bash-blocklist, circuit-breaker, write-policy,
-phase-recorder, confirm-gate, output-validate), `storage` (memory +
-libsql), `mcp`, `skills`, `commands` (+ `init`/`postSuccess` lifecycle),
-`runtime` (worker pool + lease queue + RunApi), plus an eval suite and
-the `eval-viewer` Vite app.
+<!-- packages:end -->
 
-Out of scope for v0: heavier OS-level sandbox adapters (SBPL / docker /
-daytona — projects keep their own), OTel/Langfuse exporters (clean
-plugin slot), HTTP wrapper around RunApi, distributed multi-machine
-runtime.
+Preview means the API is stabilising and may change between 0.x releases.
 
-## Development
+## Contributing and security
 
-CI (`.github/workflows/ci.yml`) runs `scripts/ci.ts`, one gate per step. Run the
-same gates locally, in this order (build before typecheck and test: packages
-resolve each other through `dist/`):
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
-```sh
-bun install --frozen-lockfile
-bun scripts/ci.ts lint        # oxlint packages scripts
-bun scripts/ci.ts format      # oxfmt --check on files changed since origin/main (committed)
-bun scripts/ci.ts build       # tsc build of every package, dependency order
-bun scripts/ci.ts typecheck   # tsgo --noEmit per workspace, sequential
-bun scripts/ci.ts pack        # pack each package, fail on stale bun.lock workspace versions
-bun scripts/ci.ts test        # bun test per package (--only a,b / --skip a,b)
-bun scripts/ci.ts all         # every gate above
-```
+## Licence
 
-The package build order lives in `scripts/workspace.ts`; a new package must be
-added there (CI fails until it is). Releases: `RELEASING.md`.
+[MIT](LICENSE) (c) 2026 Nik Cubrilovic

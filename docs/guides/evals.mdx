@@ -14,7 +14,7 @@ cd evals && bun run.ts
 ```
 
 Runs every scenario against OpenRouter using the model aliases in
-`@drover/model`. Results land in `evals/eval-results/<timestamp>/`.
+`@droveragent/model`. Results land in `evals/eval-results/<timestamp>/`.
 
 Filter:
 
@@ -26,7 +26,7 @@ bun run.ts write-article fix-code-bug
 
 ```ts
 import type { Scenario } from "./scenarios/types.ts";
-import { defineAgent } from "@drover/core";
+import { defineAgent } from "@droveragent/core";
 import { Type } from "@sinclair/typebox";
 
 const spec = defineAgent({
@@ -82,7 +82,7 @@ stdio server at `evals/fixtures/mcp-stdio/server.ts`). See [MCP](/guides/mcp).
 
 ## Runtime-queue scenario
 
-`runtime-queue` exercises `@drover/runtime` end-to-end: enqueue 5 echo
+`runtime-queue` exercises `@droveragent/runtime` end-to-end: enqueue 5 echo
 jobs with `concurrency: 3`, wait for terminal status on each, assert
 `done`. Uses an in-memory queue + in-memory storage so it's hermetic.
 
