@@ -4,6 +4,7 @@
 // in-repo eval suite (`evals/run.ts`) is the current source of truth.
 export {
   RECORDING_VERSION,
+  ReplayAmbiguousError,
   ReplayDriftError,
   ReplayExhaustedError,
   createRecorder,
@@ -11,7 +12,9 @@ export {
   recordStream,
   threadKey,
   replayStream,
+  type RecordError,
   type RecordOptions,
+  type RecordingStreamFn,
   type RecordedTurn,
   type RecordingSink,
   type ReplayOptions,

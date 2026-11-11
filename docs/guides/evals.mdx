@@ -141,6 +141,13 @@ subagent, has its own; `threadIndex` counts calls within it. Replay serves the f
 unused turn of the call's thread whose request hash matches. Parallel subagents whose
 calls interleave differently from the recording replay correctly.
 
+One case cannot be told apart: two subagents with an identical system prompt AND first
+message that ran at the same time share a thread. When a replayed call matches two such
+recorded turns with different answers, replay fails with `ReplayAmbiguousError` instead of
+handing one subagent the other's answer; give each concurrent subagent a distinguishing first
+message (a task id) and record again. A sequential repeat of the same request (a retry) is
+not ambiguous: it is served in recorded order.
+
 **Drift.** Each turn stores a hash of its request (system prompt, messages, tool names;
 `timestamp` fields excluded). A request that matches no recorded turn fails the call with
 `ReplayDriftError`, naming the call (`replay drift at call 1 of thread 3f... (recorded turn
@@ -157,6 +164,21 @@ except wall-clock fields (`ts`, `durationMs`).
 are never recorded. A failed call's raw provider text (`errorMessage`, which can quote the
 prompt) is replaced by its status-only form (`provider error 402`) unless
 `recordStream(real, sink, { keepProviderText: true })`; the live run is unaffected.
+
+**Recording failures.** A `sink` or `redact` that throws or rejects never hangs or fails the
+live run: the call's terminal event is always delivered, and that turn is left out of the
+recording. The failure goes to `onError` if given, else onto the returned function's `errors`
+list; check it after the run, since a recording with errors is incomplete:
+
+```ts
+const streamFn = recordStream(streamSimple, rec.sink);
+// ... run ...
+if (streamFn.errors.length > 0) throw new Error("recording incomplete");
+```
+
+**Redaction.** `redact` gets a deep copy of each turn and returns the turn to store. Change the
+response events only: keep `index`, `thread`, `threadIndex` and `requestHash` as they are,
+since replay matches on them.
 
 <Warning>
   A recording contains the full model responses and, through tool results echoed in them, whatever
@@ -180,15 +202,15 @@ const fake = fakeProvider([
 ]);
 ```
 
-| Step                                              | What the run sees                                            |
-| ------------------------------------------------- | ------------------------------------------------------------ |
-| `faults.credits()`                                | 402: `ProviderError`, `provider error 402`                   |
-| `faults.forbidden({ region? })`                   | 403 (a region refusal with `region: true, structured: true`) |
-| `faults.rateLimited(seconds)`                     | 429 with `Retry-After`                                       |
-| `faults.serverError(status = 503)`                | a 5xx                                                        |
-| `faults.timeout()`                                | the SDK's "Request timed out." (no status)                   |
-| `faults.empty()`                                  | a completion with no content and zero usage                  |
-| `reply.text(text)` / `reply.toolCall(name, args)` | a normal answer; tool-call ids are `call_<n>`                |
+| Step                                              | What the run sees                                                           |
+| ------------------------------------------------- | --------------------------------------------------------------------------- |
+| `faults.credits()`                                | 402: `ProviderError`, `provider error 402`                                  |
+| `faults.forbidden({ region? })`                   | 403 (a region refusal with `region: true, structured: true`)                |
+| `faults.rateLimited(seconds)`                     | 429 with `Retry-After` (exact seconds, e.g. `0.5`; same wait in both modes) |
+| `faults.serverError(status = 503)`                | a 5xx                                                                       |
+| `faults.timeout()`                                | the SDK's "Request timed out." (no status)                                  |
+| `faults.empty()`                                  | a completion with no content and zero usage                                 |
+| `reply.text(text)` / `reply.toolCall(name, args)` | a normal answer; tool-call ids are `call_<n>`                               |
 
 Failures are pi-shaped by default: an `error` event with `errorMessage` `"<status> <text>"`,
 which is what pi-ai produces over the real transport. `structured: true` throws an error

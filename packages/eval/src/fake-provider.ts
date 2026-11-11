@@ -39,7 +39,11 @@ export type FakeStep =
       message?: string;
       /** Structured error code (`structured` mode only), e.g. `unsupported_country_region_territory`. */
       code?: string;
-      /** `Retry-After` in ms: a structured field, or a `Retry-After: N` hint in the text on a 429. */
+      /**
+       * `Retry-After` in ms: a structured field, or a `Retry-After: N` hint in the text on a 429.
+       * The hint carries the exact seconds (`0.5` for 500 ms, no rounding), so the chain reads the
+       * same wait in both modes.
+       */
       retryAfterMs?: number;
       /** Throw a structured error (for a provider chain) instead of a pi-shaped error event. */
       structured?: boolean;
@@ -209,7 +213,7 @@ export function fakeProvider(
       case "http": {
         const hint =
           step.status === 429 && step.retryAfterMs !== undefined && !step.structured
-            ? ` Retry-After: ${Math.round(step.retryAfterMs / 1000)}`
+            ? ` Retry-After: ${step.retryAfterMs / 1000}`
             : "";
         const text = `${step.status} ${step.message ?? "error"}${hint}`;
         if (step.structured) {

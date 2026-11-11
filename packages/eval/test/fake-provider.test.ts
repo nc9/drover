@@ -201,4 +201,14 @@ describe("fakeProvider: under a provider chain (streams entry)", () => {
       status: 503,
     });
   });
+
+  test("rateLimited(0.5): the text hint and structured mode give the same 500 ms wait", async () => {
+    const text = await runChain([faults.rateLimited(0.5), reply.text("ok")]);
+    const structured = await runChain([
+      faults.rateLimited(0.5, { structured: true }),
+      reply.text("ok"),
+    ]);
+    expect(text.failovers[0]).toMatchObject({ action: "retry", waitMs: 500 });
+    expect(structured.failovers[0]).toMatchObject({ action: "retry", waitMs: 500 });
+  });
 });

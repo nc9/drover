@@ -50,7 +50,10 @@ All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version t
   `ReplayDriftError` naming the call. Recordings hold no API key or headers, and
   a failed call's provider text only with `keepProviderText`. `fakeProvider(script)`
   with `faults` (402, 403, 429 + Retry-After, 5xx, timeout, empty completion) and
-  `reply` steps, usable as `streamFn` or a provider chain `streams` entry.
+  `reply` steps, usable as `streamFn` or a provider chain `streams` entry. A
+  throwing sink or redact never hangs or fails the run (`onError` / `errors`);
+  concurrent subagents that share a thread replay as `ReplayAmbiguousError`
+  rather than with swapped answers.
 
 ## 0.2.0 — 2026-08-25
 

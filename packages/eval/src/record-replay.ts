@@ -15,7 +15,9 @@
  * hash of the whole request (system prompt, messages, tool names; volatile
  * `timestamp` fields excluded). Replay serves, within the call's thread, the
  * first unused turn whose request hash matches, so interleaved calls of
- * parallel subagents replay correctly. A request that matches nothing fails
+ * parallel subagents replay correctly (but see `ReplayAmbiguousError` for two
+ * subagents with an identical system prompt AND first message running at the
+ * same time). A request that matches nothing fails
  * loudly (`ReplayDriftError`, naming the call) instead of replaying a stale
  * answer. The hashes are a 53-bit change detector, not an integrity check: do
  * not use them to authenticate a recording.
@@ -48,6 +50,11 @@ export interface RecordedTurn {
   modelId: string;
   /** Every event, in order, ending with `done` or `error`. */
   events: AssistantMessageEvent[];
+  /**
+   * Another call on the same thread was in flight when this one started: two
+   * concurrent runs share the thread (identical system prompt and first message).
+   */
+  concurrent?: true;
 }
 
 /** JSON-serialisable recording of a whole run. */
@@ -80,6 +87,38 @@ export class ReplayDriftError extends Error {
             `(prompt, history or tools changed since the recording)`,
     );
   }
+}
+
+/**
+ * Thrown when a call cannot be told apart from another recorded call: two
+ * subagents with an identical system prompt and first message ran at the same
+ * time (they share a thread), and at least two unused recorded turns of that
+ * thread have the same request but different answers. Serving either could
+ * hand one subagent the other's answer. Give each concurrent subagent a
+ * distinguishing first message (e.g. its task id) and record again.
+ */
+export class ReplayAmbiguousError extends Error {
+  readonly _tag = "ReplayAmbiguousError";
+  constructor(
+    readonly thread: string,
+    readonly threadIndex: number,
+    readonly candidates: number,
+  ) {
+    super(
+      `replay ambiguous at call ${threadIndex} of thread ${thread}: ${candidates} recorded calls ` +
+        `have this exact request but different answers, from concurrent subagents with an ` +
+        `identical system prompt and first message; give each a distinguishing first message`,
+    );
+  }
+}
+
+/** A recording-side failure (a `sink` or `redact` that threw), reported to `onError`. */
+export interface RecordError {
+  error: unknown;
+  /** The turn being recorded. */
+  index: number;
+  thread: string;
+  threadIndex: number;
 }
 
 /** Thrown when a thread asks for more model calls than were recorded for it. */
@@ -187,7 +226,8 @@ export interface RecordOptions {
   /**
    * Scrub a turn before it reaches the sink (the live run still sees the
    * original events). Receives a deep copy; return the turn to store. Keep
-   * `index` and `requestHash`. A redacted recording replays redacted text, so
+   * `index`, `thread`, `threadIndex` and `requestHash` unchanged: replay
+   * matches on them. A redacted recording replays redacted text, so
    * outputs that depend on the original will differ; use it for recordings
    * you intend to share, and replay them with `onDrift` as needed.
    */
@@ -197,7 +237,19 @@ export interface RecordOptions {
    * Off by default: it can quote the prompt. The live run is unaffected either way.
    */
   keepProviderText?: boolean;
+  /**
+   * Called when `sink` or `redact` throws or rejects. The live run is never
+   * affected: the call's terminal event is always delivered, so a broken sink
+   * cannot hang or fail the run; that turn is simply missing from the
+   * recording. Default: the error is kept on the returned function's
+   * `errors` list; check it after the run (a recording with errors is
+   * incomplete).
+   */
+  onError?: (e: RecordError) => void;
 }
+
+/** The `streamFn` `recordStream` returns, with the recording-side failures so far. */
+export type RecordingStreamFn = StreamFn & { readonly errors: ReadonlyArray<RecordError> };
 
 /**
  * Wrap a real `streamFn`: events pass through untouched while each completed
@@ -209,12 +261,25 @@ export const recordStream = (
   real: StreamFn,
   sink: RecordingSink,
   recordOptions: RecordOptions = {},
-): StreamFn => {
+): RecordingStreamFn => {
   let next = 0;
   const perThread = new Map<string, number>();
-  return (model, context, options) => {
+  const inFlight = new Map<string, number>();
+  const errors: RecordError[] = [];
+  const report = (e: RecordError): void => {
+    if (recordOptions.onError) {
+      try {
+        recordOptions.onError(e);
+      } catch {
+        /* an error handler must not break the run either */
+      }
+    } else errors.push(e);
+  };
+  const fn: StreamFn = (model, context, options) => {
     const index = next++;
     const thread = threadKey(context);
+    const concurrent = (inFlight.get(thread) ?? 0) > 0;
+    inFlight.set(thread, (inFlight.get(thread) ?? 0) + 1);
     const threadIndex = perThread.get(thread) ?? 0;
     perThread.set(thread, threadIndex + 1);
     const requestHash = hashRequest(context);
@@ -227,17 +292,30 @@ export const recordStream = (
         if (isTerminal(e)) {
           finished = true;
           // `events` is also what the live run consumes: the sink gets a copy.
-          const stored: RecordedTurn = {
-            index,
-            thread,
-            threadIndex,
-            requestHash,
-            modelId: model.id,
-            events: recordOptions.keepProviderText
-              ? structuredClone(events)
-              : scrubProviderText(structuredClone(events)),
-          };
-          await sink(recordOptions.redact ? recordOptions.redact(stored) : stored);
+          // The terminal event is pushed whatever the sink or redact does:
+          // a throwing or rejecting sink must not hang or fail the live run.
+          try {
+            const stored: RecordedTurn = {
+              index,
+              thread,
+              threadIndex,
+              requestHash,
+              modelId: model.id,
+              events: recordOptions.keepProviderText
+                ? structuredClone(events)
+                : scrubProviderText(structuredClone(events)),
+              ...(concurrent ? { concurrent: true as const } : {}),
+            };
+            await sink(recordOptions.redact ? recordOptions.redact(stored) : stored);
+          } catch (error) {
+            report({ error, index, thread, threadIndex });
+          } finally {
+            // No longer in flight from here: a call that starts after this one
+            // finished is sequential, not concurrent.
+            inFlight.set(thread, (inFlight.get(thread) ?? 1) - 1);
+            out.push(e);
+          }
+          return;
         }
         out.push(e);
       };
@@ -255,6 +333,7 @@ export const recordStream = (
     })();
     return out;
   };
+  return Object.assign(fn, { errors });
 };
 
 /** Collects turns in memory. `sink` plugs into {@link recordStream}. */
@@ -313,7 +392,16 @@ export const replayStream = (recording: StreamRecording, options: ReplayOptions 
     const actual = hashRequest(context);
     const list = threads.get(thread) ?? [];
     const unused = list.filter((t) => !used.has(t));
-    let turn = unused.find((t) => t.requestHash === actual);
+    const matching = unused.filter((t) => t.requestHash === actual);
+    // Concurrent runs on one thread with the same request but different answers
+    // cannot be told apart: refuse rather than hand one the other's answer.
+    if (
+      matching.length > 1 &&
+      list.some((t) => t.concurrent) &&
+      new Set(matching.map((t) => JSON.stringify(t.events))).size > 1
+    )
+      throw new ReplayAmbiguousError(thread, threadIndex, matching.length);
+    let turn = matching[0];
     if (!turn) {
       const anyUnused = recording.turns.some((t) => !used.has(t));
       if ((list.length > 0 && unused.length === 0) || !anyUnused)

@@ -8,6 +8,7 @@ import { createAssistantMessageEventStream, type AssistantMessage } from "@mario
 import type { StreamFn } from "@mariozechner/pi-agent-core";
 
 import {
+  ReplayAmbiguousError,
   ReplayDriftError,
   ReplayExhaustedError,
   createRecorder,
@@ -342,5 +343,97 @@ describe("record / replay", () => {
     expect(ids(r1.events)).toEqual(["c1"]);
     expect(ids(r2.events)).toEqual(ids(r1.events));
     expect(stable(r1.events)).toEqual(stable(r2.events));
+  });
+
+  test("a throwing or rejecting sink, or a throwing redact, never hangs or fails the run", async () => {
+    const throwing = recordStream(makeFake().fn, () => {
+      throw new Error("disk full");
+    });
+    const r1 = await run("sys", throwing);
+    expect(r1.result._tag).toBe("Right");
+    expect((r1.result as { right: { finalText: string } }).right.finalText).toBe("the answer");
+    expect(throwing.errors.map((e) => e.index)).toEqual([0, 1]);
+    expect(String((throwing.errors[0]!.error as Error).message)).toBe("disk full");
+
+    const seen: number[] = [];
+    const rejecting = recordStream(makeFake().fn, async () => Promise.reject(new Error("net")), {
+      onError: (e) => seen.push(e.index),
+    });
+    expect((await run("sys", rejecting)).result._tag).toBe("Right");
+    expect(seen).toEqual([0, 1]);
+    expect(rejecting.errors).toHaveLength(0); // handed to onError instead
+
+    const badRedact = recordStream(makeFake().fn, () => {}, {
+      redact: () => {
+        throw new Error("redact bug");
+      },
+    });
+    expect((await run("sys", badRedact)).result._tag).toBe("Right");
+    expect(badRedact.errors).toHaveLength(2);
+  }, 5_000);
+
+  test("concurrent runs with an identical prompt and first message: ambiguous replay is refused with the cause", async () => {
+    // Two calls on the same thread in flight at once, same request, different answers.
+    let n = 0;
+    const slow: StreamFn = () => {
+      const k = n++;
+      const s = createAssistantMessageEventStream();
+      setTimeout(() => {
+        const msg = base([{ type: "text", text: `answer ${k}` }], "stop", 1);
+        s.push({ type: "done", reason: "stop", message: msg });
+        s.end();
+      }, 10);
+      return s;
+    };
+    const rec = createRecorder();
+    const fn = recordStream(slow, rec.sink);
+    const same = {
+      systemPrompt: "child",
+      messages: [{ role: "user" as const, content: "task", timestamp: 1 }],
+    };
+    await Promise.all([
+      (async () => (await fn(fakeModel, same)).result())(),
+      (async () => (await fn(fakeModel, same)).result())(),
+    ]);
+    const recording = rec.recording();
+    expect(recording.turns.some((t) => t.concurrent)).toBe(true);
+    expect(() => replayStream(recording)(fakeModel, same)).toThrow(ReplayAmbiguousError);
+    expect(() => replayStream(recording)(fakeModel, same)).toThrow(
+      /identical system prompt and first message/,
+    );
+  });
+
+  test("a sequential repeat of the same request (a retry) is not ambiguous: served in recorded order", async () => {
+    let n = 0;
+    const retrying: StreamFn = () => {
+      const k = n++;
+      const s = createAssistantMessageEventStream();
+      s.push(
+        k === 0
+          ? {
+              type: "error",
+              reason: "error",
+              error: { ...base([], "stop", 0), stopReason: "error", errorMessage: "429 slow down" },
+            }
+          : {
+              type: "done",
+              reason: "stop",
+              message: base([{ type: "text", text: "ok" }], "stop", 1),
+            },
+      );
+      s.end();
+      return s;
+    };
+    const rec = createRecorder();
+    const fn = recordStream(retrying, rec.sink);
+    const ctxSame = {
+      systemPrompt: "s",
+      messages: [{ role: "user" as const, content: "q", timestamp: 1 }],
+    };
+    await (await fn(fakeModel, ctxSame)).result();
+    await (await fn(fakeModel, ctxSame)).result();
+    const replay = replayStream(rec.recording());
+    expect((await (await replay(fakeModel, ctxSame)).result()).stopReason).toBe("error");
+    expect((await (await replay(fakeModel, ctxSame)).result()).stopReason).toBe("stop");
   });
 });
