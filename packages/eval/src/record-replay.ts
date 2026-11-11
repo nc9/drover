@@ -9,19 +9,24 @@
  *   // later, offline:
  *   await runAgent(spec, input, { streamFn: replayStream(JSON.parse(text)) }).result;
  *
- * Turns are keyed by call index (the Nth model call of the run). Each turn also
- * stores a hash of the request (system prompt, messages, tool names; volatile
- * `timestamp` fields excluded). Replay compares it, so a changed prompt or tool
- * result fails loudly instead of silently replaying a stale answer.
+ * Turns are keyed by conversation, not global order: `thread` is a hash of the
+ * system prompt and the first message (one per agent run, so each subagent has
+ * its own), and `threadIndex` counts calls within it. Each turn also stores a
+ * hash of the whole request (system prompt, messages, tool names; volatile
+ * `timestamp` fields excluded). Replay serves, within the call's thread, the
+ * first unused turn whose request hash matches, so interleaved calls of
+ * parallel subagents replay correctly. A request that matches nothing fails
+ * loudly (`ReplayDriftError`, naming the call) instead of replaying a stale
+ * answer. The hashes are a 53-bit change detector, not an integrity check: do
+ * not use them to authenticate a recording.
  *
  * WARNING: a recording holds the full model RESPONSES (and its hash is derived
  * from the full prompt). If the run touched private data (customer content,
  * fetched pages, secrets in tool output), the recording contains it. Do not
  * commit such recordings; scrub with `recordStream`'s `redact` option or record
- * against synthetic data only.
- *
- * Call-index keying assumes model calls happen in a deterministic order: a run
- * with parallel subagents, whose calls interleave, is not replayable.
+ * against synthetic data only. API keys and request headers are never recorded
+ * (only the request hash and the response events are), and a failed call's raw
+ * provider text is replaced by its status-only form unless `keepProviderText`.
  */
 import { createAssistantMessageEventStream } from "@mariozechner/pi-ai";
 import type { AssistantMessage, AssistantMessageEvent } from "@mariozechner/pi-ai";
@@ -31,8 +36,12 @@ export const RECORDING_VERSION = 1;
 
 /** One model call: the request fingerprint and the full event stream it produced. */
 export interface RecordedTurn {
-  /** Zero-based index of the model call within the run. */
+  /** Zero-based index of the model call within the recording (completion order is not guaranteed). */
   index: number;
+  /** Conversation key: hash of the system prompt and first message. One per agent run. */
+  thread: string;
+  /** Zero-based index of the call within its thread. */
+  threadIndex: number;
   /** Fingerprint of the request; see {@link hashRequest}. */
   requestHash: string;
   /** Model id the call was made against (informational, not compared). */
@@ -51,29 +60,39 @@ export type RecordingSink = (turn: RecordedTurn) => void | Promise<void>;
 
 type StreamArgs = Parameters<StreamFn>;
 
-/** Thrown (inside the model call) when a replayed request differs from the recorded one. */
+/** Thrown (inside the model call) when a replayed request matches no recorded turn. */
 export class ReplayDriftError extends Error {
   readonly _tag = "ReplayDriftError";
   constructor(
+    /** Recording index of the turn this call was compared with (the thread's next unused turn), or -1 for an unknown thread. */
     readonly turnIndex: number,
     readonly expected: string,
     readonly actual: string,
+    readonly thread: string,
+    readonly threadIndex: number,
   ) {
     super(
-      `replay drift at turn ${turnIndex}: request hash ${actual} != recorded ${expected} ` +
-        `(prompt, history or tools changed since the recording)`,
+      turnIndex < 0
+        ? `replay drift at call ${threadIndex} of thread ${thread}: no recorded conversation ` +
+            `starts with this system prompt and first message`
+        : `replay drift at call ${threadIndex} of thread ${thread} (recorded turn ${turnIndex}): ` +
+            `request hash ${actual} != recorded ${expected} ` +
+            `(prompt, history or tools changed since the recording)`,
     );
   }
 }
 
-/** Thrown when replay is asked for more model calls than were recorded. */
+/** Thrown when a thread asks for more model calls than were recorded for it. */
 export class ReplayExhaustedError extends Error {
   readonly _tag = "ReplayExhaustedError";
   constructor(
-    readonly turnIndex: number,
+    readonly thread: string,
+    readonly threadIndex: number,
     readonly recorded: number,
   ) {
-    super(`replay exhausted: model call ${turnIndex} requested but only ${recorded} recorded`);
+    super(
+      `replay exhausted: call ${threadIndex} of thread ${thread} requested but only ${recorded} recorded`,
+    );
   }
 }
 
@@ -115,6 +134,30 @@ export const hashRequest = (context: StreamArgs[1]): string =>
     }),
   );
 
+/** Conversation key: the system prompt and the first message identify one agent run. */
+export const threadKey = (context: StreamArgs[1]): string =>
+  hashString(canonical({ systemPrompt: context.systemPrompt, first: context.messages[0] ?? null }));
+
+/** `<status> ...` -> `provider error <status>`; anything else -> `provider error`. Same rule as the harness. */
+const statusOnly = (text: string | undefined): string => {
+  const code = /^([45]\d\d)\b/.exec(text?.trim() ?? "")?.[1];
+  return code ? `provider error ${code}` : "provider error";
+};
+
+/** Error events with the raw provider text replaced (it can quote the prompt). */
+const scrubProviderText = (events: AssistantMessageEvent[]): AssistantMessageEvent[] =>
+  events.map((e) =>
+    e.type === "error" && typeof e.error.errorMessage === "string"
+      ? {
+          ...e,
+          error: {
+            ...e.error,
+            errorMessage: e.reason === "aborted" ? "aborted" : statusOnly(e.error.errorMessage),
+          },
+        }
+      : e,
+  );
+
 const isTerminal = (e: AssistantMessageEvent): boolean => e.type === "done" || e.type === "error";
 
 const syntheticError = (model: StreamArgs[0], err: unknown): AssistantMessageEvent => ({
@@ -149,13 +192,18 @@ export interface RecordOptions {
    * you intend to share, and replay them with `onDrift` as needed.
    */
   redact?: (turn: RecordedTurn) => RecordedTurn;
+  /**
+   * Keep a failed call's raw provider text (`errorMessage`) in the recording.
+   * Off by default: it can quote the prompt. The live run is unaffected either way.
+   */
+  keepProviderText?: boolean;
 }
 
 /**
  * Wrap a real `streamFn`: events pass through untouched while each completed
  * call is handed to `sink` (before its terminal event is delivered, so the
  * recording is complete by the time the run ends). Each wrapper instance
- * numbers its own calls from 0 — make one per run.
+ * numbers its own calls from 0 — make one per run (subagents share it).
  */
 export const recordStream = (
   real: StreamFn,
@@ -163,8 +211,12 @@ export const recordStream = (
   recordOptions: RecordOptions = {},
 ): StreamFn => {
   let next = 0;
+  const perThread = new Map<string, number>();
   return (model, context, options) => {
     const index = next++;
+    const thread = threadKey(context);
+    const threadIndex = perThread.get(thread) ?? 0;
+    perThread.set(thread, threadIndex + 1);
     const requestHash = hashRequest(context);
     const out = createAssistantMessageEventStream();
     void (async () => {
@@ -174,9 +226,18 @@ export const recordStream = (
         events.push(e);
         if (isTerminal(e)) {
           finished = true;
-          const turn: RecordedTurn = { index, requestHash, modelId: model.id, events };
-          // `events` is also what the live run consumes: hand redact a copy.
-          await sink(recordOptions.redact ? recordOptions.redact(structuredClone(turn)) : turn);
+          // `events` is also what the live run consumes: the sink gets a copy.
+          const stored: RecordedTurn = {
+            index,
+            thread,
+            threadIndex,
+            requestHash,
+            modelId: model.id,
+            events: recordOptions.keepProviderText
+              ? structuredClone(events)
+              : scrubProviderText(structuredClone(events)),
+          };
+          await sink(recordOptions.redact ? recordOptions.redact(stored) : stored);
         }
         out.push(e);
       };
@@ -224,27 +285,58 @@ export interface ReplayOptions {
 }
 
 /**
- * A `streamFn` that serves a recording: the Nth call returns the Nth recorded
- * turn's events. No network. Throws {@link ReplayExhaustedError} when the run
- * makes more calls than were recorded. Make one per run (it counts calls).
+ * A `streamFn` that serves a recording. A call is matched within its thread
+ * (system prompt + first message): the first unused turn of that thread whose
+ * request hash matches is replayed, so call order across parallel subagents
+ * does not matter. No match: {@link ReplayDriftError} naming the call (with
+ * `onDrift` relaxing it, the thread's next unused turn is replayed). A thread
+ * asking for more calls than recorded: {@link ReplayExhaustedError}. No network.
+ * Make one per run (it tracks used turns).
  */
 export const replayStream = (recording: StreamRecording, options: ReplayOptions = {}): StreamFn => {
   if (recording.version !== RECORDING_VERSION) {
     throw new Error(`unsupported recording version ${String(recording.version)}`);
   }
-  const byIndex = new Map(recording.turns.map((t) => [t.index, t]));
+  const threads = new Map<string, RecordedTurn[]>();
+  for (const t of [...recording.turns].sort((a, b) => a.threadIndex - b.threadIndex)) {
+    const list = threads.get(t.thread) ?? [];
+    list.push(t);
+    threads.set(t.thread, list);
+  }
+  const used = new Set<RecordedTurn>();
+  const calls = new Map<string, number>();
   const onDrift = options.onDrift ?? "throw";
-  let next = 0;
   return (_model, context) => {
-    const index = next++;
-    const turn = byIndex.get(index);
-    if (!turn) throw new ReplayExhaustedError(index, recording.turns.length);
+    const thread = threadKey(context);
+    const threadIndex = calls.get(thread) ?? 0;
+    calls.set(thread, threadIndex + 1);
     const actual = hashRequest(context);
-    if (actual !== turn.requestHash && onDrift !== "ignore") {
-      const err = new ReplayDriftError(index, turn.requestHash, actual);
-      if (onDrift === "throw") throw err;
-      onDrift(err);
+    const list = threads.get(thread) ?? [];
+    const unused = list.filter((t) => !used.has(t));
+    let turn = unused.find((t) => t.requestHash === actual);
+    if (!turn) {
+      const anyUnused = recording.turns.some((t) => !used.has(t));
+      if ((list.length > 0 && unused.length === 0) || !anyUnused)
+        throw new ReplayExhaustedError(thread, threadIndex, list.length);
+      // An unknown thread (changed system prompt or first message) can only be
+      // replayed in relaxed mode, by recording order.
+      const nextTurn =
+        unused[0] ??
+        [...recording.turns].sort((a, b) => a.index - b.index).find((t) => !used.has(t));
+      if (onDrift !== "ignore" || !nextTurn) {
+        const err = new ReplayDriftError(
+          list.length > 0 ? (nextTurn?.index ?? -1) : -1,
+          nextTurn?.requestHash ?? "",
+          actual,
+          thread,
+          threadIndex,
+        );
+        if (onDrift === "throw" || !nextTurn) throw err;
+        if (onDrift !== "ignore") onDrift(err);
+      }
+      turn = nextTurn;
     }
+    used.add(turn);
     const out = createAssistantMessageEventStream();
     // structuredClone: replays must not share (and mutate) the recording's objects.
     for (const e of structuredClone(turn.events)) out.push(e);

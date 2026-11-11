@@ -104,22 +104,102 @@ show input + result.
 
 ## Record and replay provider responses
 
-`@droveragent/eval` can record a run's model responses and replay them offline (no network, no cost) through the `streamFn` seam:
+`@droveragent/eval` records a run's model responses and replays them offline (no network,
+no cost) through the `streamFn` seam (`HarnessDeps.streamFn`, or the facade's
+`RunOptions.streamFn`):
 
 ```ts
 import { createRecorder, recordStream, replayStream } from "@droveragent/eval";
+import { streamSimple } from "@mariozechner/pi-ai";
 
 const rec = createRecorder();
-await runAgentEffect({ ..., deps: { ...deps, streamFn: recordStream(realStreamFn, rec.sink) } });
+await runAgent(spec, input, { streamFn: recordStream(streamSimple, rec.sink) }).result;
 await Bun.write("run.json", JSON.stringify(rec.recording()));
 
-// later, in CI:
+// later, in CI (no network):
 const recording = JSON.parse(await Bun.file("run.json").text());
-await runAgentEffect({ ..., deps: { ...deps, streamFn: replayStream(recording) } });
+const result = await runAgent(spec, input, { streamFn: replayStream(recording) }).result;
 ```
 
-Each turn stores a hash of its request; if the prompt, history or tools change, replay throws `ReplayDriftError` (or use `onDrift`).
+Make one `recordStream` / `replayStream` per run; subagents share it.
+
+**Keying.** Turns are keyed by conversation, not by global call order. A conversation
+(`thread`) is the system prompt plus the first message, so each agent run, and each
+subagent, has its own; `threadIndex` counts calls within it. Replay serves the first
+unused turn of the call's thread whose request hash matches. Parallel subagents whose
+calls interleave differently from the recording replay correctly.
+
+**Drift.** Each turn stores a hash of its request (system prompt, messages, tool names;
+`timestamp` fields excluded). A request that matches no recorded turn fails the call with
+`ReplayDriftError`, naming the call (`replay drift at call 1 of thread 3f... (recorded turn
+1)`), so a changed prompt or tool result fails loudly. `onDrift: "ignore"` or a callback
+replays the thread's next turn anyway (or, for an unknown thread, the next turn in recording
+order). More calls than recorded: `ReplayExhaustedError`. The hashes are a 53-bit change
+detector, not an integrity check: never use them to authenticate a recording.
+
+**Determinism.** Replay returns the recorded events verbatim (deep copies): content,
+tool-call ids and usage are the recorded ones, so events and output match the recorded run
+except wall-clock fields (`ts`, `durationMs`).
+
+**What is stored.** The request hash and the response events. API keys and request headers
+are never recorded. A failed call's raw provider text (`errorMessage`, which can quote the
+prompt) is replaced by its status-only form (`provider error 402`) unless
+`recordStream(real, sink, { keepProviderText: true })`; the live run is unaffected.
 
 <Warning>
-A recording contains the full model responses and, through tool results echoed in them, whatever private data the run touched. Do not commit recordings of private data. Record against synthetic data, or scrub with `recordStream(real, sink, { redact })`.
+A recording contains the full model responses and, through tool results echoed in them,
+whatever private data the run touched. Do not commit recordings of private data. Record
+against synthetic data, or scrub with `recordStream(real, sink, { redact })`.
 </Warning>
+
+## A fake provider with failures
+
+`fakeProvider(script)` is a `streamFn` that answers each model call with the next scripted
+step, including the failures real providers produce. No network. `calls` records every
+request it received.
+
+```ts
+import { fakeProvider, faults, reply } from "@droveragent/eval";
+
+const fake = fakeProvider([
+  reply.toolCall("read", { path: "a.md" }),
+  faults.credits(),            // 402
+  reply.text("done"),
+]);
+```
+
+| Step | What the run sees |
+| --- | --- |
+| `faults.credits()` | 402: `ProviderError`, `provider error 402` |
+| `faults.forbidden({ region? })` | 403 (a region refusal with `region: true, structured: true`) |
+| `faults.rateLimited(seconds)` | 429 with `Retry-After` |
+| `faults.serverError(status = 503)` | a 5xx |
+| `faults.timeout()` | the SDK's "Request timed out." (no status) |
+| `faults.empty()` | a completion with no content and zero usage |
+| `reply.text(text)` / `reply.toolCall(name, args)` | a normal answer; tool-call ids are `call_<n>` |
+
+Failures are pi-shaped by default: an `error` event with `errorMessage` `"<status> <text>"`,
+which is what pi-ai produces over the real transport. `structured: true` throws an error
+carrying `status`, `error.code` and `retryAfterMs` instead: that is what a provider chain
+reads from a custom transport (a region refusal is then `region_refused`), but outside a
+chain a thrown error fails the loop, so use it only as a chain `streams` entry.
+
+## With a provider chain
+
+A provider chain does not use `streamFn` (see the [provider chain guide](/guides/provider-chain)).
+Record, replay or fake each provider through the chain's `streams` option instead:
+
+```ts
+const providers = createProviderChain({
+  providers: ["openrouter", "cloudflare-ai-gateway"],
+  models: { "gpt-mini": "openai/gpt-4o-mini" },
+  streams: {
+    openrouter: fakeProvider([faults.credits()]).streamFn,
+    "cloudflare-ai-gateway": fakeProvider([reply.text("ok")]).streamFn,
+  },
+});
+```
+
+A `streams` entry never goes through `fetch`, so the chain's response tap (structured errors,
+billed cost) does not see it: a recorded or faked call carries only what the step itself
+provides (pi's flattened text, or the `structured` fields).

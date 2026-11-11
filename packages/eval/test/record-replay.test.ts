@@ -171,7 +171,8 @@ describe("record / replay", () => {
     const { recording } = await record();
     const r = await run("a DIFFERENT prompt", replayStream(recording));
     const msg = JSON.stringify(r.result);
-    expect(msg).toContain("replay drift at turn 0");
+    expect(msg).toContain("replay drift at call 0 of thread");
+    expect(msg).toContain("no recorded conversation starts with this system prompt");
   });
 
   test("drift: onDrift callback and 'ignore' let replay proceed", async () => {
@@ -199,11 +200,16 @@ describe("record / replay", () => {
     const s = await wrapped(fakeModel, { messages: [] });
     const result = await s.result();
     expect(result.stopReason).toBe("error");
+    // The live run sees the real error; the recording keeps only its status-only form.
     expect(result.errorMessage).toBe("provider down");
-    const replayed = await replayStream(rec.recording(), { onDrift: "ignore" })(fakeModel, {
+    const replayed = await replayStream(rec.recording())(fakeModel, { messages: [] });
+    expect((await replayed.result()).errorMessage).toBe("provider error");
+    const kept = createRecorder();
+    const s2 = await recordStream(boom, kept.sink, { keepProviderText: true })(fakeModel, {
       messages: [],
     });
-    expect((await replayed.result()).errorMessage).toBe("provider down");
+    await s2.result();
+    expect(JSON.stringify(kept.recording())).toContain("provider down");
   });
 
   test("redact hook scrubs the stored turn but not what the live run sees", async () => {
@@ -226,5 +232,115 @@ describe("record / replay", () => {
     expect((replayed.result as { right: { finalText: string } }).right.finalText).toBe(
       "[redacted]",
     );
+  });
+
+  test("parallel subagents: calls keyed by thread replay correctly in any interleaving", async () => {
+    // Two conversations (two subagents), two calls each; the reply names the thread and call.
+    const ctxFor = (who: string, turn: number) => ({
+      systemPrompt: `agent ${who}`,
+      messages: [
+        { role: "user" as const, content: `task for ${who}`, timestamp: 1 },
+        ...(turn > 0
+          ? [{ role: "user" as const, content: `follow-up ${turn}`, timestamp: 2 }]
+          : []),
+      ],
+    });
+    const real: StreamFn = (_m, context) => {
+      const s = createAssistantMessageEventStream();
+      const who = String(context.systemPrompt);
+      const msg = base([{ type: "text", text: `${who} #${context.messages.length}` }], "stop", 1);
+      s.push({ type: "done", reason: "stop", message: msg });
+      s.end();
+      return s;
+    };
+    const rec = createRecorder();
+    const recFn = recordStream(real, rec.sink);
+    // Recorded order: A0, B0, A1, B1.
+    for (const [who, turn] of [
+      ["A", 0],
+      ["B", 0],
+      ["A", 1],
+      ["B", 1],
+    ] as const)
+      await (await recFn(fakeModel, ctxFor(who, turn))).result();
+    const recording = JSON.parse(JSON.stringify(rec.recording())) as StreamRecording;
+    expect(new Set(recording.turns.map((t) => t.thread)).size).toBe(2);
+    // Replayed in a different interleaving: B0, B1, A0, A1.
+    const replay = replayStream(recording);
+    const texts: string[] = [];
+    for (const [who, turn] of [
+      ["B", 0],
+      ["B", 1],
+      ["A", 0],
+      ["A", 1],
+    ] as const) {
+      const m = await (await replay(fakeModel, ctxFor(who, turn))).result();
+      texts.push((m.content[0] as { text: string }).text);
+    }
+    expect(texts).toEqual(["agent B #1", "agent B #2", "agent A #1", "agent A #2"]);
+  });
+
+  test("drift names the first differing call of its thread", async () => {
+    const { recording } = await record();
+    // Same system prompt and first message, but a changed tool result in call 1.
+    const replay = replayStream(recording);
+    const r = await run("sys", (model, context, options) => {
+      const ctx =
+        context.messages.length > 1
+          ? {
+              ...context,
+              messages: context.messages.map((m) =>
+                m.role === "toolResult"
+                  ? { ...m, content: [{ type: "text" as const, text: "a different file" }] }
+                  : m,
+              ),
+            }
+          : context;
+      return replay(model, ctx, options);
+    });
+    const msg = JSON.stringify(r.result);
+    expect(msg).toMatch(/replay drift at call 1 of thread [0-9a-f]+ \(recorded turn 1\)/);
+  });
+
+  test("a recording holds no API key, request headers or raw provider text", async () => {
+    const rec = createRecorder();
+    const failing: StreamFn = () => {
+      const s = createAssistantMessageEventStream();
+      s.push({
+        type: "error",
+        reason: "error",
+        error: {
+          ...base([], "stop", 0),
+          stopReason: "error",
+          errorMessage: "402 the prompt said: SECRET-PAGE-TEXT",
+        },
+      });
+      s.end();
+      return s;
+    };
+    const fn = recordStream(failing, rec.sink);
+    await (
+      await fn(
+        fakeModel,
+        { messages: [] },
+        { apiKey: "sk-or-SECRET-KEY", headers: { authorization: "Bearer SECRET-BEARER" } },
+      )
+    ).result();
+    const json = JSON.stringify(rec.recording());
+    expect(json).not.toContain("SECRET");
+    expect(json).toContain("provider error 402");
+  });
+
+  test("replay is deterministic: tool-call ids, content and order are the recorded ones", async () => {
+    const { recording } = await record();
+    const r1 = await run("sys", replayStream(recording));
+    const r2 = await run("sys", replayStream(recording));
+    const ids = (events: HarnessEvent[]) =>
+      events
+        .filter((e) => e.kind === "tool_call_start")
+        .map((e) => (e as { toolUseId: string }).toolUseId);
+    expect(ids(r1.events)).toEqual(["c1"]);
+    expect(ids(r2.events)).toEqual(ids(r1.events));
+    expect(stable(r1.events)).toEqual(stable(r2.events));
   });
 });

@@ -43,6 +43,7 @@
   },
   "devDependencies": {
     "@droveragent/harness": "workspace:*",
+    "@droveragent/model": "workspace:*",
     "@droveragent/sandbox": "workspace:*",
     "@droveragent/storage": "workspace:*",
     "@sinclair/typebox": "^0.34.0",

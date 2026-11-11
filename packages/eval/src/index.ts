@@ -9,6 +9,7 @@ export {
   createRecorder,
   hashRequest,
   recordStream,
+  threadKey,
   replayStream,
   type RecordOptions,
   type RecordedTurn,
@@ -16,3 +17,11 @@ export {
   type ReplayOptions,
   type StreamRecording,
 } from "./record-replay.ts";
+export {
+  FakeProviderExhaustedError,
+  fakeProvider,
+  faults,
+  reply,
+  type FakeProvider,
+  type FakeStep,
+} from "./fake-provider.ts";
