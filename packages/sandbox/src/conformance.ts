@@ -55,6 +55,11 @@ const sh = (script: string): readonly [string, ReadonlyArray<string>] => [
 /**
  * The SandboxAdapter contract as data. Framework-agnostic: register each case
  * with your own test runner, or call {@link runSandboxConformance}.
+ *
+ * POSIX assumptions: the `run` cases execute `/bin/sh -c` scripts using
+ * `echo`, `pwd`, `sleep`, `cat` and `exit`, and the `resolvePath` case expects
+ * POSIX path semantics (`/`-separated, absolute paths start with `/`). An
+ * adapter whose environment is not POSIX cannot pass those cases as written.
  */
 export function sandboxConformanceCases(
   options: SandboxConformanceOptions,
@@ -124,12 +129,14 @@ export function sandboxConformanceCases(
       name: "run: aborting the signal resolves with killed:true",
       run: async ({ adapter, workdir }) => {
         const ac = new AbortController();
+        const started = Date.now();
         const timer = setTimeout(() => ac.abort(), 150);
         try {
           const r = await Effect.runPromise(
             adapter.run(...sh("sleep 5"), { cwd: workdir, signal: ac.signal }),
           );
           equal(r.killed, true, "killed");
+          check(Date.now() - started < 4_000, "abort was not honoured promptly");
         } finally {
           clearTimeout(timer);
         }
@@ -215,9 +222,12 @@ export function sandboxConformanceCases(
   return cases;
 }
 
+const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
 /**
  * Run every conformance case against fresh subjects from `factory` and
- * return the per-case outcome. Never throws for a contract violation.
+ * return the per-case outcome. Never throws: a contract violation, a factory
+ * that throws, or a cleanup that throws is reported as a failed case.
  */
 export async function runSandboxConformance(
   factory: SandboxConformanceFactory,
@@ -225,19 +235,28 @@ export async function runSandboxConformance(
 ): Promise<ReadonlyArray<SandboxConformanceResult>> {
   const results: SandboxConformanceResult[] = [];
   for (const c of sandboxConformanceCases(options)) {
-    const subject = await factory();
+    let subject: SandboxConformanceSubject;
+    try {
+      subject = await factory();
+    } catch (err) {
+      results.push({ name: c.name, ok: false, error: `factory threw: ${messageOf(err)}` });
+      continue;
+    }
+    let error: string | undefined;
     try {
       await c.run(subject);
-      results.push({ name: c.name, ok: true });
     } catch (err) {
-      results.push({
-        name: c.name,
-        ok: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    } finally {
-      await subject.cleanup?.();
+      error = messageOf(err);
     }
+    // A failing cleanup must not hide the case result: report both.
+    try {
+      await subject.cleanup?.();
+    } catch (err) {
+      error = `${error === undefined ? "" : `${error}; `}cleanup threw: ${messageOf(err)}`;
+    }
+    results.push(
+      error === undefined ? { name: c.name, ok: true } : { name: c.name, ok: false, error },
+    );
   }
   return results;
 }

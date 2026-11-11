@@ -35,11 +35,18 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 // new console there), so it keeps killing the direct child only.
 const USE_PROCESS_GROUPS = process.platform !== "win32";
 
-// Process groups of execs still running. A detached group no longer shares
-// the host's group, so it would outlive the host (process.exit, Ctrl-C);
-// one exit hook kills whatever is still running.
+// Process groups of execs still running. A detached group does not share the
+// host's process group, so neither a terminal Ctrl-C nor the host's own exit
+// reaches it: without cleanup it would outlive the host. Two hooks cover that:
+// - an `exit` listener (installed once) for a normal exit or process.exit;
+// - SIGINT / SIGTERM / SIGHUP listeners, installed ONLY while an exec is
+//   running and removed when the last one finishes, so the host's signal
+//   handling is untouched the rest of the time.
 const liveGroups = new Set<number>();
 let exitHookInstalled = false;
+
+const TERMINATING_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+type TerminatingSignal = (typeof TERMINATING_SIGNALS)[number];
 
 const killGroup = (pgid: number): boolean => {
   try {
@@ -51,14 +58,50 @@ const killGroup = (pgid: number): boolean => {
   }
 };
 
+const killLiveGroups = (): void => {
+  for (const g of liveGroups) killGroup(g);
+  liveGroups.clear();
+};
+
+const signalHandlers = new Map<TerminatingSignal, () => void>();
+
+const removeSignalHandlers = (): void => {
+  for (const [sig, handler] of signalHandlers) process.removeListener(sig, handler);
+  signalHandlers.clear();
+};
+
+const onTerminatingSignal = (sig: TerminatingSignal): void => {
+  killLiveGroups();
+  // Listeners other than ours: if the host handles this signal, its handler
+  // decides what happens (and a process.exit there still runs the exit hook).
+  const others = process.listenerCount(sig) - 1;
+  removeSignalHandlers();
+  // Otherwise ours was the only listener, and its presence suppressed the
+  // default action: re-raise so the host dies with the usual status (128+n).
+  if (others === 0) process.kill(process.pid, sig);
+};
+
+const installSignalHandlers = (): void => {
+  if (signalHandlers.size > 0) return;
+  for (const sig of TERMINATING_SIGNALS) {
+    const handler = (): void => onTerminatingSignal(sig);
+    signalHandlers.set(sig, handler);
+    process.on(sig, handler);
+  }
+};
+
 const trackGroup = (pgid: number): void => {
   if (!exitHookInstalled) {
     exitHookInstalled = true;
-    process.once("exit", () => {
-      for (const g of liveGroups) killGroup(g);
-    });
+    process.once("exit", killLiveGroups);
   }
   liveGroups.add(pgid);
+  installSignalHandlers();
+};
+
+const untrackGroup = (pgid: number): void => {
+  liveGroups.delete(pgid);
+  if (liveGroups.size === 0) removeSignalHandlers();
 };
 
 function ensureInsideRoots(
@@ -195,8 +238,8 @@ export function createNoneSandbox(opts: NoneSandboxOptions = {}): SandboxAdapter
           runOpts?.signal?.removeEventListener("abort", onAbort);
           // Background jobs the command left behind (`server &`) keep
           // running after the exec returns, as before; only an exec that is
-          // still running when the host exits is killed by the exit hook.
-          liveGroups.delete(proc.pid);
+          // still running when the host exits or is signalled is killed.
+          if (USE_PROCESS_GROUPS) untrackGroup(proc.pid);
         }
       },
       catch: (err): SandboxError =>

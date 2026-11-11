@@ -325,8 +325,9 @@ wedge persistence or the `done` frame.
 ## Repo conventions
 
 - `bun`, TypeScript, kebab-case filenames, PascalCase types, camelCase fns.
-- `cd packages/<pkg> && bunx tsgo --noEmit`. **Never** `bun run --filter '*'
-typecheck` from the root — it fans out N concurrent tsgo runs and pegs CPU.
+- `cd packages/<pkg> && bunx tsgo --noEmit`. **Never**
+  `bun run --filter '*' typecheck` from the root — it fans out N concurrent
+  tsgo runs and pegs CPU.
 - `oxfmt` / `oxlint`. Tests: `bun test` per package.
 - Package tsconfigs `include: ["src/**/*"]`, so tests are not typechecked by
   default. `exactOptionalPropertyTypes` is on — a mock's captured

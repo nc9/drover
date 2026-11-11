@@ -87,45 +87,134 @@ describe("createNoneSandbox", () => {
 
 // Process-tree handling: execs run in their own process group (POSIX).
 describe.skipIf(process.platform === "win32")("createNoneSandbox process groups", () => {
-  const marker = (): string => `drover-pg-${crypto.randomUUID()}`;
-  const alive = (m: string): boolean =>
-    Bun.spawnSync(["pgrep", "-f", m]).stdout.toString().trim() !== "";
+  // A unique `sleep` argument marks every process of one test, grandchildren included.
+  const sleepArg = (): string => `20.${String(Math.floor(Math.random() * 1e6)).padStart(6, "0")}`;
+  const alive = (arg: string): boolean =>
+    Bun.spawnSync(["pgrep", "-f", `sleep ${arg}`])
+      .stdout.toString()
+      .trim() !== "";
+  const waitUntil = async (cond: () => boolean, ms: number): Promise<boolean> => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) {
+      if (cond()) return true;
+      await Bun.sleep(50);
+    }
+    return cond();
+  };
+  const killAll = (arg: string): void => {
+    Bun.spawnSync(["pkill", "-9", "-f", `sleep ${arg}`]);
+  };
 
-  test("a timeout kills grandchildren too, keeps output and returns promptly", async () => {
-    const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "drover-pg-")));
-    const m = marker();
-    const sb = createNoneSandbox({ allowedRoots: [dir], allowShell: true });
-    const started = Date.now();
-    const r = await Effect.runPromise(
-      sb.run("/bin/sh", ["-c", `echo before; sleep 30 & sleep 30; : ${m}`], {
-        cwd: dir,
-        timeoutMs: 300,
-      }),
-    );
-    expect(r.killed).toBe(true);
-    expect(r.stdout).toBe("before\n");
-    expect(Date.now() - started).toBeLessThan(5_000);
-    await Bun.sleep(100);
-    expect(alive(m)).toBe(false);
-    await fs.rm(dir, { recursive: true, force: true });
-  });
-
-  test("an exec still running when the host exits is killed with it", async () => {
-    const m = marker();
+  const SRC = JSON.stringify(path.join(import.meta.dir, "../src/index.ts"));
+  type Mode = "exit" | "wait" | "own-sigint";
+  // A host process that starts one exec (two sleeps, one backgrounded), prints
+  // "spawned" once both are running, then exits or waits for a signal. The
+  // sleep argument goes in through the env, never the host's argv, so pgrep
+  // matches only the sleeps and never the host itself.
+  const startHost = (arg: string, mode: Mode) => {
     const script = `
       import { Effect } from "effect";
-      import { createNoneSandbox } from ${JSON.stringify(path.join(import.meta.dir, "../src/index.ts"))};
+      import { createNoneSandbox } from ${SRC};
+      ${mode === "own-sigint" ? `process.on("SIGINT", () => console.log("host-handled"));` : ""}
+      const arg = process.env.DROVER_SLEEP_ARG;
       const sb = createNoneSandbox({ allowShell: true });
-      void Effect.runPromise(sb.run("/bin/sh", ["-c", "sleep 30; : ${m}"], { timeoutMs: 60_000 }));
-      setTimeout(() => process.exit(0), 300);
+      void Effect.runPromise(
+        sb.run("/bin/sh", ["-c", \`sleep \${arg} & sleep \${arg}; wait\`], { timeoutMs: 60_000 }),
+      );
+      const count = () =>
+        Bun.spawnSync(["pgrep", "-f", \`sleep \${arg}\`]).stdout.toString().trim().split("\\n").filter(Boolean).length;
+      while (count() < 2) await Bun.sleep(20);
+      console.log("spawned");
+      ${mode === "exit" ? "process.exit(0);" : "setInterval(() => {}, 1000);"}
     `;
     const host = Bun.spawn([process.execPath, "-e", script], {
       cwd: import.meta.dir,
+      env: { ...process.env, DROVER_SLEEP_ARG: arg },
       stdout: "pipe",
       stderr: "pipe",
     });
-    expect(await host.exited).toBe(0);
-    await Bun.sleep(100);
-    expect(alive(m)).toBe(false);
+    let out = "";
+    const reader = host.stdout.getReader();
+    const decoder = new TextDecoder();
+    const readUntil = async (needle: string, ms = 10_000): Promise<string> => {
+      const end = Date.now() + ms;
+      while (!out.includes(needle) && Date.now() < end) {
+        const chunk = await Promise.race([
+          reader.read(),
+          Bun.sleep(Math.max(0, end - Date.now())).then(() => ({ done: true, value: undefined })),
+        ]);
+        if (chunk.value) out += decoder.decode(chunk.value);
+        if (chunk.done) break;
+      }
+      return out;
+    };
+    return { host, readUntil };
+  };
+
+  test("a timeout kills grandchildren too, keeps output and returns promptly", async () => {
+    const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "drover-pg-")));
+    const arg = sleepArg();
+    const sb = createNoneSandbox({ allowedRoots: [dir], allowShell: true });
+    const started = Date.now();
+    try {
+      const r = await Effect.runPromise(
+        sb.run("/bin/sh", ["-c", `echo before; sleep ${arg} & sleep ${arg}`], {
+          cwd: dir,
+          timeoutMs: 300,
+        }),
+      );
+      expect(r.killed).toBe(true);
+      expect(r.stdout).toBe("before\n");
+      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(await waitUntil(() => !alive(arg), 2_000)).toBe(true);
+    } finally {
+      killAll(arg);
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an exec still running when the host calls process.exit is killed with it", async () => {
+    const arg = sleepArg();
+    const { host, readUntil } = startHost(arg, "exit");
+    try {
+      expect(await readUntil("spawned")).toContain("spawned");
+      expect(await host.exited).toBe(0);
+      expect(await waitUntil(() => !alive(arg), 2_000)).toBe(true);
+    } finally {
+      host.kill("SIGKILL");
+      killAll(arg);
+    }
+  });
+
+  test("SIGTERM to the host kills the exec and the host still dies by SIGTERM (143)", async () => {
+    const arg = sleepArg();
+    const { host, readUntil } = startHost(arg, "wait");
+    try {
+      expect(await readUntil("spawned")).toContain("spawned");
+      host.kill("SIGTERM");
+      const code = await host.exited;
+      expect(host.signalCode === "SIGTERM" || code === 143).toBe(true);
+      expect(await waitUntil(() => !alive(arg), 2_000)).toBe(true);
+    } finally {
+      host.kill("SIGKILL");
+      killAll(arg);
+    }
+  });
+
+  test("a host with its own SIGINT handler is not killed by ours; the exec still is", async () => {
+    const arg = sleepArg();
+    const { host, readUntil } = startHost(arg, "own-sigint");
+    try {
+      expect(await readUntil("spawned")).toContain("spawned");
+      host.kill("SIGINT");
+      expect(await readUntil("host-handled")).toContain("host-handled");
+      expect(await waitUntil(() => !alive(arg), 2_000)).toBe(true);
+      await Bun.sleep(200);
+      expect(host.exitCode).toBeNull();
+      expect(host.signalCode).toBeNull();
+    } finally {
+      host.kill("SIGKILL");
+      killAll(arg);
+    }
   });
 });

@@ -173,6 +173,11 @@ scripts (`echo`, `pwd`, `sleep`, `cat`) even when it advertises
 Prefer `runSandboxConformance(factory, { expectShell })` when you want a
 plain result list (`{ name, ok, error? }`) instead of registering tests.
 
+Passing the suite proves the adapter honours the `SandboxAdapter` contract, not
+that it isolates anything: isolation is a property of the backend (VM,
+container, virtual filesystem) and is not tested here. The `run` cases need a
+POSIX `/bin/sh` and the `resolvePath` case expects POSIX paths.
+
 ## Path / sandbox boundary checklist
 
 When auditing a new tool:
