@@ -74,6 +74,7 @@ const emptyDoneStream: StreamFn = () => {
 const run = async (
   outputSchema: ReturnType<typeof Type.Object> | ReturnType<typeof Type.Unknown>,
   streamFn: StreamFn,
+  extra: Partial<HarnessDeps> = {},
 ) => {
   const spec = defineAgent({
     id: "provider-error-probe",
@@ -95,6 +96,7 @@ const run = async (
     sandbox: createNoneSandbox(),
     preResolvedModels: new Map([[MODEL_NAME, { model: fakeModel, apiKey: "sk-fake" }]]),
     streamFn,
+    ...extra,
   };
   const result = await Effect.runPromise(
     runAgentEffect({ spec, input: { q: "hi" }, ctx, emit: (e) => events.push(e), deps }),
@@ -113,8 +115,9 @@ describe("provider errors fail the run", () => {
       const { result, events } = await run(schema, errorStream);
       expect(result.status).toBe("error");
       expect(result.error?.tag).toBe("ProviderError");
-      expect(result.error?.message).toContain("402");
-      expect(result.error?.message).toContain("more credits");
+      expect(result.error?.message).toBe("provider error 402");
+      // Raw provider text stays out of the result and every event.
+      expect(JSON.stringify([result.error, events])).not.toContain("more credits");
       expect(result.output).toBeUndefined();
       const err = events.find((e) => e.kind === "error");
       expect(err).toMatchObject({ kind: "error", tag: "ProviderError" });
@@ -131,4 +134,16 @@ describe("provider errors fail the run", () => {
       expect(events.some((e) => e.kind === "output_validated")).toBe(false);
     });
   }
+
+  test("includeProviderErrorText opts in to the raw text", async () => {
+    const { result, events } = await run(schemas.open, errorStream, {
+      includeProviderErrorText: true,
+    });
+    expect(result.error?.message).toContain(
+      "provider error 402: 402 This request requires more credits",
+    );
+    expect(events.find((e) => e.kind === "error")).toMatchObject({
+      message: result.error?.message,
+    });
+  });
 });

@@ -84,4 +84,10 @@ export interface HarnessDeps {
    * the whole transport needs replacing.
    */
   onPayload?: SimpleStreamOptions["onPayload"];
+  /**
+   * Append the provider's raw error text to `ProviderError` messages. Off by
+   * default: the text can quote prompt content and the message is emitted as an
+   * event and stored on the run row. Default message: `provider error <status>`.
+   */
+  includeProviderErrorText?: boolean;
 }

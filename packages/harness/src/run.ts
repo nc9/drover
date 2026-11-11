@@ -966,9 +966,12 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       } else if (loopError) {
         status = "error";
         errorOut = { tag: "LoopError", message: (loopError as Error).message };
-      } else if (providerFailure(lastAssistantMsg.value)) {
+      } else if (providerFailure(lastAssistantMsg.value, deps.includeProviderErrorText === true)) {
         status = "error";
-        errorOut = { tag: "ProviderError", message: providerFailure(lastAssistantMsg.value)! };
+        errorOut = {
+          tag: "ProviderError",
+          message: providerFailure(lastAssistantMsg.value, deps.includeProviderErrorText === true)!,
+        };
       } else if (isOpenSchema(spec.outputSchema)) {
         // No structured-output contract — the run succeeds on a clean natural
         // end. `finalText` may be empty (the agent's last act was a tool call
@@ -1382,17 +1385,20 @@ type ProviderMessage = {
 
 /**
  * Why the final assistant message is a provider failure, or null if it is not.
- * `stopReason: "error"` carries pi's message (e.g. "402 This request requires
- * more credits"); a message with no content at all (no text, thinking or tool
- * call) is an empty completion. `aborted` is a cancel, handled elsewhere.
- * No assistant message at all means the stream produced nothing.
+ * `stopReason: "error"` gives a status-and-code-only message ("provider error
+ * 402"): the raw provider text can quote prompt content (a hostile page's
+ * words) and this message lands in events and storage. `includeText` opts in to
+ * appending the raw text. A message with no content at all (no text, thinking
+ * or tool call) is an empty completion. `aborted` is a cancel, handled
+ * elsewhere. No assistant message at all means the stream produced nothing.
  */
-function providerFailure(msg: ProviderMessage | null): string | null {
+function providerFailure(msg: ProviderMessage | null, includeText: boolean): string | null {
   if (!msg) return "provider returned no assistant message";
   if (msg.stopReason === "error") {
-    return msg.errorMessage && msg.errorMessage.trim() !== ""
-      ? msg.errorMessage
-      : "provider error (no message)";
+    const raw = msg.errorMessage?.trim() ?? "";
+    const code = /\b([45]\d\d)\b/.exec(raw)?.[1];
+    const head = code ? `provider error ${code}` : "provider error";
+    return includeText && raw !== "" ? `${head}: ${raw}` : head;
   }
   if (msg.stopReason === "aborted") return null;
   const blocks = Array.isArray(msg.content) ? msg.content : [];

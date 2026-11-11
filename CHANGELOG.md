@@ -11,8 +11,9 @@ All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version t
   rather than throwing, and a dead stream can end as an empty completion; both
   used to return `status: "success"` with empty `finalText`, zero tokens and no
   error event. The run now ends `status: "error"` with
-  `error.tag === "ProviderError"` (message carries the provider's text, status
-  code included), an `error` event is emitted before `run_end`, and no output
+  `error.tag === "ProviderError"` (message is status-and-code only, e.g.
+  `provider error 402`; raw provider text can quote prompt content, so it stays
+  out of events and storage unless `includeProviderErrorText: true`), an `error` event is emitted before `run_end`, and no output
   decode is attempted.
 
 ## 0.2.0 — 2026-08-25
