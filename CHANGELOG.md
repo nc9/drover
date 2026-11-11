@@ -6,15 +6,15 @@ All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version t
 
 ### Fixed
 
-- A provider failure is never a success. pi reports HTTP errors (402 out of
-  credits, 401, 5xx, ...) as an assistant message with `stopReason: "error"`
-  rather than throwing, and a dead stream can end as an empty completion; both
-  used to return `status: "success"` with empty `finalText`, zero tokens and no
-  error event. The run now ends `status: "error"` with
-  `error.tag === "ProviderError"` (message is status-and-code only, e.g.
-  `provider error 402`; raw provider text can quote prompt content, so it stays
-  out of events and storage unless `includeProviderErrorText: true`), an `error` event is emitted before `run_end`, and no output
-  decode is attempted.
+- A provider failure is never a success (#16). pi reports HTTP errors (402,
+  401, 5xx, ...) as an assistant message with `stopReason: "error"` rather than
+  throwing, and a dead stream can end as an empty completion; both used to
+  return `status: "success"` with empty `finalText`. The run (main loop or
+  `postSuccess` turn) now ends `status: "error"`, `error.tag: "ProviderError"`,
+  message status-only (`provider error 402`), with an `error` event before
+  `run_end` and no output decode. A tool-call-only message is not empty;
+  thinking alone is. Raw provider text stays out of the result, events, run row
+  and checkpoints unless `includeProviderErrorText: true`.
 
 ## 0.2.0 — 2026-08-25
 

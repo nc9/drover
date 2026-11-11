@@ -87,7 +87,9 @@ export interface HarnessDeps {
   /**
    * Append the provider's raw error text to `ProviderError` messages. Off by
    * default: the text can quote prompt content and the message is emitted as an
-   * event and stored on the run row. Default message: `provider error <status>`.
+   * event and stored on the run row. Also keeps pi's raw `errorMessage` in
+   * stored checkpoints (scrubbed to the status-only form otherwise). Default
+   * message: `provider error <status>`.
    */
   includeProviderErrorText?: boolean;
 }

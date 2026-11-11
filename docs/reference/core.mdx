@@ -100,6 +100,35 @@ called. The Promise resolution NEVER rejects — typed errors fold into
 | `CancelledError` | caller aborted |
 | `PausedForConfirmationError` | confirm-gate triggered (reserved for runtime) |
 | `ModelError` | routing miss / circuit open / provider error / auth |
+| `ProviderError` | a model call failed (HTTP 4xx/5xx) or returned an empty completion; `RunResult.error` only, see below |
 | `SandboxError` | sandbox refused or failed an exec/read/write |
 | `StorageError` | storage adapter failure |
 | `PluginError` | plugin hook threw |
+
+## Provider failures (`ProviderError`)
+
+pi-ai does not throw when a model call fails: it ends the stream with an
+assistant message whose `stopReason` is `"error"`. drover turns that into a
+failed run instead of an empty success. The run ends `status: "error"` with
+`error.tag: "ProviderError"`, an `error` event is emitted before `run_end`,
+and no output decode is attempted. This applies to the main loop and to the
+`postSuccess` closing turn.
+
+| final assistant message | `error.message` |
+| --- | --- |
+| `stopReason: "error"` with an HTTP status (402, 401, 503, ...) | `provider error 402` |
+| `stopReason: "error"` with no leading status | `provider error` |
+| no tool call and no non-blank text (thinking alone counts as empty) | `provider returned an empty completion (no content)` |
+| none at all | `provider returned no assistant message` |
+
+A message with only tool calls is not an empty completion. `stopReason:
+"aborted"` is never a `ProviderError`: a caller abort ends `cancelled` and a
+budget breach ends `quota`, as before.
+
+By default the message carries the status and nothing else. The provider's
+raw text can quote prompt content (for example words from a fetched page), so
+it stays out of `RunResult.error`, the `error` event, the stored run row and
+stored checkpoints (the checkpoint keeps the status-only form in
+`errorMessage`). Pass `includeProviderErrorText: true` (`HarnessDeps`, or the
+facade's `RunOptions` / `ResumeOptions`) to append it:
+`provider error 402: 402 This request requires more credits...`.

@@ -48,6 +48,11 @@ import {
   type SummarizeFn,
 } from "./compaction/index.ts";
 import { runLifecycleSteps } from "./lifecycle.ts";
+import {
+  providerFailure,
+  scrubProviderErrorText,
+  type ProviderMessage,
+} from "./provider-failure.ts";
 import type { HarnessDeps } from "./deps.ts";
 import { mcpActive, memoryActive, skillsActive, subagentsActive } from "./capability-gates.ts";
 import type { AgentLoopConfig, AgentMessage } from "@mariozechner/pi-agent-core";
@@ -533,6 +538,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // assistant message with `stopReason: "error"` (pi does not throw), or an
     // empty completion; either must fail the run, never read as success.
     const lastAssistantMsg: { value: ProviderMessage | null } = { value: null };
+    const includeProviderErrorText = deps.includeProviderErrorText === true;
     const lastUsage: { value: Usage } = {
       value: resumeFrom ? { ...resumeFrom.usage } : { inputTokens: 0, outputTokens: 0 },
     };
@@ -562,7 +568,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           storage.saveCheckpoint({
             runId: ctx.runId,
             seq: turn,
-            messages: messagesSnapshot.value,
+            messages: includeProviderErrorText
+              ? messagesSnapshot.value
+              : scrubProviderErrorText(messagesSnapshot.value),
             usage: lastUsage.value,
             toolCalls: [...toolCalls],
             retriesUsed,
@@ -945,6 +953,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     let errorOut: { tag: string; message: string } | undefined;
 
     const finalText = lastAssistant.text;
+    const providerError = providerFailure(lastAssistantMsg.value, includeProviderErrorText);
 
     if (pauseFlag?.requested) {
       status = "paused";
@@ -966,12 +975,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       } else if (loopError) {
         status = "error";
         errorOut = { tag: "LoopError", message: (loopError as Error).message };
-      } else if (providerFailure(lastAssistantMsg.value, deps.includeProviderErrorText === true)) {
+      } else if (providerError) {
         status = "error";
-        errorOut = {
-          tag: "ProviderError",
-          message: providerFailure(lastAssistantMsg.value, deps.includeProviderErrorText === true)!,
-        };
+        errorOut = { tag: "ProviderError", message: providerError };
       } else if (isOpenSchema(spec.outputSchema)) {
         // No structured-output contract — the run succeeds on a clean natural
         // end. `finalText` may be empty (the agent's last act was a tool call
@@ -1077,6 +1083,14 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           } else {
             status = "error";
             errorOut = { tag: "LoopError", message: (loopError as Error).message };
+          }
+        } else {
+          // The closing turn is a model call too: a provider failure there
+          // (402 mid post-processing) fails the run like one in the main loop.
+          const postError = providerFailure(lastAssistantMsg.value, includeProviderErrorText);
+          if (postError) {
+            status = "error";
+            errorOut = { tag: "ProviderError", message: postError };
           }
         }
         // Re-aggregate usage — the `postSuccess` turns consumed tokens too.
@@ -1374,34 +1388,4 @@ export function hashSpec(spec: AgentSpec): string {
     h = (h * 31 + s.charCodeAt(i)) | 0;
   }
   return (h >>> 0).toString(16);
-}
-
-/** The slice of pi's assistant message the provider-failure check reads. */
-type ProviderMessage = {
-  stopReason?: string;
-  errorMessage?: string;
-  content?: ReadonlyArray<{ type?: string; text?: string }>;
-};
-
-/**
- * Why the final assistant message is a provider failure, or null if it is not.
- * `stopReason: "error"` gives a status-and-code-only message ("provider error
- * 402"): the raw provider text can quote prompt content (a hostile page's
- * words) and this message lands in events and storage. `includeText` opts in to
- * appending the raw text. A message with no content at all (no text, thinking
- * or tool call) is an empty completion. `aborted` is a cancel, handled
- * elsewhere. No assistant message at all means the stream produced nothing.
- */
-function providerFailure(msg: ProviderMessage | null, includeText: boolean): string | null {
-  if (!msg) return "provider returned no assistant message";
-  if (msg.stopReason === "error") {
-    const raw = msg.errorMessage?.trim() ?? "";
-    const code = /\b([45]\d\d)\b/.exec(raw)?.[1];
-    const head = code ? `provider error ${code}` : "provider error";
-    return includeText && raw !== "" ? `${head}: ${raw}` : head;
-  }
-  if (msg.stopReason === "aborted") return null;
-  const blocks = Array.isArray(msg.content) ? msg.content : [];
-  const empty = blocks.every((b) => b.type === "text" && (b.text ?? "").trim() === "");
-  return empty ? "provider returned an empty completion (no content)" : null;
 }
