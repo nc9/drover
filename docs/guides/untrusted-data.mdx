@@ -11,9 +11,10 @@ everything inside a fence is data whatever it claims.
 
 ```ts
 import { createFence, defineAgent } from "@droveragent/core";
-import { untrustedResultsPlugin } from "@droveragent/plugins";
+import { truncatePlugin, untrustedResultsPlugin } from "@droveragent/plugins";
 
 const fence = createFence(); // one per run: the nonce is random
+const truncate = truncatePlugin({ trustedTools: ["read"] }); // everything else: untrusted
 
 const spec = defineAgent({
   id: "page-reader",
@@ -23,7 +24,10 @@ const spec = defineAgent({
 });
 
 runAgent(spec, input, {
-  plugins: [untrustedResultsPlugin({ fence, tools: ["fetch_page"] })],
+  plugins: [
+    truncate.plugin,
+    untrustedResultsPlugin({ fence, tools: ["fetch_page"], store: truncate.store }), // after truncate
+  ],
 });
 ```
 
@@ -34,21 +38,22 @@ listed in `selfFenced`, so it is not wrapped twice.
 
 The invariant: **anything a tool returns is untrusted unless it is positively
 marked trusted; the mark is stored with the data it describes.** Every
-bookkeeping miss (an id never recorded, a mark dropped at run end, a restart, a
-resumed run) over-fences; none can under-fence.
+bookkeeping miss (no entry, no flag, another run, a restart) over-fences; none
+can under-fence.
 
 - Results of the listed tools are always wrapped, errors and defects included
   (an upstream error can echo a page title). The plugin never looks at what the
   output looks like: a result that contains something fence-shaped is wrapped like
   any other. The only way out of wrapping is the explicit `selfFenced` list, and
   those tools still count as untrusted for the rule below.
-- Every other tool call is marked trusted (by run and tool-use id). A reader tool
-  (a stored or derived copy by id: `show_tool_result` by default, `readers` to add
-  others) returns its output fenced unless the id it was asked for is marked
-  trusted. An id the plugin never saw, or one whose mark was cleared, is fenced.
-- The mark lives in the plugin, per run, and is cleared at run end. Data that
-  outlives it (a truncate store shared across runs, a resumed run) reads back
-  fenced; the cost of that is over-fencing trusted data, never leaking untrusted.
+- A reader tool (a stored copy by id: `show_tool_result` by default, `readers` to
+  add others) is fenced unless **the stored entry itself says `trusted: true`**.
+  The truncate plugin writes that flag at the moment it stores the content
+  (`truncatePlugin({ trustedTools: ["read", "grep"] })`, default none), keyed by
+  (run id, tool-use id). The plugin keeps no side maps of ids. A missing entry, a
+  legacy entry stored without the flag, another run's entry, a failed call (nothing
+  stored) or no `store` option all read as untrusted. A store carried into a
+  resumed run brings each entry's flag with it.
 - Put `untrustedResultsPlugin` **after** `truncatePlugin` so the truncated head
   and its marker are fenced too. A tool of your own that returns a derived copy of
   an untrusted result must be added to `readers`.

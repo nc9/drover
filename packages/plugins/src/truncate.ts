@@ -21,23 +21,52 @@ import { Effect } from "effect";
 export const MAX_RESULT_BYTES = 8192;
 export const TRUNCATE_HEAD_BYTES = 4096;
 
+/** Provenance written with an entry, by the code that knows which tool produced it. */
+export interface TruncateEntryMeta {
+  /** True only when the producing tool was positively declared trusted. Absent means untrusted. */
+  trusted?: boolean;
+  /** Run that stored the entry. The entry is only readable by that run (or via a legacy unscoped read). */
+  runId?: string;
+  /** Tool that produced the content. */
+  toolId?: string;
+}
+
+export interface TruncateEntry extends TruncateEntryMeta {
+  fullText: string;
+  totalBytes: number;
+}
+
 export interface TruncateStore {
-  /** Stash the full text under `toolUseId`. Called only on truncation. */
-  set(toolUseId: string, fullText: string): void;
-  /** Read back the full text. Returns undefined if not stashed. */
-  get(toolUseId: string): { fullText: string; totalBytes: number } | undefined;
+  /**
+   * Stash the full text under `toolUseId`. Called only on truncation. The optional
+   * third argument is additive: absent means "untrusted, no run" (fail closed).
+   */
+  set(toolUseId: string, fullText: string, meta?: TruncateEntryMeta): void;
+  /**
+   * Read back an entry. With `runId`, only that run's entry (or a legacy entry
+   * stored without a run) is visible; without it, the first entry with that id.
+   */
+  get(toolUseId: string, runId?: string): TruncateEntry | undefined;
   /** Diagnostic: how many entries are stored. */
   size(): number;
 }
 
+const SEP = "\u0000";
+
 export function makeTruncateStore(): TruncateStore {
-  const map = new Map<string, { fullText: string; totalBytes: number }>();
+  const map = new Map<string, TruncateEntry>();
   return {
-    set(id, text) {
-      map.set(id, { fullText: text, totalBytes: Buffer.byteLength(text, "utf8") });
+    set(id, text, meta) {
+      const entry: TruncateEntry = { fullText: text, totalBytes: Buffer.byteLength(text, "utf8") };
+      if (meta?.trusted === true) entry.trusted = true;
+      if (meta?.runId !== undefined) entry.runId = meta.runId;
+      if (meta?.toolId !== undefined) entry.toolId = meta.toolId;
+      map.set(`${meta?.runId ?? ""}${SEP}${id}`, entry);
     },
-    get(id) {
-      return map.get(id);
+    get(id, runId) {
+      if (runId !== undefined) return map.get(`${runId}${SEP}${id}`) ?? map.get(`${SEP}${id}`);
+      for (const [k, v] of map) if (k.endsWith(`${SEP}${id}`)) return v;
+      return undefined;
     },
     size() {
       return map.size;
@@ -70,9 +99,9 @@ function showToolResultTool(
     description:
       "Read more of a previously-truncated tool result. The harness truncates large tool outputs; this returns additional bytes from the stored full result. Pass the toolUseId that appeared in the truncation marker.",
     inputSchema: ShowToolResultInput,
-    execute: (input: Static<typeof ShowToolResultInput>) =>
+    execute: (input: Static<typeof ShowToolResultInput>, ctx) =>
       Effect.sync(() => {
-        const entry = store.get(input.toolUseId);
+        const entry = store.get(input.toolUseId, ctx.runId);
         if (!entry) {
           return {
             content: `ERROR: no stored result for toolUseId "${input.toolUseId}". Either it was never truncated, or it belongs to a different run. Truncated results carry a marker like \`show_tool_result({ toolUseId: "..." })\` — copy that exact id.`,
@@ -116,6 +145,13 @@ export interface TruncateOptions {
   headBytes?: number;
   /** Reuse an existing store (e.g. shared with the dedup plugin). */
   store?: TruncateStore;
+  /**
+   * Tools whose results are positively trusted (not outside text). Stored with
+   * each entry at the moment it is written. Every other tool's overflow is
+   * stored untrusted, so a reader that honours the flag (see
+   * `untrustedResultsPlugin`) fences it. Default: none.
+   */
+  trustedTools?: ReadonlyArray<string>;
 }
 
 export interface TruncatePlugin {
@@ -135,6 +171,7 @@ export function truncatePlugin(opts: TruncateOptions = {}): TruncatePlugin {
   const store = opts.store ?? makeTruncateStore();
   const maxBytes = opts.maxBytes ?? MAX_RESULT_BYTES;
   const headBytes = opts.headBytes ?? TRUNCATE_HEAD_BYTES;
+  const trustedTools = new Set(opts.trustedTools ?? []);
 
   const wrapTool = (tool: AnyToolDef): AnyToolDef => {
     // Don't truncate show_tool_result itself — its byteRange already lets
@@ -146,10 +183,12 @@ export function truncatePlugin(opts: TruncateOptions = {}): TruncatePlugin {
         Effect.map(tool.execute(input, ctx), (result) => {
           const bytes = Buffer.byteLength(result.content, "utf8");
           if (bytes <= maxBytes) return result;
-          store.set(ctx.toolUseId, result.content);
-          const head = Buffer.from(result.content, "utf8")
-            .subarray(0, headBytes)
-            .toString("utf8");
+          store.set(ctx.toolUseId, result.content, {
+            trusted: trustedTools.has(tool.id),
+            runId: ctx.runId,
+            toolId: tool.id,
+          });
+          const head = Buffer.from(result.content, "utf8").subarray(0, headBytes).toString("utf8");
           return {
             ...result,
             content:
