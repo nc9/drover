@@ -486,6 +486,14 @@ describe("toolCallCapPlugin", () => {
     expect((await call(p, "a")).kind).toBe("allow");
   });
 
+  test("tool names are data: a model calling `constructor` or `__proto__` hits no cap", async () => {
+    const p = toolCallCapPlugin({ perTool: { fetch: 1 } });
+    for (const name of ["constructor", "__proto__", "toString"]) {
+      expect((await call(p, name)).kind).toBe("allow");
+      expect((await call(p, name)).kind).toBe("allow");
+    }
+  });
+
   test("a custom message replaces the default", async () => {
     const p = toolCallCapPlugin({ maxCalls: 0, message: ({ limit }) => `no more (${limit})` });
     const d = await call(p, "a");

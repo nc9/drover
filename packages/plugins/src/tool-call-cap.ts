@@ -46,7 +46,11 @@ export function toolCallCapPlugin(opts: ToolCallCapOptions): HarnessPlugin {
             reason: message({ toolName, scope: "total", limit: opts.maxCalls }),
           };
         }
-        const cap = opts.perTool?.[toolName];
+        // Tool names come from the model: own keys only (`constructor` is not a cap).
+        const cap =
+          opts.perTool && Object.hasOwn(opts.perTool, toolName)
+            ? opts.perTool[toolName]
+            : undefined;
         const used = s.byTool.get(toolName) ?? 0;
         if (cap !== undefined && used >= cap) {
           return { kind: "deny", reason: message({ toolName, scope: "tool", limit: cap }) };
