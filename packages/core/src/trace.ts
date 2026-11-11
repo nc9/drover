@@ -96,9 +96,8 @@ export function readEvent(value: unknown): TraceEvent {
     value !== null && typeof value === "object" && !Array.isArray(value) ? value : { value }
   ) as Record<string, unknown>;
   const kind = typeof raw.kind === "string" ? raw.kind : "";
-  const spec = (REQUIRED_FIELDS as Record<string, Readonly<Record<string, FieldType>> | undefined>)[
-    kind
-  ];
+  // Own keys only: a kind of `__proto__` / `constructor` must not find Object.prototype members.
+  const spec = Object.hasOwn(REQUIRED_FIELDS, kind) ? REQUIRED_FIELDS[kind as Kind] : undefined;
   if (!spec) return { unknown: true, kind, reason: "unknown_kind", raw };
   for (const [field, type] of Object.entries({ ...COMMON, ...spec })) {
     if (typeOf(raw[field]) !== type)
@@ -175,19 +174,30 @@ export function parseTraceJsonl(text: string): ParsedTrace {
   return { header, events, warnings };
 }
 
-/** Comparable numbers from a trace: what an admin viewer lists and what a version-to-version diff compares. */
+/** Per-name counters. Null-prototype objects: names come from the trace and may be `__proto__`. */
+export interface NameStats {
+  count: number;
+  errors: number;
+  totalMs: number;
+}
+export interface UsageStats {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}
+
+/**
+ * Comparable numbers from a trace: what an admin viewer lists and what a version-to-version diff compares.
+ * Every record keyed by a name that came out of the trace (`byTool`, `usageByProvider`, `unknownKinds`) is a
+ * null-prototype object, so `__proto__`, `constructor` and `prototype` are ordinary keys.
+ */
 export interface TraceSummary {
   status: string | null;
   turns: number;
-  toolCalls: {
-    count: number;
-    errors: number;
-    totalMs: number;
-    byTool: Record<string, { count: number; errors: number; totalMs: number }>;
-  };
-  usage: { inputTokens: number; outputTokens: number; costUsd: number };
+  toolCalls: { count: number; errors: number; totalMs: number; byTool: Record<string, NameStats> };
+  usage: UsageStats;
   /** Usage by serving provider, when `usage` events name one. */
-  usageByProvider: Record<string, { inputTokens: number; outputTokens: number; costUsd: number }>;
+  usageByProvider: Record<string, UsageStats>;
   compactions: number;
   subagents: number;
   errors: number;
@@ -197,33 +207,40 @@ export interface TraceSummary {
   unknownKinds: Record<string, number>;
 }
 
+/** A null-prototype record built from a Map: the only place accumulators become objects. */
+function toRecord<V>(m: ReadonlyMap<string, V>): Record<string, V> {
+  const out = Object.create(null) as Record<string, V>;
+  for (const [k, v] of m) Object.defineProperty(out, k, { value: v, enumerable: true, writable: true, configurable: true });
+  return out;
+}
+
 export function summarizeTrace(events: ReadonlyArray<TraceEvent>): TraceSummary {
-  const s: TraceSummary = {
-    status: null,
-    turns: 0,
-    toolCalls: { count: 0, errors: 0, totalMs: 0, byTool: {} },
-    usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
-    usageByProvider: {},
-    compactions: 0,
-    subagents: 0,
-    errors: 0,
-    unknownEvents: 0,
-    unknownKinds: {},
-  };
+  const total = { count: 0, errors: 0, totalMs: 0 };
+  const byTool = new Map<string, NameStats>();
+  const usage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+  const byProvider = new Map<string, UsageStats>();
+  const unknownKinds = new Map<string, number>();
+  let status: string | null = null;
+  let turns = 0;
+  let compactions = 0;
+  let subagents = 0;
+  let errors = 0;
+  let unknownEvents = 0;
   for (const e of events) {
     if ("unknown" in e) {
-      s.unknownEvents++;
-      if (e.reason === "unknown_kind") s.unknownKinds[e.kind] = (s.unknownKinds[e.kind] ?? 0) + 1;
+      unknownEvents++;
+      if (e.reason === "unknown_kind") unknownKinds.set(e.kind, (unknownKinds.get(e.kind) ?? 0) + 1);
       continue;
     }
     switch (e.kind) {
       case "turn_start":
-        s.turns = Math.max(s.turns, e.turn);
+        turns = Math.max(turns, e.turn);
         break;
       case "tool_call_end": {
-        const t = (s.toolCalls.byTool[e.toolName] ??= { count: 0, errors: 0, totalMs: 0 });
+        let t = byTool.get(e.toolName);
+        if (!t) byTool.set(e.toolName, (t = { count: 0, errors: 0, totalMs: 0 }));
         const failed = e.result.isError === true;
-        for (const x of [s.toolCalls, t]) {
+        for (const x of [total, t]) {
           x.count++;
           x.totalMs += e.durationMs;
           if (failed) x.errors++;
@@ -231,42 +248,45 @@ export function summarizeTrace(events: ReadonlyArray<TraceEvent>): TraceSummary 
         break;
       }
       case "usage": {
-        const add = {
-          inputTokens: e.usage.inputTokens,
-          outputTokens: e.usage.outputTokens,
-          costUsd: e.usage.costUsd ?? 0,
-        };
-        s.usage.inputTokens += add.inputTokens;
-        s.usage.outputTokens += add.outputTokens;
-        s.usage.costUsd += add.costUsd;
+        usage.inputTokens += e.usage.inputTokens;
+        usage.outputTokens += e.usage.outputTokens;
+        usage.costUsd += e.usage.costUsd ?? 0;
         const provider = (e as { provider?: unknown }).provider;
         if (typeof provider === "string") {
-          const p = (s.usageByProvider[provider] ??= {
-            inputTokens: 0,
-            outputTokens: 0,
-            costUsd: 0,
-          });
-          p.inputTokens += add.inputTokens;
-          p.outputTokens += add.outputTokens;
-          p.costUsd += add.costUsd;
+          let p = byProvider.get(provider);
+          if (!p) byProvider.set(provider, (p = { inputTokens: 0, outputTokens: 0, costUsd: 0 }));
+          p.inputTokens += e.usage.inputTokens;
+          p.outputTokens += e.usage.outputTokens;
+          p.costUsd += e.usage.costUsd ?? 0;
         }
         break;
       }
       case "compaction":
-        s.compactions++;
+        compactions++;
         break;
       case "subagent_start":
-        s.subagents++;
+        subagents++;
         break;
       case "error":
-        s.errors++;
+        errors++;
         break;
       case "run_end":
-        s.status = e.status;
+        status = e.status;
         break;
       default:
         break;
     }
   }
-  return s;
+  return {
+    status,
+    turns,
+    toolCalls: { ...total, byTool: toRecord(byTool) },
+    usage,
+    usageByProvider: toRecord(byProvider),
+    compactions,
+    subagents,
+    errors,
+    unknownEvents,
+    unknownKinds: toRecord(unknownKinds),
+  };
 }
