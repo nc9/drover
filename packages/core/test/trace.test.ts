@@ -4,6 +4,7 @@ import {
   KNOWN_EVENT_KINDS,
   REQUIRED_FIELDS,
   TRACE_VERSION,
+  UNTRUSTED_FIELDS,
   parseTraceJsonl,
   readEvent,
   summarizeTrace,
@@ -26,7 +27,7 @@ describe("trace format v1", () => {
     });
   }
 
-  test("every required field is checked: removing or retyping one makes the event unreadable, not dropped", () => {
+  test("every required field is checked: removing (unless marked untrusted) or retyping one makes the event unreadable, not dropped", () => {
     for (const [kind, sample] of Object.entries(SAMPLES)) {
       for (const field of [
         "runId",
@@ -36,8 +37,13 @@ describe("trace format v1", () => {
         const missing = { ...(sample as unknown as Record<string, unknown>) };
         delete missing[field];
         const r = readEvent(missing);
-        expect(r).toMatchObject({ unknown: true, kind, reason: `malformed: ${field}` });
-        expect((r as { raw: unknown }).raw).toEqual(missing);
+        // A marked (untrusted) top-level field may be absent: that is how `remove` redacts it.
+        if ((UNTRUSTED_FIELDS[kind as keyof typeof UNTRUSTED_FIELDS] ?? []).includes(field)) {
+          expect("unknown" in r).toBe(false);
+        } else {
+          expect(r).toMatchObject({ unknown: true, kind, reason: `malformed: ${field}` });
+          expect((r as { raw: unknown }).raw).toEqual(missing);
+        }
         const retyped = readEvent({
           ...(sample as unknown as Record<string, unknown>),
           [field]: { x: 1 },

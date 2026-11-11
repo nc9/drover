@@ -86,6 +86,17 @@ top-level field or `field.key` one level into an object, so structural flags nex
 > applies it, is part of the stored content). `tool_call_end.trust` is `"untrusted"` on every result the harness
 > writes; an absent value (older traces) means untrusted. `summarizeTrace` never reads any of these fields.
 
+`trust` is a hint, not a guarantee: a trace is a file, and a hostile or edited trace can say `"trusted"`.
+A viewer MUST NOT loosen escaping or rendering because of it.
+
+Some text from outside the harness is not marked, because the reader and the summary need it, and it
+cannot be redacted. Escape it when you render it:
+
+- `toolName` on `tool_call_start` / `tool_call_end`: the model chooses it (a hallucinated name is emitted
+  before the tool lookup fails), and MCP tool names come from external servers.
+- The summary's `toolCalls.byTool` keys (tool names) and `usageByProvider` keys.
+- `provider` and `model` on a `usage` event, when present: they come from the provider's response.
+
 `traceToJsonl` escapes `<`, `>`, `&`, U+2028 and U+2029 as `\uXXXX`, so a line is safe to embed in HTML or a
 script block; it is still plain JSON. That does not replace escaping when you render a field.
 
@@ -98,10 +109,14 @@ const text = traceToJsonl(trace, {
 ```
 
 The hook is called once per marked field present on the event, with `field` set to the path
-(`result.content`). `mask` writes `"[redacted]"`, `remove` drops the field. A masked trace still reads
-as typed events: the reader accepts `"[redacted]"` in place of a marked top-level field of any type
-(`prompt_rendered.warnings`), and nowhere else, so `"[redacted]"` in `durationMs` or `usage` makes the
-event malformed. Events of kinds this reader does not know are written as stored: redact those yourself.
+(`result.content`). `mask` writes `"[redacted]"`, `remove` drops the field. A redacted trace still
+reads as typed events: the reader accepts `"[redacted]"`, or the field being absent, in place of a
+marked top-level field of any type (`error.message`, `prompt_rendered.warnings`), and nowhere else, so
+`"[redacted]"` or a gap in `durationMs` or `usage` makes the event malformed. A consumer of a redacted
+trace must therefore expect a marked field to be missing.
+
+Malformed events of a known kind are redacted by that kind's marked paths too (on the stored event).
+Only events of a kind this reader does not know are written as stored: redact those yourself.
 
 ## Complete example
 

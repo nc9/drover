@@ -138,3 +138,43 @@ describe("trace redaction does not open the reader", () => {
     expect((recalled as { query: unknown }).query).toBe(REDACTED);
   });
 });
+
+describe("trace redaction: malformed known kinds and removed fields", () => {
+  test("a malformed event of a known kind is still redacted by its kind's marked paths", () => {
+    // durationMs is not a number, so this reads as malformed; result.content must still be masked.
+    const bad = readEvent({
+      ...SAMPLES.tool_call_end,
+      durationMs: "slow",
+      result: { content: "secret tool output", isError: false },
+    });
+    expect(bad).toMatchObject({ unknown: true, reason: "malformed: durationMs" });
+    const text = traceToJsonl({ header, events: [bad] }, { redact: () => "mask" });
+    expect(text).not.toContain("secret tool output");
+    const back = parseTraceJsonl(text).events[0] as { raw: { result: unknown } };
+    expect(back.raw.result).toEqual({ content: REDACTED, isError: false });
+  });
+
+  test("an unknown kind passes through unredacted (documented)", () => {
+    const odd = readEvent({ kind: "budget_warning", runId: "r", ts: 1, note: "x" });
+    expect(redactEvent(odd, () => "mask")).toBe(odd);
+  });
+
+  test("remove on required marked fields keeps the event typed, and the summary still counts errors", () => {
+    const events = [
+      SAMPLES.error,
+      SAMPLES.assistant_text,
+      SAMPLES.output_retry,
+      SAMPLES.prompt_rendered,
+    ] as HarnessEvent[];
+    const text = traceToJsonl({ header, events }, { redact: () => "remove" });
+    const back = parseTraceJsonl(text).events;
+    expect(back.every((e) => !("unknown" in e))).toBe(true);
+    expect(Object.hasOwn(back[0] as object, "message")).toBe(false);
+    expect(summarizeTrace(back).errors).toBe(1);
+  });
+
+  test("a gap in an unmarked required field is still malformed", () => {
+    const { durationMs: _d, ...noDuration } = SAMPLES.tool_call_end as Record<string, unknown>;
+    expect(readEvent(noDuration)).toMatchObject({ unknown: true, reason: "malformed: durationMs" });
+  });
+});
