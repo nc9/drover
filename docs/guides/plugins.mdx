@@ -34,7 +34,8 @@ ones that match what your plugin actually does.
   <Card title="tool-call-cap">
     Refuses tool calls over a cap with a reason the model can act on, instead
     of killing the run. `toolCallCapPlugin({ maxCalls: 30, perTool: { fetch: 5 } })`.
-    Counts per run; refused calls are not counted. Pair with `quota.maxTurns`.
+    Warns once near each cap. Counts per run; refused calls are not counted.
+    Pair with `quota.maxTurns`. Details below.
   </Card>
   <Card title="step-tracer">
     Projects events into a flat trace list for observability.
@@ -184,3 +185,36 @@ drover; everything else is either explicit or doesn't ship with state.
 If you need a different rate-limit policy (or to disable it entirely)
 set `spec.memory.writesPerTurn = 0` and add your own plugin to
 `options.plugins`.
+
+## Tool-call cap
+
+```ts
+import { toolCallCapPlugin } from "@droveragent/plugins";
+
+const cap = toolCallCapPlugin({ maxCalls: 30, perTool: { fetch: 5 } });
+runAgent(spec, input, { plugins: [cap] }); // appended after spec.plugins, so after other gates
+```
+
+What the model sees:
+
+- On the call that reaches 80% of a cap (`warnAt`, default `0.8`, `false` for none), once per
+  cap, a note appended to that tool's result:
+  `[tool call budget: 24 of 30 tool calls used in this run; 6 left. Plan to finish with what you have.]`
+- On a call over a cap, a tool error instead of the tool running, and the run goes on:
+  `tool call cap reached: 30 of 30 tool calls used in this run. Do not call more tools; give your final answer with what you have.`
+  (per tool: `... for fetch: 5 of 5 calls used in this run. Do not call fetch again; ...`).
+  Replace it with `message({ toolName, scope, limit, used })`. It never contains the tool's input.
+
+Counting rules:
+
+- Calls are counted in `beforeToolCall`, one at a time, so parallel calls in one turn cannot
+  overshoot the cap. A refused call is not counted; an allowed call counts even if the tool then
+  fails. Register the cap AFTER other `beforeToolCall` gates: a call it allowed that a later
+  plugin denies still counts.
+- Counts are per run id and freed at run end; `cap.usage(runId)` returns `{ total, byTool }` for a
+  live run. A subagent is its own run: the parent's `task` call counts once in the parent, and the
+  child is capped only if the child's spec carries a cap plugin.
+- The refusal and the near-cap note are harness-made text, not tool output, so an untrusted-data
+  fence does not wrap them. They hold only the cap, the counts and the tool name (which the model
+  chose).
+

@@ -499,4 +499,65 @@ describe("toolCallCapPlugin", () => {
     const d = await call(p, "a");
     expect(d.kind === "deny" && d.reason).toBe("no more (0)");
   });
+  const after = (p: ReturnType<typeof toolCallCapPlugin>, name: string, content = "ok") =>
+    Effect.runPromise(p.afterToolCall!(name, {}, { content }, fakeCtx));
+
+  test("the refusal names the cap, the count used and what to do, never the input", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 1 });
+    await Effect.runPromise(p.beforeToolCall!("fetch", { url: "SECRET-ARG" }, fakeCtx));
+    const d = await Effect.runPromise(p.beforeToolCall!("fetch", { url: "SECRET-ARG" }, fakeCtx));
+    expect(d.kind).toBe("deny");
+    const reason = d.kind === "deny" ? d.reason : "";
+    expect(reason).toContain("1 of 1 tool calls used");
+    expect(reason).toContain("give your final answer");
+    expect(reason).not.toContain("SECRET-ARG");
+  });
+
+  test("parallel calls in one turn cannot overshoot the cap", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 5, perTool: { fetch: 3 } });
+    const decisions = await Promise.all(
+      Array.from({ length: 20 }, (_, i) => call(p, i % 2 === 0 ? "fetch" : "read")),
+    );
+    expect(decisions.filter((d) => d.kind === "allow").length).toBe(5);
+    expect(p.usage(fakeCtx.runId)?.total).toBe(5);
+    expect(p.usage(fakeCtx.runId)?.byTool.fetch).toBe(3);
+  });
+
+  test("near the cap the model is told once, on the result of the call that reaches it", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 5 });
+    const notes: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      await call(p, "a");
+      notes.push((await after(p, "a")).content);
+    }
+    const warned = notes.filter((c) => c.includes("tool call budget"));
+    expect(warned).toHaveLength(1);
+    expect(notes[3]).toContain("4 of 5 tool calls used in this run; 1 left.");
+    expect(notes[0]).toBe("ok");
+  });
+
+  test("per-tool caps warn once too; warnAt false turns warnings off", async () => {
+    const p = toolCallCapPlugin({ perTool: { fetch: 5 } });
+    const out: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      await call(p, "fetch");
+      out.push((await after(p, "fetch")).content);
+    }
+    expect(out.filter((c) => c.includes("fetch calls used")).length).toBe(1);
+    const quiet = toolCallCapPlugin({ maxCalls: 5, warnAt: false });
+    for (let i = 0; i < 5; i++) {
+      await call(quiet, "a");
+      expect((await after(quiet, "a")).content).toBe("ok");
+    }
+  });
+
+  test("usage is null-prototype and undefined after the run ends", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 10 });
+    await call(p, "__proto__");
+    const u = p.usage(fakeCtx.runId)!;
+    expect(Object.getPrototypeOf(u.byTool)).toBeNull();
+    expect(u.byTool["__proto__"]).toBe(1);
+    await Effect.runPromise(p.onRunEnd!({} as never, fakeCtx));
+    expect(p.usage(fakeCtx.runId)).toBeUndefined();
+  });
 });
