@@ -59,9 +59,10 @@ All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version t
   notice telling the model to finish now without more tools; `RunResult.wrapUp`
   says whether the run then wrapped up in time or was cut off. New hard budget
   `quota.maxTokens`; `QuotaExceededError.dimension` gains `"tokens"`.
-  `HarnessDeps.now` is the clock for the wall-clock threshold. A validated
-  final answer whose own call crosses a cost or token budget wins (`success`,
-  `RunResult.wrapUp.overshoot`). **Breaking for exhaustive switches:** the new
+  `HarnessDeps.now` is the clock for the wall-clock threshold. Once the warning fired, a validated final answer wins over a
+  budget breach caused by its own call (`success`; a cost or token excess is
+  recorded on `RunResult.wrapUp.overshoot`); without `wrapUp`, any breach ends
+  the run `quota` as before. **Breaking for exhaustive switches:** the new
   `"tokens"` value of `QuotaExceededError.dimension` and the new
   `budget_warning` kind of `HarnessEvent`.
 

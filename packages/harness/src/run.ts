@@ -700,6 +700,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         // just completed keeps its output: the cap is a budget, not a
         // tripwire on a turn that produced a valid answer.
         if (maxTurns !== undefined && turn >= maxTurns) {
+          if (!quotaBreach.value) breachMessage.value = lastAssistantMsg.value;
           tripQuota({ dimension: "turns", limit: maxTurns, observed: turn });
         }
       }
@@ -1087,6 +1088,8 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     const finalText = lastAssistant.text;
     // A cost/token breach forgiven because the final answer validated (see below).
     let overshoot: QuotaBreach | null = null;
+    // The breach was forgiven (see below): the run ends on its answer.
+    let forgiven = false;
     /** The last assistant message is a final answer (no tool call) that passes the output contract. */
     const finalAnswerValidates = (): boolean => {
       const content = (
@@ -1113,32 +1116,34 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       // budget must not be reported as success). Then loop errors, then the
       // output check.
       //
-      // One exception, under `quota.wrapUp`: when the cost/token breach was
-      // caused by the run's FINAL answer (the call that ended the loop: no
-      // tool call) and that answer validates, the answer wins, as with the
-      // turn budget ("a budget, not a tripwire"). The run is `success`, the
-      // overshoot is recorded on `RunResult.wrapUp.overshoot`, and the
-      // `postSuccess` lifecycle is skipped (the budget is spent). An ongoing
-      // run (the breaching call asked for tools) or an unvalidated answer
-      // still ends `quota`.
+      // One exception, only under `quota.wrapUp` (once the warning fired): when
+      // the breach was caused by the run's FINAL answer (the call that ended
+      // the loop: no tool call) and that answer validates, the answer wins
+      // ("a budget, not a tripwire"). The run is `success` and the `postSuccess`
+      // lifecycle is skipped (the budget is spent). A cost/token breach is an
+      // overshoot, recorded on `RunResult.wrapUp.overshoot`; reaching the turn
+      // cap on the answer turn is not an overshoot (that turn was allowed). An
+      // ongoing run (the breaching call asked for tools) or an unvalidated
+      // answer still ends `quota`. Without wrap-up, any breach wins.
       const breach = quotaBreach.value;
       if (
         breach &&
         wrapUpFired.value &&
-        (breach.dimension === "cost" || breach.dimension === "tokens") &&
+        breach.dimension !== "duration" &&
         breachMessage.value !== null &&
         breachMessage.value === lastAssistantMsg.value &&
         finalAnswerValidates()
       ) {
-        overshoot = breach;
+        forgiven = true;
+        if (breach.dimension !== "turns") overshoot = breach;
       }
-      if (breach && !overshoot) {
+      if (breach && !forgiven) {
         status = "quota";
         errorOut = {
           tag: "QuotaExceededError",
           message: `${breach.dimension} budget exceeded (limit ${breach.limit}, observed ${breach.observed})`,
         };
-      } else if (loopError && !overshoot) {
+      } else if (loopError && !forgiven) {
         status = "error";
         errorOut = { tag: "LoopError", message: (loopError as Error).message };
       } else if (finalFailure) {
@@ -1173,7 +1178,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // are post-processing (lint, commit, …).
     if (
       status === "success" &&
-      !overshoot &&
+      !forgiven &&
       spec.lifecycle?.postSuccess &&
       spec.lifecycle.postSuccess.length > 0 &&
       finalMessages.length > 0
@@ -1348,7 +1353,8 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         ...(overshoot && status === "success"
           ? {
               overshoot: {
-                dimension: overshoot.dimension,
+                // Only cost/token breaches are ever forgiven (see the post-loop rule).
+                dimension: overshoot.dimension as "cost" | "tokens",
                 limit: overshoot.limit,
                 observed: overshoot.observed,
               },

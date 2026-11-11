@@ -331,4 +331,17 @@ describe("quota.wrapUp", () => {
     expect(invalid.result.wrapUp?.outcome).toBe("cut_off");
     expect(invalid.result.wrapUp?.overshoot).toBeUndefined();
   });
+
+  test("turn threshold: the notice starts on turn min(ceil(at x maxTurns), maxTurns - 1), at least turn 1", async () => {
+    const firstNotice = (seen: string[][]) =>
+      seen.findIndex((t) => t.some((m) => m.includes("Budget notice"))) + 1; // 1-based turn
+    // maxTurns 10, at 0.5: turn 5.
+    expect(firstNotice((await run({ maxTurns: 10, wrapUp: { at: 0.5 } })).seen)).toBe(5);
+    // maxTurns 4, default 0.8: ceil(3.2) = 4, capped at maxTurns - 1 = 3.
+    expect(firstNotice((await run({ maxTurns: 4, wrapUp: {} })).seen)).toBe(3);
+    // maxTurns 1: the first and only call already carries the notice.
+    const one = await run({ maxTurns: 1, wrapUp: {} });
+    expect(firstNotice(one.seen)).toBe(1);
+    expect(one.result.status).toBe("success");
+  });
 });

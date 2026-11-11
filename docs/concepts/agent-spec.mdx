@@ -94,9 +94,10 @@ quota: { maxTurns: 12, maxTokens: 200_000, maxCostUsd: 0.5, wrapUp: { at: 0.8 } 
 
 Once any budget is `at` spent (default 0.8), every following model call carries a closing user
 message: the budget is nearly spent, do not call more tools, answer with what you have. For
-turns the threshold is `ceil(at × maxTurns)` completed turns, but never later than `maxTurns - 1`,
-so the notice arrives at the last allowed turn at the latest; with `maxTurns: 1` that is turn 0,
-so the first (and only) call already carries it. A `budget_warning` event (`dimension`, `limit`, `used`)
+turns, the notice starts on the turn about to begin whose number (1-based) is
+`min(ceil(at × maxTurns), maxTurns - 1)`, and on turn 1 if that is below 1: so it arrives no later
+than the second-to-last allowed turn, leaving at least one turn to answer in. With `maxTurns: 1`
+the first and only call already carries it (and an answer on that turn still counts, see below). A `budget_warning` event (`dimension`, `limit`, `used`)
 is emitted once. `wrapUp.message` replaces the default text.
 
 - **Outcome.** `RunResult.wrapUp` (`dimension`, `limit`, `used`, `outcome?`, `overshoot?`) is
@@ -105,13 +106,15 @@ is emitted once. `wrapUp.message` replaces the default text.
 - **Bounded.** The wrap-up turns run inside the same hard limits: a model that ignores the
   notice, or keeps calling tools, is cut off as before (`cut_off`). Set `at` low enough that
   one more call fits in the remainder.
-- **The answer wins over its own overshoot.** If the final answer's own call crosses
-  `maxTokens` or `maxCostUsd` (the call that ends the run, with no tool call) and the answer
-  passes the output contract, the run is `success` with `outcome: "wrapped_up"` and
-  `wrapUp.overshoot` (`dimension`, `limit`, `observed`) records the excess. This is the turn
-  budget's rule: a budget, not a tripwire on a turn that produced a valid answer. The
-  `postSuccess` lifecycle is skipped in that case (the budget is spent). An answer that fails
-  the output schema, or a breaching call that asked for tools, still ends `quota`.
+- **The answer wins over its own breach.** Once the warning fired, if the run's final answer
+  (the call that ends the run, with no tool call) passes the output contract, it wins over a
+  budget breach caused by that same call: the run is `success` with `outcome: "wrapped_up"`.
+  For `maxTokens` and `maxCostUsd` this is an overshoot and `wrapUp.overshoot` (`dimension`,
+  `limit`, `observed`) records the excess; reaching `maxTurns` on the answer turn is not an
+  overshoot (that turn was allowed). The `postSuccess` lifecycle is skipped in that case (the
+  budget is spent). An answer that fails the output schema, or a breaching call that asked for
+  tools, still ends `quota`. This forgiveness applies only when wrap-up fired: without
+  `quota.wrapUp` any breach ends the run `quota`, as before.
 - **Output schema.** The wrap-up answer is decoded and validated like any other; output
   retries still apply and still count against the budgets.
 - **Operator text.** The notice is the spec's `wrapUp.message` or the built-in default, never

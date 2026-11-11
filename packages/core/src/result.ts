@@ -37,11 +37,7 @@ export interface RunResult<TOutput = unknown> {
     limit: number;
     used: number;
     outcome?: "wrapped_up" | "cut_off";
-    overshoot?: {
-      dimension: "cost" | "tokens" | "turns" | "duration";
-      limit: number;
-      observed: number;
-    };
+    overshoot?: { dimension: "cost" | "tokens"; limit: number; observed: number };
   };
   /** Tool ids invoked during the run, in order. Duplicates preserved. */
   toolCalls: ReadonlyArray<string>;
