@@ -9,24 +9,25 @@ plugins observe via `onEvent`.
 
 ## The union
 
-| kind | when | payload |
-| --- | --- | --- |
-| `run_start` | first thing emitted | `agentId`, `specHash` |
-| `input_validated` | input passed `inputSchema` | — |
-| `turn_start` | each pi turn | `turn` (1-based) |
-| `llm_call` | model dispatch | `modelName`, `reasoning?` |
-| `thinking` | model emits thinking block | `text` |
-| `assistant_text` | model emits final text per turn | `text` |
-| `tool_call_start` | pi dispatches a tool | `toolUseId`, `toolName`, `input` |
-| `tool_call_end` | tool returns | `toolUseId`, `toolName`, `result`, `durationMs` |
-| `usage` | per-call accounting | `usage: { inputTokens, outputTokens, costUsd? }` |
-| `compaction` | history [compacted](/guides/compaction) | `turn`, `trigger`, `strategy`, `beforeTokens`, `afterTokens`, `collapsedRange`, `summarized` |
-| `subagent_start` | child spawn | `childRunId`, `agentId` |
-| `subagent_end` | child completes | `childRunId`, `status` |
-| `output_validated` | output passed `outputSchema` | — |
-| `output_retry` | output failed; retrying | `attempt`, `reason` |
-| `run_end` | terminal | `status` |
-| `error` | tagged error | `tag`, `message` |
+| kind                | when                                              | payload                                                                                                                         |
+| ------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `run_start`         | first thing emitted                               | `agentId`, `specHash`                                                                                                           |
+| `input_validated`   | input passed `inputSchema`                        | —                                                                                                                               |
+| `turn_start`        | each pi turn                                      | `turn` (1-based)                                                                                                                |
+| `llm_call`          | model dispatch                                    | `modelName`, `reasoning?`                                                                                                       |
+| `thinking`          | model emits thinking block                        | `text`                                                                                                                          |
+| `assistant_text`    | model emits final text per turn                   | `text`                                                                                                                          |
+| `tool_call_start`   | pi dispatches a tool                              | `toolUseId`, `toolName`, `input`                                                                                                |
+| `tool_call_end`     | tool returns                                      | `toolUseId`, `toolName`, `result`, `durationMs`                                                                                 |
+| `usage`             | per-call accounting                               | `usage: { inputTokens, outputTokens, costUsd? }`                                                                                |
+| `compaction`        | history [compacted](/guides/compaction)           | `turn`, `trigger`, `strategy`, `beforeTokens`, `afterTokens`, `collapsedRange`, `summarized`                                    |
+| `subagent_start`    | child spawn                                       | `childRunId`, `agentId`                                                                                                         |
+| `subagent_end`      | child completes                                   | `childRunId`, `status`                                                                                                          |
+| `output_validated`  | output passed `outputSchema`                      | —                                                                                                                               |
+| `output_retry`      | output failed; retrying                           | `attempt`, `reason`                                                                                                             |
+| `run_end`           | terminal                                          | `status`                                                                                                                        |
+| `provider_failover` | the provider chain reacted to a failed model call | `action` (`retry` / `failover` / `exhausted`), `from`, `to`, `failureClass`, `status`, `code?`, `waitMs?` (never provider text) |
+| `error`             | tagged error                                      | `tag`, `message`                                                                                                                |
 
 Every event has `runId`, `ts`. Turn-scoped events also have `turn`.
 

@@ -80,3 +80,20 @@ Merge user overrides on top of `DEFAULT_ALIASES`. Later layers win.
 
 First match wins. To add a provider, set the env var and reference it
 in your spec / alias.
+
+## `createProviderChain`
+
+```ts
+function createProviderChain(opts: {
+  providers: string[];                              // pi-ai provider names, in order
+  models?: Record<string, string>;                  // spec model name -> canonical id
+  ids?: Record<string, Record<string, string | null>>; // canonical id -> id per provider
+  overrides?: Record<string, Partial<Model>>;       // per-provider pi-ai model patch
+  extraModels?: Model[];                            // not in pi-ai's registry yet
+  apiKeys?: Record<string, string>; env?: Record<string, string | undefined>;
+  maxRateLimitWaitMs?: number;                      // default 10_000
+  includeProviderText?: boolean;                    // default false
+}): ProviderChain;
+```
+
+See the [provider chain guide](/guides/provider-chain).

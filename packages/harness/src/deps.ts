@@ -1,6 +1,6 @@
 import type { CommandRegistry } from "@droveragent/commands";
 import type { McpRuntime } from "@droveragent/mcp";
-import type { ResolveOptions } from "@droveragent/model";
+import type { ProviderChain, ResolveOptions } from "@droveragent/model";
 import type { SandboxAdapter } from "@droveragent/sandbox";
 import type { MemoryAdapter } from "@droveragent/memory";
 import type { SkillRegistry } from "@droveragent/skills";
@@ -68,6 +68,17 @@ export interface HarnessDeps {
    * event stream.
    */
   streamFn?: StreamFn;
+  /**
+   * Ordered providers with failover (`createProviderChain` in
+   * `@droveragent/model`). Every model call of the run, the compaction
+   * summariser and subagents included, goes through the chain; a classified
+   * provider failure continues the SAME call on the next provider, so the
+   * conversation and tool state are untouched. Failovers appear as
+   * `provider_failover` events. The chain's models are added to
+   * `preResolvedModels` (explicit entries win). Wins over `streamFn`: a chain
+   * provider that needs a custom transport sets its own `stream`.
+   */
+  providers?: ProviderChain;
   /**
    * Patch the provider request body immediately before it is sent. pi calls it
    * with the built params and the model; return the replacement payload, or

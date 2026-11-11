@@ -74,7 +74,7 @@ for (const [name, factory] of impls) {
         }),
       );
       const future = {
-        kind: "provider_failover",
+        kind: "some_future_kind",
         runId: "run_2",
         ts: 5,
         from: "a",
@@ -88,7 +88,7 @@ for (const [name, factory] of impls) {
       const [row] = await Effect.runPromise(s.listEvents("run_2"));
       expect(readEvent(row!.payload)).toEqual({
         unknown: true,
-        kind: "provider_failover",
+        kind: "some_future_kind",
         reason: "unknown_kind",
         raw: future,
       });

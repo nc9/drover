@@ -51,6 +51,8 @@ export const REQUIRED_FIELDS: Readonly<Record<Kind, Readonly<Record<string, Fiel
   },
   subagent_start: { childRunId: "string", agentId: "string" },
   subagent_end: { childRunId: "string", status: "string" },
+  // `to` and `status` are nullable, so not listed; `code` is optional (allow-listed when present).
+  provider_failover: { action: "string", from: "string", failureClass: "string" },
   output_validated: {},
   output_retry: { attempt: "number", reason: "string" },
   run_end: { status: "string" },
@@ -77,6 +79,10 @@ export const KNOWN_EVENT_KINDS: ReadonlyArray<Kind> = Object.keys(REQUIRED_FIELD
  * Also outside text, but not marked (the reader and summary key on them) and not redactable:
  * `toolName` (model-chosen, or from an MCP server), the summary's `byTool` / `usageByProvider` keys,
  * and a usage event's `provider` / `model`. Escape them when rendering.
+ *
+ * `provider_failover` is not marked: it carries no provider text. `from` / `to` are the chain's
+ * configured provider names, `failureClass` and `status` are the classifier's, and `code` is set
+ * only from an allow-list of known provider error codes.
  */
 export const UNTRUSTED_FIELDS: Readonly<Partial<Record<Kind, ReadonlyArray<string>>>> = {
   assistant_text: ["text"],

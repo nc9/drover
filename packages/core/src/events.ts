@@ -13,6 +13,23 @@ export interface Usage {
   costUsd?: number;
 }
 
+/**
+ * Why a provider call failed, as the provider chain classifies it. The table
+ * of which classes fail over lives in `@droveragent/model` (`FAILOVER`).
+ */
+export type ProviderFailureClass =
+  | "credits_exhausted"
+  | "key_refused"
+  | "region_refused"
+  | "forbidden"
+  | "rate_limited"
+  | "provider_error"
+  | "timeout"
+  | "malformed_response"
+  | "model_unavailable"
+  | "invalid_request"
+  | "other";
+
 /** Tool invocation result envelope. Mirrors pi-agent-core's shape. */
 export interface ToolResult {
   /** Stringified content returned to the model. */
@@ -86,7 +103,39 @@ export type HarnessEvent =
       trust?: "trusted" | "untrusted";
       ts: number;
     }
-  | { kind: "usage"; runId: string; turn: number; usage: Usage; ts: number }
+  | {
+      kind: "usage";
+      runId: string;
+      turn: number;
+      usage: Usage;
+      /** Provider that served the call (`openrouter`, `cloudflare-ai-gateway`, ...), when the message names it. */
+      provider?: string;
+      /** Model id as the serving provider named it. */
+      model?: string;
+      ts: number;
+    }
+  /**
+   * The provider chain reacted to a failed model call: `retry` the same
+   * provider after a wait (rate limit), `failover` to the next provider, or
+   * `exhausted` (no provider left, or the class does not fail over). Carries
+   * the failure class and status, never the provider's text (which can quote
+   * the prompt).
+   */
+  | {
+      kind: "provider_failover";
+      runId: string;
+      action: "retry" | "failover" | "exhausted";
+      from: string;
+      /** Next provider; null for `retry` (same provider) and `exhausted`. */
+      to: string | null;
+      failureClass: ProviderFailureClass;
+      status: number | null;
+      /** Allow-listed provider error code, e.g. `unsupported_country_region_territory`. */
+      code?: string;
+      /** Wait before a `retry`, in ms. */
+      waitMs?: number;
+      ts: number;
+    }
   | {
       kind: "compaction";
       runId: string;

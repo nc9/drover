@@ -1,0 +1,110 @@
+---
+title: Provider chain and failover
+description: An ordered list of pi-ai providers for a model. A classified failure continues the same call on the next one, mid-run included.
+---
+
+A model call can fail for reasons unrelated to the model: the account is out of
+credits, the key was rotated, a rate limit, an outage, a regional refusal. A
+**provider chain** is an ordered list of pi-ai providers. When a call fails in a
+way another provider could fix, the same call (same messages, same tool results)
+goes to the next provider. Nothing is lost: the conversation lives in the harness.
+
+```ts
+import { runAgent, createProviderChain } from "@droveragent/facade";
+
+const providers = createProviderChain({
+  providers: ["openrouter", "cloudflare-ai-gateway"], // pi-ai provider names, in order
+  models: { "gpt-mini": "openai/gpt-4o-mini" },       // spec model name -> canonical id
+});
+
+const handle = runAgent(spec, input, { providers }); // spec.model = "gpt-mini"
+for await (const e of handle.events) {
+  if (e.kind === "provider_failover") console.log(e.from, "->", e.to, e.failureClass, e.status);
+}
+console.log((await handle.result).usageByProvider);
+```
+
+There is no adapter to learn. Each provider is pi-ai's own registry entry (base URL,
+API, request quirks), the key comes from the resolver's env vars (`OPENROUTER_API_KEY`,
+`CLOUDFLARE_API_KEY`), and the gateway's `{CLOUDFLARE_ACCOUNT_ID}` /
+`{CLOUDFLARE_GATEWAY_ID}` come from `env`. The chain covers every model call of the
+run: the main loop, subagents and the compaction summariser.
+
+## Providers and models are data
+
+- **Ids.** A canonical id is OpenRouter style. Per provider it defaults to the same
+  id, except `cloudflare-ai-gateway`, which drops a leading `openai/` (pi-ai lists its
+  OpenAI models unprefixed). Anything else is the `ids` table:
+  `ids: { "openai/gpt-4o-mini": { "cloudflare-ai-gateway": "gpt-4o-mini" } }`; `null`
+  means "this provider does not serve it".
+- **Missing models.** A provider whose registry has no entry for the id is skipped
+  (not a failure). The supported path is `extraModels`: a pi-ai `Model` object for
+  that provider and id, checked before the registry, so no drover or pi-ai release is
+  needed. A pi-ai bump that adds the entry later makes the `extraModels` entry
+  redundant, not wrong.
+- **Quirks.** A per-provider patch of the pi-ai model: `overrides: { "cloudflare-ai-gateway":
+  { compat: { maxTokensField: "max_completion_tokens" } } }`.
+
+## What fails over
+
+Classification is **status first, structured fields only**. A class that can bench a
+provider (credits, key, region) needs the HTTP status plus, where the class says so,
+a field of the parsed error body. Message text is never searched for words: provider
+errors echo request content (a rejected prompt, a page title), so text an outsider
+controls could otherwise bench a provider. Two things are read from the text, because
+over the plain transport pi-ai keeps nothing else: the leading status code of the SDK's
+message (`"402 ..."`), and on a 429 only, a "Retry-After: N" / "try again in Ns" hint
+(at most one wait of `maxRateLimitWaitMs`, default 10 s).
+
+| Class | Needs | Fails over | Retried in place | Skipped for the rest of the run |
+|---|---|---|---|---|
+| `credits_exhausted` | 402; 403 + `limit_source: openrouter_key_limit`; 429 + `insufficient_quota` | yes | no | yes |
+| `key_refused` | 401; 403 + `code: invalid_api_key` | yes | no | yes |
+| `region_refused` | 403 + `code: unsupported_country_region_territory` | yes | never | yes |
+| `forbidden` | any other 403 (no structured code) | yes | no | **no** |
+| `rate_limited` | 429 | yes | once, if `Retry-After` is at most `maxRateLimitWaitMs` | no |
+| `provider_error` | 5xx | yes | no | no |
+| `timeout` | 504, 408, the SDK's "Request timed out." / "Connection error." | yes | no | no |
+| `malformed_response` | an empty or truncated stream | yes | no | no |
+| `model_unavailable` | 404 | yes | no | no |
+| `invalid_request` | 400, 413, 422 | **no** | no | no |
+| `other` | no usable status | yes, this call only | no | no |
+
+`invalid_request` ends the chain: the same request would fail the same way on the next
+provider. A model answer that fails the output schema is not a provider failure; the
+chain never sees it. "Skipped" means tried last for later calls of the same run; it is
+per run and per provider, nothing is shared.
+
+A bare 403 is `forbidden`, not `key_refused`: over the plain transport a regional refusal,
+a moderation refusal and a bad key all arrive as `403 <text>`, and only a structured field tells
+them apart. It fails over, but the provider is asked again on the next call of the run.
+
+If every provider fails, the call ends as an error carrying all failures:
+`all providers failed: openrouter: credits_exhausted (402) | cloudflare-ai-gateway: key_refused (401)`
+(status and code only; `includeProviderText: true` adds the providers' own text, which can quote
+the prompt) and the same fields in the message's `diagnostics`. The run then ends `status: "error"`
+with a `ProviderError` built from those diagnostics:
+`provider error 401 (openrouter: credits_exhausted 402; cloudflare-ai-gateway: key_refused 401)`.
+
+A stream that fails **after content was delivered** is not replayed on another provider (it would
+duplicate output); the call ends as an error with the same class-and-status text and `diagnostics`
+(never the provider's text unless `includeProviderText`). A failure before the first content event
+is always eligible.
+
+## Trace and usage
+
+Every reaction is a `provider_failover` event (`retry` / `failover` / `exhausted`, from, to,
+failureClass, status, code, waitMs): class and status, never provider text. `usage` events and
+`RunResult.usageByProvider` name the serving provider. `usageByProvider` covers the calls of this
+invocation: a resumed run starts it empty (the cumulative `usage` is restored from the checkpoint).
+
+## Limits
+
+- pi-ai flattens a failed call to the SDK's text (`"403 <message>"`) and drops the response body and
+  headers, and `onResponse` is not called for non-2xx. Over the plain transport only the leading status
+  survives: a region refusal arrives as a 403 and is classed `forbidden` (it fails over, is not retried
+  in place and is not benched), and a real `Retry-After` header is invisible. A custom `streams` entry that throws
+  an error with `status` and `error: { code }` gets the precise class.
+- The OpenAI client's own retries are off (`maxRetries: 0`): failing over is the retry.
+- A failed attempt the provider still billed is not counted.
+- Not verified against live OpenRouter or Cloudflare endpoints: tests use local servers.

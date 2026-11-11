@@ -26,6 +26,23 @@ All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version t
   first assistant message. An empty end after tool work with output tokens
   stays a success.
 
+### Added
+
+- Provider chain with failover (`createProviderChain` in `@droveragent/model`;
+  `RunOptions.providers` / `HarnessDeps.providers`). An ordered list of pi-ai provider
+  names (`["openrouter", "cloudflare-ai-gateway"]`) resolved from pi-ai's registry; ids,
+  per-provider quirks and missing models are data (`ids`, `overrides`, `extraModels`). A
+  failure classified status-first from structured fields (never message text) continues
+  the same call on the next provider, first call or mid-run; credits, key and region skip the
+  provider for the rest of the run, a bare 403 (`forbidden`) does not. When every provider
+  fails the run ends `ProviderError` listing each attempt's class and status. See
+  `docs/guides/provider-chain.mdx`.
+- `provider_failover` event (`retry` / `failover` / `exhausted`, with failure
+  class and status, never provider text); `usage` events carry `provider` and
+  `model`; `RunResult.usageByProvider` splits usage per serving provider.
+- `makeSummarizer` takes an optional transport; under a chain the compaction
+  summariser fails over too.
+
 ## 0.2.0 — 2026-08-25
 
 `@droveragent/harness` + `@droveragent/facade` only; every other package is

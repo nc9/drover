@@ -14,7 +14,7 @@
  * to call a tool instead of writing the summary.
  */
 import { COMPACTION_SUMMARY_MARKER } from "@droveragent/core";
-import { completeSimple } from "@mariozechner/pi-ai";
+import { completeSimple, type streamSimple } from "@mariozechner/pi-ai";
 import type { KnownApi, Message, Model, SimpleStreamOptions } from "@mariozechner/pi-ai";
 
 import { providerError } from "../provider-failure.ts";
@@ -78,11 +78,18 @@ export function makeSummarizer(
   apiKey: string,
   maxTokens?: number,
   onPayload?: SimpleStreamOptions["onPayload"],
+  /** Transport for the call; defaults to pi-ai's. A provider chain passes its own. */
+  streamFn?: (
+    ...args: Parameters<typeof completeSimple>
+  ) => ReturnType<typeof streamSimple> | Promise<ReturnType<typeof streamSimple>>,
 ): SummarizeFn {
   return async (head, summaryPrompt, signal) => {
     const transcript = renderTranscript(head);
     const userContent = `${transcript}\n\n---\n\n${summaryPrompt}`;
-    const reply = await completeSimple(
+    const call = streamFn
+      ? async (...a: Parameters<typeof completeSimple>) => (await streamFn(...a)).result()
+      : completeSimple;
+    const reply = await call(
       model,
       {
         systemPrompt: SUMMARY_SYSTEM_PROMPT,

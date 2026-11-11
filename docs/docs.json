@@ -38,6 +38,7 @@
           "guides/subagents",
           "guides/pause-resume",
           "guides/compaction",
+          "guides/provider-chain",
           "guides/runtime",
           "guides/sandboxes",
           "guides/storage",

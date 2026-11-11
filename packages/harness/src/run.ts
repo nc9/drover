@@ -38,7 +38,7 @@ import { skillLoadTool, skillResourceTool } from "@droveragent/skills";
 import type { CheckpointRow } from "@droveragent/storage";
 import { builtinsById, type BuiltinToolId } from "@droveragent/tools";
 import { Effect } from "effect";
-import { runAgentLoop, runAgentLoopContinue } from "@mariozechner/pi-agent-core";
+import { runAgentLoop, runAgentLoopContinue, type StreamFn } from "@mariozechner/pi-agent-core";
 import { taskTool, DEFAULT_MAX_DEPTH, DEFAULT_FAN_OUT } from "./task-tool.ts";
 import {
   initCompactionState,
@@ -356,11 +356,22 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       }
     }
 
+    // A provider chain brings its own models (explicit `preResolvedModels` win)
+    // and its own transport, bound to this run's event stream.
+    const preResolvedModels = deps.providers
+      ? new Map([...deps.providers.preResolvedModels(), ...(deps.preResolvedModels ?? [])])
+      : deps.preResolvedModels;
+    const runStreamFn: StreamFn | undefined = deps.providers
+      ? (deps.providers.forRun((n) =>
+          safeEmit({ kind: "provider_failover", runId: ctx.runId, ...n, ts: Date.now() }),
+        ) as StreamFn)
+      : deps.streamFn;
+
     const resolved = yield* resolveModel(spec.model, {
       runId: ctx.runId,
       ...(deps.modelAliases ? { aliases: deps.modelAliases } : {}),
       ...(deps.env ? { env: deps.env } : {}),
-      ...(deps.preResolvedModels ? { preResolved: deps.preResolvedModels } : {}),
+      ...(preResolvedModels ? { preResolved: preResolvedModels } : {}),
     });
 
     const tools = composeTools(spec, deps, plugins, safeEmit, ctx.runId);
@@ -552,6 +563,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     const lastUsage: { value: Usage } = {
       value: resumeFrom ? { ...resumeFrom.usage } : { inputTokens: 0, outputTokens: 0 },
     };
+    // Usage split by serving provider, from the assistant messages' `provider`.
+    // Null prototype: provider names are data (`__proto__` must be a plain key).
+    const usageByProvider: Record<string, Usage> = Object.create(null) as Record<string, Usage>;
     let retriesUsed = resumeFrom ? resumeFrom.retriesUsed : 0;
     const outputRetries = spec.outputRetries ?? DEFAULT_OUTPUT_RETRIES;
     const quota = spec.quota ?? {};
@@ -639,6 +653,23 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           const cost = (lastUsage.value.costUsd ?? 0) + (u.cost?.total ?? 0);
           if (cost > 0) next.costUsd = cost;
           lastUsage.value = next;
+          const served = (e.message as { provider?: unknown }).provider;
+          if (typeof served === "string" && (u.input || u.output || u.cacheRead || u.cacheWrite)) {
+            const prev = Object.hasOwn(usageByProvider, served)
+              ? usageByProvider[served]!
+              : { inputTokens: 0, outputTokens: 0 };
+            const slot: Usage = {
+              inputTokens: prev.inputTokens + (u.input ?? 0),
+              outputTokens: prev.outputTokens + (u.output ?? 0),
+            };
+            const cr = (prev.cacheReadTokens ?? 0) + (u.cacheRead ?? 0);
+            if (cr > 0) slot.cacheReadTokens = cr;
+            const cw = (prev.cacheWriteTokens ?? 0) + (u.cacheWrite ?? 0);
+            if (cw > 0) slot.cacheWriteTokens = cw;
+            const c = (prev.costUsd ?? 0) + (u.cost?.total ?? 0);
+            if (c > 0) slot.costUsd = c;
+            usageByProvider[served] = slot;
+          }
           // Cost ceiling — checked once per model response, after the
           // running total is updated. Aborts mid-turn if a tool batch is
           // still pending.
@@ -789,14 +820,21 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           runId: ctx.runId,
           ...(deps.modelAliases ? { aliases: deps.modelAliases } : {}),
           ...(deps.env ? { env: deps.env } : {}),
-          ...(deps.preResolvedModels ? { preResolved: deps.preResolvedModels } : {}),
+          ...(preResolvedModels ? { preResolved: preResolvedModels } : {}),
         });
         summaryModel = summaryResolved.model;
         summaryApiKey = summaryResolved.apiKey;
       }
       // The summariser gets `deps.onPayload` too — a host that pins routing for
       // the run means the run, not just the main loop.
-      compactionSummarizer = makeSummarizer(summaryModel, summaryApiKey, undefined, deps.onPayload);
+      compactionSummarizer = makeSummarizer(
+        summaryModel,
+        summaryApiKey,
+        undefined,
+        deps.onPayload,
+        // Only a chain reroutes the summariser; a bare `streamFn` never did.
+        deps.providers ? runStreamFn : undefined,
+      );
     }
 
     // transformContext: pi calls this before each LLM call with the live
@@ -923,7 +961,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             loopConfig,
             sink as (e: PiEvent) => void,
             abortController.signal,
-            deps.streamFn,
+            runStreamFn,
           );
         } else {
           finalMessages = await runAgentLoop(
@@ -932,7 +970,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             loopConfig,
             sink as (e: PiEvent) => void,
             abortController.signal,
-            deps.streamFn,
+            runStreamFn,
           );
         }
       } catch (err) {
@@ -1084,7 +1122,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
               postLoopConfig,
               sink as (e: PiEvent) => void,
               abortController.signal,
-              deps.streamFn,
+              runStreamFn,
             );
           } catch (err) {
             loopError = err as Error;
@@ -1181,6 +1219,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     };
     if (output !== undefined) result.output = output;
     if (errorOut) result.error = errorOut;
+    if (Object.keys(usageByProvider).length > 0) result.usageByProvider = usageByProvider;
 
     // Run-level lifecycle: fire `onRunEnd` once, after the loop +
     // `postSuccess` and terminal resolution. Observation only — failures and

@@ -39,6 +39,7 @@
   "dependencies": {
     "@droveragent/core": "workspace:*",
     "@droveragent/harness": "workspace:*",
+    "@droveragent/model": "workspace:*",
     "@droveragent/sandbox": "workspace:*",
     "@droveragent/sandbox-just-bash": "workspace:*",
     "@droveragent/storage": "workspace:*",

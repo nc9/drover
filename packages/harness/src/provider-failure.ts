@@ -12,7 +12,33 @@ export type ProviderMessage = {
   errorMessage?: string;
   content?: ReadonlyArray<{ type?: string; text?: string; thinking?: string }>;
   usage?: { output?: number };
+  /** A provider chain's per-attempt failures (`type: "provider_failure"`): structured fields only. */
+  diagnostics?: ReadonlyArray<{ type?: string; details?: Record<string, unknown> }>;
 };
+
+/** Provider names are operator config; still, only a plain token goes into the message. */
+const NAME = /^[A-Za-z0-9._:/-]{1,64}$/;
+
+/**
+ * `provider: class status code` per chain failure, from the diagnostics' structured fields
+ * (provider name, failure class, status, allow-listed code). Never the provider's text.
+ * `status` is the last attempt's.
+ */
+function chainFailures(msg: ProviderMessage): { list: string; status: number | null } | null {
+  const parts: string[] = [];
+  let status: number | null = null;
+  for (const d of msg.diagnostics ?? []) {
+    if (d?.type !== "provider_failure" || !d.details) continue;
+    const { provider, failureClass, status: st, code } = d.details;
+    if (typeof provider !== "string" || !NAME.test(provider)) continue;
+    if (typeof failureClass !== "string" || !NAME.test(failureClass)) continue;
+    const s = typeof st === "number" && Number.isInteger(st) && st >= 100 && st <= 599 ? st : null;
+    const c = typeof code === "string" && NAME.test(code) ? code : null;
+    parts.push([`${provider}: ${failureClass}`, s, c].filter((v) => v !== null).join(" "));
+    status = s;
+  }
+  return parts.length > 0 ? { list: parts.join("; "), status } : null;
+}
 
 /** A run-ending provider failure: status-only message, HTTP status when known. */
 export interface ProviderFailure {
@@ -25,7 +51,9 @@ export interface ProviderFailure {
  * reports HTTP failures this way (it does not throw); the status is the leading
  * code of pi's message (`402 This request ...`). The raw text can quote prompt
  * content (a hostile page's words) and this message lands in events and
- * storage, so it is appended only when `includeText` is set.
+ * storage, so it is appended only when `includeText` is set. Under a provider
+ * chain the message carries `provider_failure` diagnostics and every attempt is
+ * listed: `provider error 401 (openrouter: credits_exhausted 402; cloudflare-ai-gateway: key_refused 401)`.
  */
 export function providerError(
   msg: ProviderMessage | null,
@@ -34,6 +62,14 @@ export function providerError(
   if (!msg || (msg.stopReason !== "error" && msg.stopReason !== "aborted")) return null;
   if (msg.stopReason === "aborted") return { message: "provider call aborted" };
   const raw = msg.errorMessage?.trim() ?? "";
+  const chain = chainFailures(msg);
+  if (chain) {
+    const head = `provider error${chain.status !== null ? ` ${chain.status}` : ""} (${chain.list})`;
+    return {
+      message: includeText && raw !== "" ? `${head}: ${raw}` : head,
+      ...(chain.status !== null ? { status: chain.status } : {}),
+    };
+  }
   const code = /^([45]\d\d)\b/.exec(raw)?.[1];
   const head = code ? `provider error ${code}` : "provider error";
   return {
@@ -92,8 +128,14 @@ export function scrubProviderErrorText(
     const head =
       pm.stopReason === "aborted"
         ? "aborted"
-        : (providerError({ stopReason: "error", errorMessage: pm.errorMessage }, false)?.message ??
-          "provider error");
+        : (providerError(
+            {
+              stopReason: "error",
+              errorMessage: pm.errorMessage,
+              ...(pm.diagnostics ? { diagnostics: pm.diagnostics } : {}),
+            },
+            false,
+          )?.message ?? "provider error");
     return { ...m, errorMessage: head } as AgentMessage;
   });
 }
