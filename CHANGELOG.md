@@ -43,6 +43,11 @@ All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version t
 - `makeSummarizer` takes an optional transport; under a chain the compaction
   summariser fails over too.
 
+- `@droveragent/eval`: `recordStream(realStreamFn, sink)` / `replayStream(recording)`
+  for recording provider responses and replaying them offline through
+  `HarnessDeps.streamFn`. Turns are keyed by call index with a request hash for
+  drift detection; recordings are JSON-serialisable (`createRecorder()`).
+
 ## 0.2.0 — 2026-08-25
 
 `@droveragent/harness` + `@droveragent/facade` only; every other package is
