@@ -101,3 +101,25 @@ Hash-routed pages:
 The timeline component renders the full event stream: assistant text in
 markdown, thinking blocks collapsed by default, tool cards expanding to
 show input + result.
+
+## Record and replay provider responses
+
+`@droveragent/eval` can record a run's model responses and replay them offline (no network, no cost) through the `streamFn` seam:
+
+```ts
+import { createRecorder, recordStream, replayStream } from "@droveragent/eval";
+
+const rec = createRecorder();
+await runAgentEffect({ ..., deps: { ...deps, streamFn: recordStream(realStreamFn, rec.sink) } });
+await Bun.write("run.json", JSON.stringify(rec.recording()));
+
+// later, in CI:
+const recording = JSON.parse(await Bun.file("run.json").text());
+await runAgentEffect({ ..., deps: { ...deps, streamFn: replayStream(recording) } });
+```
+
+Each turn stores a hash of its request; if the prompt, history or tools change, replay throws `ReplayDriftError` (or use `onDrift`).
+
+<Warning>
+A recording contains the full model responses and, through tool results echoed in them, whatever private data the run touched. Do not commit recordings of private data. Record against synthetic data, or scrub with `recordStream(real, sink, { redact })`.
+</Warning>

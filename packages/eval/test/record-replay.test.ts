@@ -116,7 +116,11 @@ const run = async (systemPrompt: string, streamFn: StreamFn) => {
 
 /** Events without wall-clock fields, so two runs compare equal. */
 const stable = (events: HarnessEvent[]): unknown =>
-  JSON.parse(JSON.stringify(events, (k, v) => (k === "ts" || k === "timestamp" ? undefined : v)));
+  JSON.parse(
+    JSON.stringify(events, (k, v) =>
+      k === "ts" || k === "timestamp" || k === "durationMs" ? undefined : v,
+    ),
+  );
 
 const record = async (): Promise<{
   recording: StreamRecording;
@@ -200,5 +204,27 @@ describe("record / replay", () => {
       messages: [],
     });
     expect((await replayed.result()).errorMessage).toBe("provider down");
+  });
+
+  test("redact hook scrubs the stored turn but not what the live run sees", async () => {
+    const rec = createRecorder();
+    const fake = makeFake();
+    const scrub = (v: unknown): unknown =>
+      JSON.parse(JSON.stringify(v).replaceAll("the answer", "[redacted]"));
+    const first = await run(
+      "sys",
+      recordStream(fake.fn, rec.sink, { redact: (t) => scrub(t) as typeof t }),
+    );
+    // Live run saw the real text.
+    expect((first.result as { right: { finalText: string } }).right.finalText).toBe("the answer");
+    // The stored recording does not contain it.
+    const stored = JSON.stringify(rec.recording());
+    expect(stored).not.toContain("the answer");
+    expect(stored).toContain("[redacted]");
+    // Replaying it yields the redacted text.
+    const replayed = await run("sys", replayStream(rec.recording()));
+    expect((replayed.result as { right: { finalText: string } }).right.finalText).toBe(
+      "[redacted]",
+    );
   });
 });

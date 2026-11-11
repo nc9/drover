@@ -14,6 +14,12 @@
  * `timestamp` fields excluded). Replay compares it, so a changed prompt or tool
  * result fails loudly instead of silently replaying a stale answer.
  *
+ * WARNING: a recording holds the full model RESPONSES (and its hash is derived
+ * from the full prompt). If the run touched private data (customer content,
+ * fetched pages, secrets in tool output), the recording contains it. Do not
+ * commit such recordings; scrub with `recordStream`'s `redact` option or record
+ * against synthetic data only.
+ *
  * Call-index keying assumes model calls happen in a deterministic order: a run
  * with parallel subagents, whose calls interleave, is not replayable.
  */
@@ -134,13 +140,28 @@ const syntheticError = (model: StreamArgs[0], err: unknown): AssistantMessageEve
   } satisfies AssistantMessage,
 });
 
+export interface RecordOptions {
+  /**
+   * Scrub a turn before it reaches the sink (the live run still sees the
+   * original events). Receives a deep copy; return the turn to store. Keep
+   * `index` and `requestHash`. A redacted recording replays redacted text, so
+   * outputs that depend on the original will differ; use it for recordings
+   * you intend to share, and replay them with `onDrift` as needed.
+   */
+  redact?: (turn: RecordedTurn) => RecordedTurn;
+}
+
 /**
  * Wrap a real `streamFn`: events pass through untouched while each completed
  * call is handed to `sink` (before its terminal event is delivered, so the
  * recording is complete by the time the run ends). Each wrapper instance
  * numbers its own calls from 0 — make one per run.
  */
-export const recordStream = (real: StreamFn, sink: RecordingSink): StreamFn => {
+export const recordStream = (
+  real: StreamFn,
+  sink: RecordingSink,
+  recordOptions: RecordOptions = {},
+): StreamFn => {
   let next = 0;
   return (model, context, options) => {
     const index = next++;
@@ -153,7 +174,9 @@ export const recordStream = (real: StreamFn, sink: RecordingSink): StreamFn => {
         events.push(e);
         if (isTerminal(e)) {
           finished = true;
-          await sink({ index, requestHash, modelId: model.id, events });
+          const turn: RecordedTurn = { index, requestHash, modelId: model.id, events };
+          // `events` is also what the live run consumes: hand redact a copy.
+          await sink(recordOptions.redact ? recordOptions.redact(structuredClone(turn)) : turn);
         }
         out.push(e);
       };

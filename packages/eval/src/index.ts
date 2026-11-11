@@ -10,6 +10,7 @@ export {
   hashRequest,
   recordStream,
   replayStream,
+  type RecordOptions,
   type RecordedTurn,
   type RecordingSink,
   type ReplayOptions,
