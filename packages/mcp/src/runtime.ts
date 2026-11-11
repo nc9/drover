@@ -127,9 +127,10 @@ function buildTransport(cfg: McpServerConfig): Transport {
   // SDK's `Transport.sessionId` is typed `string` but the StreamableHTTP
   // implementation populates it lazily as `string | undefined`. Cast around
   // the exactOptionalPropertyTypes mismatch.
-  return new StreamableHTTPClientTransport(new URL(cfg.url), {
-    ...(cfg.headers ? { requestInit: { headers: { ...cfg.headers } } } : {}),
-  }) as unknown as Transport;
+  return new StreamableHTTPClientTransport(
+    new URL(cfg.url),
+    cfg.headers ? { requestInit: { headers: { ...cfg.headers } } } : {},
+  ) as unknown as Transport;
 }
 
 interface McpToolDescriptor {
