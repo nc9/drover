@@ -30,6 +30,37 @@ export interface NoneSandboxOptions {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+// POSIX only: each exec gets its own process group so a timeout/abort can
+// kill the whole tree. Windows has no process groups (and `detached` opens a
+// new console there), so it keeps killing the direct child only.
+const USE_PROCESS_GROUPS = process.platform !== "win32";
+
+// Process groups of execs still running. A detached group no longer shares
+// the host's group, so it would outlive the host (process.exit, Ctrl-C);
+// one exit hook kills whatever is still running.
+const liveGroups = new Set<number>();
+let exitHookInstalled = false;
+
+const killGroup = (pgid: number): boolean => {
+  try {
+    process.kill(-pgid, "SIGKILL");
+    return true;
+  } catch {
+    // ESRCH: the group already exited.
+    return false;
+  }
+};
+
+const trackGroup = (pgid: number): void => {
+  if (!exitHookInstalled) {
+    exitHookInstalled = true;
+    process.once("exit", () => {
+      for (const g of liveGroups) killGroup(g);
+    });
+  }
+  liveGroups.add(pgid);
+};
+
 function ensureInsideRoots(
   abs: string,
   roots: ReadonlyArray<string>,
@@ -130,15 +161,12 @@ export function createNoneSandbox(opts: NoneSandboxOptions = {}): SandboxAdapter
           // Own process group, so a timeout/abort can kill the whole tree.
           // Killing only the direct child (`sh -c 'sleep 5'`) leaves the
           // grandchild holding the stdout pipe open and the call hangs.
-          detached: true,
+          detached: USE_PROCESS_GROUPS,
         });
+        if (USE_PROCESS_GROUPS) trackGroup(proc.pid);
 
         const killTree = (): void => {
-          try {
-            process.kill(-proc.pid, "SIGKILL");
-          } catch {
-            proc.kill();
-          }
+          if (!USE_PROCESS_GROUPS || !killGroup(proc.pid)) proc.kill();
         };
 
         const timeoutMs = runOpts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -165,6 +193,10 @@ export function createNoneSandbox(opts: NoneSandboxOptions = {}): SandboxAdapter
         } finally {
           clearTimeout(timer);
           runOpts?.signal?.removeEventListener("abort", onAbort);
+          // Background jobs the command left behind (`server &`) keep
+          // running after the exec returns, as before; only an exec that is
+          // still running when the host exits is killed by the exit hook.
+          liveGroups.delete(proc.pid);
         }
       },
       catch: (err): SandboxError =>
