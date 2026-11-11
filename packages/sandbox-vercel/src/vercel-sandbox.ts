@@ -27,6 +27,8 @@ export interface VercelFs {
   readFile(path: string, encoding: "utf8"): Promise<string>;
   writeFile(path: string, data: string): Promise<void>;
   readdir(path: string): Promise<string[]>;
+  /** Create a directory (the SDK runs `mkdir -p` for `recursive: true`). */
+  mkdir?(path: string, options?: { recursive?: boolean }): Promise<unknown>;
 }
 
 /** Parameters the adapter passes to `runCommand` (always detached). */
@@ -397,7 +399,17 @@ export function createVercelSandbox(opts: VercelSandboxOptions = {}): VercelSand
     Effect.tryPromise({
       try: async (): Promise<void> => {
         const sandbox = await acquire();
-        await sandbox.fs.writeFile(p, contents);
+        try {
+          await sandbox.fs.writeFile(p, contents);
+        } catch (err) {
+          // node:fs semantics: writing into a missing directory fails. `writeFile` must
+          // create missing parents (the SandboxAdapter conformance suite checks it): make them
+          // and retry once.
+          const parent = posix.dirname(p);
+          if (!sandbox.fs.mkdir || parent === p) throw err;
+          await sandbox.fs.mkdir(parent, { recursive: true });
+          await sandbox.fs.writeFile(p, contents);
+        }
       },
       catch: (err): SandboxError => sandboxError("write", err, p),
     });

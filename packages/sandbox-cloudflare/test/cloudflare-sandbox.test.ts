@@ -623,7 +623,11 @@ describe("createCloudflareSandbox", () => {
     // and the original message must still be there for the caller to show.
     const codeOnly = sb(
       {},
-      { behavior: { startError: Object.assign(new Error("boom"), { code: "STALE_PROCESS_HANDLE" }) } },
+      {
+        behavior: {
+          startError: Object.assign(new Error("boom"), { code: "STALE_PROCESS_HANDLE" }),
+        },
+      },
     );
     const exit2 = await Effect.runPromiseExit(codeOnly.adapter.run("echo", ["hi"]));
     expect(exit2._tag).toBe("Failure");
