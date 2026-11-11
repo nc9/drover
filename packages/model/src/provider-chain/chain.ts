@@ -136,6 +136,11 @@ function rawFromThrown(err: unknown): RawFailure {
   return raw;
 }
 
+/** Own-key lookup: names (provider, model id) are data, and `constructor` / `__proto__` must not find Object.prototype members. */
+function own<V>(rec: Readonly<Record<string, V>> | undefined, key: string): V | undefined {
+  return rec !== undefined && Object.hasOwn(rec, key) ? rec[key] : undefined;
+}
+
 export function createProviderChain(options: ProviderChainOptions): ProviderChain {
   if (options.providers.length === 0) throw new Error("createProviderChain: no providers");
   const env = options.env ?? (process.env as Record<string, string | undefined>);
@@ -143,8 +148,8 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
   const maxWait = options.maxRateLimitWaitMs ?? 10_000;
 
   const idFor = (provider: string, canonicalId: string): string | null => {
-    const mapped = options.ids?.[canonicalId];
-    if (mapped && provider in mapped) return mapped[provider] ?? null;
+    const mapped = own(options.ids, canonicalId);
+    if (mapped && Object.hasOwn(mapped, provider)) return mapped[provider] ?? null;
     return provider === "cloudflare-ai-gateway"
       ? canonicalId.replace(/^openai\//, "")
       : canonicalId;
@@ -161,15 +166,15 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       options.extraModels?.find((m) => m.provider === provider && m.id === id) ??
       (getModel(provider as never, id as never) as Model<Api> | undefined);
     if (!found) return null;
-    const baseUrl = (options.overrides?.[provider]?.baseUrl ?? found.baseUrl).replace(
+    const baseUrl = (own(options.overrides, provider)?.baseUrl ?? found.baseUrl).replace(
       /\{([A-Z_][A-Z0-9_]*)\}/g,
       (_m, n: string) => env[n] ?? `{${n}}`,
     );
     if (/\{[A-Z_]+\}/.test(baseUrl))
       return `no value for ${baseUrl.match(/\{[A-Z_]+\}/)![0]} in the environment`;
-    const apiKey = options.apiKeys?.[provider] ?? readApiKey(provider, env);
+    const apiKey = own(options.apiKeys, provider) ?? readApiKey(provider, env);
     if (!apiKey) return `no API key for provider "${provider}"`;
-    return { model: { ...found, ...options.overrides?.[provider], baseUrl, id }, apiKey };
+    return { model: { ...found, ...own(options.overrides, provider), baseUrl, id }, apiKey };
   };
 
   const forRun = (listener?: ProviderFailoverListener): ChainStreamFn => {
@@ -203,7 +208,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
           failure: classifyFailure(provider, raw),
           message,
         });
-        const stream = options.streams?.[provider] ?? streamSimple;
+        const stream = own(options.streams, provider) ?? streamSimple;
         let inner: AssistantMessageEventStream;
         try {
           // The SDK's own retries are off: failing over is the retry.

@@ -518,4 +518,33 @@ describe("provider chain", () => {
       .get("fast")!;
     expect([m.model.id, m.model.contextWindow]).toEqual([CANON, 1000]);
   });
+
+  test("provider and model names are data: prototype-member names find nothing", async () => {
+    const a = fake("a", [{ kind: "ok" }]);
+    const chain = chainOf([a]);
+    const hostile = ["__proto__", "constructor", "toString"];
+    for (const id of hostile) {
+      const { result } = await call(bind(chain), undefined, id);
+      expect(result.errorMessage).toContain("no provider can serve");
+    }
+    const ids = createProviderChain({
+      providers: ["a"],
+      ids: {},
+      apiKeys: {},
+      overrides: {},
+      streams: {},
+      env: {},
+      extraModels: [modelOf("a", "constructor")] as never,
+    });
+    expect((await call(bind(ids), undefined, "constructor")).result.errorMessage).toContain(
+      'no API key for provider "a"',
+    );
+    expect(({} as Record<string, unknown>).baseUrl).toBeUndefined();
+    const keyed = createProviderChain({
+      providers: ["constructor"],
+      extraModels: [modelOf("constructor", "x")] as never,
+      env: {},
+    });
+    expect((await call(bind(keyed), undefined, "x")).result.errorMessage).toContain("no API key");
+  });
 });
