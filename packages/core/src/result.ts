@@ -25,6 +25,17 @@ export interface RunResult<TOutput = unknown> {
    * assistant messages name their provider (always, under a provider chain).
    */
   usageByProvider?: Record<string, Usage>;
+  /**
+   * Present when `quota.wrapUp` fired: which budget crossed its threshold, and
+   * whether the run then finished in time (`wrapped_up`, any non-`quota`
+   * status) or hit a hard limit anyway (`cut_off`, `status: "quota"`).
+   */
+  wrapUp?: {
+    dimension: "turns" | "duration" | "cost" | "tokens";
+    limit: number;
+    used: number;
+    outcome: "wrapped_up" | "cut_off";
+  };
   /** Tool ids invoked during the run, in order. Duplicates preserved. */
   toolCalls: ReadonlyArray<string>;
   /** Tagged error when `status === "error"`. */

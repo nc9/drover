@@ -24,26 +24,36 @@ const fakeModel = {
   maxTokens: 8_192,
 } as unknown as PreResolvedModel["model"];
 
-const mkSpec = (quota: RunQuota) =>
+const mkSpec = (quota: RunQuota, strict = false) =>
   defineAgent({
     id: "wrap-up-probe",
     systemPrompt: "probe",
     inputSchema: Type.Object({ q: Type.String() }),
-    outputSchema: Type.Unknown(),
+    outputSchema: strict ? Type.Object({ ok: Type.Boolean() }) : Type.Unknown(),
     model: MODEL_NAME,
     tools: ["read"],
     quota,
   });
 
 /** A model that keeps calling `read` until it sees the budget notice, then answers. */
-function greedyModel(costPerCall = 0) {
+interface ModelOpts {
+  /** Keep calling tools even after the notice (a model that ignores it). */
+  ignore?: boolean;
+  /** The final answer text (default "final answer"). */
+  answer?: string;
+  /** Called on every model call (e.g. to advance a fake clock). */
+  onCall?: () => void;
+}
+
+function greedyModel(costPerCall = 0, opts: ModelOpts = {}) {
   const seen: string[][] = [];
   const streamFn: StreamFn = (_m, context, options) => {
+    opts.onCall?.();
     const texts = context.messages.map((m) =>
       typeof m.content === "string" ? m.content : JSON.stringify(m.content),
     );
     seen.push(texts);
-    const warned = texts.some((t) => t.includes("Budget notice"));
+    const warned = !opts.ignore && texts.some((t) => t.includes("Budget notice"));
     const base: AssistantMessage = {
       role: "assistant",
       content: [],
@@ -62,7 +72,7 @@ function greedyModel(costPerCall = 0) {
       timestamp: Date.now(),
     };
     const final: AssistantMessage = warned
-      ? { ...base, content: [{ type: "text", text: "final answer" }] }
+      ? { ...base, content: [{ type: "text", text: opts.answer ?? "final answer" }] }
       : {
           ...base,
           content: [
@@ -94,17 +104,22 @@ const ctx = (): RunContext => ({
   signal: new AbortController().signal,
 });
 
-async function run(quota: RunQuota, costPerCall = 0) {
-  const { streamFn, seen } = greedyModel(costPerCall);
+async function run(
+  quota: RunQuota,
+  costPerCall = 0,
+  opts: ModelOpts & { strict?: boolean; now?: () => number } = {},
+) {
+  const { streamFn, seen } = greedyModel(costPerCall, opts);
   const deps: HarnessDeps = {
     sandbox: createNoneSandbox(),
     preResolvedModels: new Map([[MODEL_NAME, { model: fakeModel, apiKey: "k" }]]),
     streamFn,
+    ...(opts.now ? { now: opts.now } : {}),
   };
   const events: HarnessEvent[] = [];
   const result = await Effect.runPromise(
     runAgentEffect({
-      spec: mkSpec(quota),
+      spec: mkSpec(quota, opts.strict === true),
       input: { q: "x" },
       ctx: ctx(),
       emit: (e) => events.push(e),
@@ -152,5 +167,72 @@ describe("quota.wrapUp", () => {
       wrapUp: { message: "Budget notice: wrap it up please" },
     });
     expect(seen.flat().some((t) => t === "Budget notice: wrap it up please")).toBe(true);
+  });
+
+  test("tokens: maxTokens is a hard budget, and wrapUp fires at its fraction", async () => {
+    // Each call reports 1 input + 1 output token.
+    const cut = await run({ maxTokens: 6 });
+    expect(cut.result.status).toBe("quota");
+    expect(cut.result.error?.message).toBe("tokens budget exceeded (limit 6, observed 6)");
+    expect(cut.result.wrapUp).toBeUndefined();
+
+    const { result, events } = await run({ maxTokens: 10, wrapUp: { at: 0.5 } });
+    expect(result.status).toBe("success");
+    expect(result.finalText).toBe("final answer");
+    expect(events.find((e) => e.kind === "budget_warning")).toMatchObject({
+      dimension: "tokens",
+      limit: 10,
+      used: 6,
+    });
+    expect(result.wrapUp).toEqual({
+      dimension: "tokens",
+      limit: 10,
+      used: 6,
+      outcome: "wrapped_up",
+    });
+  });
+
+  test("wall clock: a controllable clock crosses the threshold (the hard timer is not involved)", async () => {
+    let t = 1_000_000;
+    // Every model call advances the fake clock by 5 minutes; the hard limit is 1 hour.
+    const { result, events, seen } = await run(
+      { maxDurationMs: 3_600_000, wrapUp: { at: 0.25 } },
+      0,
+      { now: () => t, onCall: () => (t += 300_000) },
+    );
+    expect(result.status).toBe("success");
+    expect(events.find((e) => e.kind === "budget_warning")).toMatchObject({
+      dimension: "duration",
+      limit: 3_600_000,
+      used: 900_000,
+    });
+    expect(result.wrapUp?.outcome).toBe("wrapped_up");
+    // Calls 1-3 advanced the clock to 15 minutes; call 4 is the first with the notice.
+    expect(seen.findIndex((x) => x.some((m) => m.includes("Budget notice")))).toBe(3);
+  });
+
+  test("a model that ignores the notice is cut off: outcome cut_off, status quota", async () => {
+    const { result, events } = await run({ maxTurns: 3, wrapUp: {} }, 0, { ignore: true });
+    expect(events.some((e) => e.kind === "budget_warning")).toBe(true);
+    expect(result.status).toBe("quota");
+    expect(result.wrapUp).toMatchObject({ dimension: "turns", limit: 3, outcome: "cut_off" });
+  });
+
+  test("output schema: the wrap-up answer is still decoded and validated", async () => {
+    const { result } = await run({ maxTurns: 4, wrapUp: {} }, 0, {
+      strict: true,
+      answer: '{"ok":true}',
+    });
+    expect(result.status).toBe("success");
+    expect(result.output).toEqual({ ok: true });
+    expect(result.wrapUp?.outcome).toBe("wrapped_up");
+  });
+
+  test("the notice is the operator's text verbatim, whatever the tools returned", async () => {
+    const message = "Budget notice: operator text only";
+    const { seen } = await run({ maxTurns: 4, wrapUp: { message } });
+    const notices = seen.flat().filter((t) => t.startsWith("Budget notice"));
+    expect(notices.length).toBeGreaterThan(0);
+    expect(new Set(notices)).toEqual(new Set([message]));
   });
 });

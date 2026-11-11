@@ -38,7 +38,7 @@ export class SubagentLimitError extends Data.TaggedError("SubagentLimitError")<{
  */
 export class QuotaExceededError extends Data.TaggedError("QuotaExceededError")<{
   readonly runId: string;
-  readonly dimension: "turns" | "duration" | "cost";
+  readonly dimension: "turns" | "duration" | "cost" | "tokens";
   readonly limit: number;
   readonly observed: number;
 }> {}

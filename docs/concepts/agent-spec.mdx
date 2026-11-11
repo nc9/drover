@@ -16,7 +16,7 @@ interface AgentSpec<ISchema = TSchema, OSchema = TSchema> {
   subagents?: SubagentConfig;
   outputRetries?: number;     // default 2
   plugins?: readonly HarnessPlugin[];
-  quota?: RunQuota;           // { maxTurns?, maxDurationMs?, maxCostUsd?, wrapUp? }
+  quota?: RunQuota;           // { maxTurns?, maxDurationMs?, maxCostUsd?, maxTokens?, wrapUp? }
 }
 ```
 
@@ -28,7 +28,7 @@ shape — drover doesn't distinguish.
 
 ```ts
 type ModelSpec =
-  | string                          // "cheap" | "google/gemini-2.5-flash-lite" | "sonnet:high"
+  | string // "cheap" | "google/gemini-2.5-flash-lite" | "sonnet:high"
   | { name: string; reasoning?: ReasoningLevel; temperature?: number; maxTokens?: number };
 ```
 
@@ -44,9 +44,9 @@ in pi-ai's registry default to `"medium"` if you don't pick.
 
 ```ts
 interface SubagentConfig {
-  allowed: readonly string[];   // required
-  depth?: number;                // default 2
-  fanOut?: number;               // default 3
+  allowed: readonly string[]; // required
+  depth?: number; // default 2
+  fanOut?: number; // default 3
 }
 ```
 
@@ -59,7 +59,9 @@ exists for type inference: `AgentInput<S>` and `AgentOutput<S>` derive
 their static types from the spec's TypeBox schemas.
 
 ```ts
-const spec = defineAgent({ /* ... */ });
+const spec = defineAgent({
+  /* ... */
+});
 type In = AgentInput<typeof spec>;
 type Out = AgentOutput<typeof spec>;
 ```
@@ -79,17 +81,36 @@ resumable agents).
 
 ## Finishing inside a budget
 
-A hard budget ends the run with `status: "quota"` and no answer. Add
-`quota.wrapUp` to let the model finish cleanly first:
+A hard budget (`maxTurns`, `maxTokens`, `maxCostUsd`, `maxDurationMs`) ends the run with
+`status: "quota"` and no answer. `maxTokens` counts every token the provider reports
+(input, output, cache read, cache write). Add `quota.wrapUp` to let the model finish cleanly
+first:
 
 ```ts
-quota: { maxTurns: 12, maxCostUsd: 0.5, wrapUp: { at: 0.8 } }
+quota: { maxTurns: 12, maxTokens: 200_000, maxCostUsd: 0.5, wrapUp: { at: 0.8 } }
 ```
 
-Once any budget is `at` spent (default 0.8; for turns, at most the last allowed
-turn), every following model call carries a closing user message: the budget is
-nearly spent, do not call more tools, answer with what you have. A
-`budget_warning` event (`dimension`, `limit`, `used`) is emitted once. The message
-is appended per call, never written to the history or checkpoint, so a resumed
-run recomputes it. The hard limits still apply: a model that ignores the notice
-is cut off as before. `wrapUp.message` replaces the default text.
+Once any budget is `at` spent (default 0.8; for turns, at most the last allowed turn), every
+following model call carries a closing user message: the budget is nearly spent, do not call
+more tools, answer with what you have. A `budget_warning` event (`dimension`, `limit`, `used`)
+is emitted once. `wrapUp.message` replaces the default text.
+
+- **Outcome.** `RunResult.wrapUp` (`dimension`, `limit`, `used`, `outcome`) is set whenever
+  the warning fired: `outcome: "wrapped_up"` when the run then ended without hitting a hard
+  limit, `"cut_off"` when it ended `status: "quota"` anyway.
+- **Bounded.** The wrap-up turns run inside the same hard limits: a model that ignores the
+  notice, or a final call that overshoots the cost or token budget, is cut off as before. Set
+  `at` low enough that one more call fits in the remainder.
+- **Output schema.** The wrap-up answer is decoded and validated like any other; output
+  retries still apply and still count against the budgets.
+- **Operator text.** The notice is the spec's `wrapUp.message` or the built-in default, never
+  built from tool output. It is harness text added as a user turn and is not fenced as
+  untrusted data (the untrusted-data fence is separate work).
+- **History.** The notice is appended per call, never written to the history or the
+  checkpoint, so a resumed run recomputes it (against the run's cumulative turns, tokens and
+  cost; wall clock is measured per invocation) and may warn again.
+- **Subagents** have their own spec and quota: a parent's notice is not passed to a child,
+  and a child's `wrapUp` applies to the child's run only.
+- **Continuations.** A per-continuation budget (resume with its own budget, a separate change)
+  does not trigger the notice yet; `wrapUp` follows the spec's cumulative `quota`.
+- **Testing.** `HarnessDeps.now` replaces the clock used for the wall-clock threshold.

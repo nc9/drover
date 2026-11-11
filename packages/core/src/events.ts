@@ -176,7 +176,7 @@ export type HarnessEvent =
   | {
       kind: "budget_warning";
       runId: string;
-      dimension: "turns" | "duration" | "cost";
+      dimension: "turns" | "duration" | "cost" | "tokens";
       limit: number;
       used: number;
       ts: number;

@@ -109,7 +109,7 @@ const DEFAULT_OUTPUT_RETRIES = 2;
 
 /** Which run budget tripped, with its configured ceiling and the breaching value. */
 type QuotaBreach = {
-  dimension: "turns" | "duration" | "cost";
+  dimension: "turns" | "duration" | "cost" | "tokens";
   limit: number;
   observed: number;
 };
@@ -251,6 +251,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     const { spec, input, ctx, emit, deps, resumeFrom, pauseFlag, compactFlag, emitDeltas } = args;
     const isResume = resumeFrom !== undefined;
     const startedAt = Date.now();
+    // Clock for the wrap-up wall-clock threshold only (test seam); hard limits use real timers.
+    const clock = deps.now ?? Date.now;
+    const clockStartedAt = clock();
     const usage: Usage = { inputTokens: 0, outputTokens: 0 };
     const toolCalls: string[] = resumeFrom ? [...resumeFrom.toolCalls] : [];
 
@@ -676,6 +679,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           if (quota.maxCostUsd !== undefined && (next.costUsd ?? 0) >= quota.maxCostUsd) {
             tripQuota({ dimension: "cost", limit: quota.maxCostUsd, observed: next.costUsd ?? 0 });
           }
+          if (quota.maxTokens !== undefined && totalTokens(next) >= quota.maxTokens) {
+            tripQuota({ dimension: "tokens", limit: quota.maxTokens, observed: totalTokens(next) });
+          }
         }
       }
       // Emit translated drover events. safeEmit fans out to plugin observers.
@@ -878,7 +884,20 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // pi's history or the checkpoint), so a resumed run recomputes it.
     const wrapUp = quota.wrapUp;
     let wrapUpActive = false;
-    const wrapUpTrigger = (): { dimension: "turns" | "duration" | "cost"; limit: number; used: number } | null => {
+    // The budget that crossed its threshold, for `RunResult.wrapUp`.
+    // Boxed so the closure write survives TS narrowing at the read site.
+    const wrapUpFired: {
+      value: {
+        dimension: "turns" | "duration" | "cost" | "tokens";
+        limit: number;
+        used: number;
+      } | null;
+    } = { value: null };
+    const wrapUpTrigger = (): {
+      dimension: "turns" | "duration" | "cost" | "tokens";
+      limit: number;
+      used: number;
+    } | null => {
       if (!wrapUp) return null;
       const at = wrapUp.at !== undefined && wrapUp.at > 0 && wrapUp.at < 1 ? wrapUp.at : 0.8;
       if (maxTurns !== undefined) {
@@ -889,10 +908,16 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       }
       if (quota.maxCostUsd !== undefined) {
         const used = lastUsage.value.costUsd ?? 0;
-        if (used >= at * quota.maxCostUsd) return { dimension: "cost", limit: quota.maxCostUsd, used };
+        if (used >= at * quota.maxCostUsd)
+          return { dimension: "cost", limit: quota.maxCostUsd, used };
+      }
+      if (quota.maxTokens !== undefined) {
+        const used = totalTokens(lastUsage.value);
+        if (used >= at * quota.maxTokens)
+          return { dimension: "tokens", limit: quota.maxTokens, used };
       }
       if (quota.maxDurationMs !== undefined) {
-        const used = Date.now() - startedAt;
+        const used = clock() - clockStartedAt;
         if (used >= at * quota.maxDurationMs) {
           return { dimension: "duration", limit: quota.maxDurationMs, used };
         }
@@ -902,12 +927,15 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     const baseTransformContext = transformContext;
     const transformWithWrapUp = wrapUp
       ? async (messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> => {
-          const next = baseTransformContext ? await baseTransformContext(messages, signal) : messages;
+          const next = baseTransformContext
+            ? await baseTransformContext(messages, signal)
+            : messages;
           let trigger: ReturnType<typeof wrapUpTrigger> = null;
           if (!wrapUpActive) {
             trigger = wrapUpTrigger();
             if (trigger) {
               wrapUpActive = true;
+              wrapUpFired.value = trigger;
               safeEmit({ kind: "budget_warning", runId: ctx.runId, ...trigger, ts: Date.now() });
             }
           }
@@ -1267,6 +1295,11 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     if (errorOut) result.error = errorOut;
     if (Object.keys(usageByProvider).length > 0)
       result.usageByProvider = Object.fromEntries(Object.entries(usageByProvider));
+    if (wrapUpFired.value)
+      result.wrapUp = {
+        ...wrapUpFired.value,
+        outcome: status === "quota" ? "cut_off" : "wrapped_up",
+      };
 
     // Run-level lifecycle: fire `onRunEnd` once, after the loop +
     // `postSuccess` and terminal resolution. Observation only — failures and
@@ -1501,4 +1534,9 @@ export function hashSpec(spec: AgentSpec): string {
     h = (h * 31 + s.charCodeAt(i)) | 0;
   }
   return (h >>> 0).toString(16);
+}
+
+/** Every token the provider reported: input + output + cache read + cache write. */
+function totalTokens(u: Usage): number {
+  return u.inputTokens + u.outputTokens + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0);
 }

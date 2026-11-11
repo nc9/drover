@@ -53,6 +53,14 @@ All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version t
   model call carries a notice telling the model to finish now without more
   tools, so a run ends with an answer instead of `status: "quota"`.
 
+- `quota.wrapUp` (`{ at?, message? }`), the `budget_warning` event and
+  `RunResult.wrapUp` (#26): once a turn, token, cost or wall-clock budget is
+  `at` spent (default 0.8), every following model call carries an operator
+  notice telling the model to finish now without more tools; `RunResult.wrapUp`
+  says whether the run then wrapped up in time or was cut off. New hard budget
+  `quota.maxTokens`; `QuotaExceededError.dimension` gains `"tokens"`.
+  `HarnessDeps.now` is the clock for the wall-clock threshold.
+
 ## 0.2.0 — 2026-08-25
 
 `@droveragent/harness` + `@droveragent/facade` only; every other package is
