@@ -28,14 +28,12 @@ All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version t
 
 ### Added
 
-- Provider chain with failover (`createProviderChain`, `openRouter`,
-  `cloudflareAiGateway` in `@droveragent/model`; `RunOptions.providers` /
-  `HarnessDeps.providers`). An ordered list of providers per model: a classified
-  failure (out of credits, key refused, region refused, rate limited, 5xx,
-  timeout, malformed response; classified status-first from structured fields,
-  never from message text) continues the same call on the next provider,
-  first call or mid-run, without losing conversation or tool state. See
-  `docs/guides/provider-chain.mdx`.
+- Provider chain with failover (`createProviderChain` in `@droveragent/model`;
+  `RunOptions.providers` / `HarnessDeps.providers`). An ordered list of pi-ai provider
+  names (`["openrouter", "cloudflare-ai-gateway"]`) resolved from pi-ai's registry; ids,
+  per-provider quirks and missing models are data (`ids`, `overrides`, `extraModels`). A
+  failure classified status-first from structured fields (never message text) continues
+  the same call on the next provider, first call or mid-run. See `docs/guides/provider-chain.mdx`.
 - `provider_failover` event (`retry` / `failover` / `exhausted`, with failure
   class and status, never provider text); `usage` events carry `provider` and
   `model`; `RunResult.usageByProvider` splits usage per serving provider.

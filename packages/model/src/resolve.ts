@@ -76,9 +76,10 @@ const ENV_KEY_BY_PROVIDER: Readonly<Record<string, ReadonlyArray<string>>> = {
   deepseek: ["DEEPSEEK_API_KEY"],
   mistral: ["MISTRAL_API_KEY"],
   cerebras: ["CEREBRAS_API_KEY"],
+  "cloudflare-ai-gateway": ["CLOUDFLARE_API_KEY"],
 };
 
-function readApiKey(
+export function readApiKey(
   provider: string,
   env: Readonly<Record<string, string | undefined>>,
 ): string | null {

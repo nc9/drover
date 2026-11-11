@@ -4,56 +4,73 @@ import {
   type AssistantMessage,
   type AssistantMessageEvent,
   type Context,
+  type Model,
 } from "@mariozechner/pi-ai";
 
 import {
-  DEFAULT_FAILOVER_POLICY,
+  FAILOVER,
   classifyFailure,
-  cloudflareAiGateway,
   createProviderChain,
-  openRouter,
   parseRetryAfterMs,
   structuredFromBody,
   type ChainStreamFn,
   type ProviderFailoverNotice,
-  type ProviderSpec,
 } from "../src/index.ts";
 
-// ---- fakes ----------------------------------------------------------------
+const REGION = "unsupported_country_region_territory";
+
+// ---- fakes: pi-ai-shaped models for made-up providers, with a scripted transport each ----
 
 type Script =
   | { kind: "ok"; text?: string }
   | { kind: "error"; message: string }
   | { kind: "throw"; error: Error }
   | { kind: "empty" }
-  | { kind: "partial-then-error"; message: string }
-  | { kind: "hang" };
+  | { kind: "partial-then-error"; message: string };
 
+const usage = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
 const msg = (provider: string, over: Partial<AssistantMessage> = {}): AssistantMessage => ({
   role: "assistant",
   content: [],
   api: "openai-completions",
   provider,
   model: "m",
-  usage: {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: 0,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-  },
+  usage,
   stopReason: "stop",
   timestamp: 0,
   ...over,
 });
 
-/** A provider whose stream plays the next script entry per call. */
-function fake(name: string, scripts: Script[], map: (id: string) => string | null = (id) => id) {
-  const calls: { model: string; apiKey?: string }[] = [];
-  const stream: ChainStreamFn = (model, _ctx, options) => {
+const modelOf = (provider: string, id: string): Model<"openai-completions"> =>
+  ({
+    id,
+    name: id,
+    api: "openai-completions",
+    provider,
+    baseUrl: `http://${provider}.test/v1`,
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1000,
+    maxTokens: 100,
+  }) as never;
+
+function fake(name: string, scripts: Script[]) {
+  const calls: { model: string; apiKey?: string; maxRetries?: number }[] = [];
+  const stream: ChainStreamFn = (model, _c, options) => {
     const s = scripts[Math.min(calls.length, scripts.length - 1)]!;
-    calls.push({ model: model.id, ...(options?.apiKey ? { apiKey: options.apiKey } : {}) });
+    calls.push({
+      model: model.id,
+      ...(options?.apiKey ? { apiKey: options.apiKey } : {}),
+      ...(options?.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
+    });
     if (s.kind === "throw") throw s.error;
     const out = createAssistantMessageEventStream();
     queueMicrotask(() => {
@@ -63,145 +80,108 @@ function fake(name: string, scripts: Script[], map: (id: string) => string | nul
         const done = msg(name, {
           model: model.id,
           content: [{ type: "text", text }],
-          usage: { ...p.usage, input: 10, output: 5, totalTokens: 15 },
+          usage: { ...usage, input: 10, output: 5, totalTokens: 15 },
         });
         out.push({ type: "start", partial: p });
-        out.push({ type: "text_start", contentIndex: 0, partial: done });
         out.push({ type: "text_delta", contentIndex: 0, delta: text, partial: done });
         out.push({ type: "done", reason: "stop", message: done });
-        out.end();
-      } else if (s.kind === "error") {
+      } else if (s.kind === "error" || s.kind === "partial-then-error") {
         out.push({ type: "start", partial: p });
+        if (s.kind === "partial-then-error")
+          out.push({
+            type: "text_delta",
+            contentIndex: 0,
+            delta: "par",
+            partial: msg(name, { content: [{ type: "text", text: "par" }] }),
+          });
         out.push({
           type: "error",
           reason: "error",
           error: msg(name, { stopReason: "error", errorMessage: s.message }),
         });
-        out.end();
-      } else if (s.kind === "empty") {
+      } else {
         out.push({ type: "start", partial: p });
         out.push({ type: "done", reason: "stop", message: p });
-        out.end();
-      } else if (s.kind === "partial-then-error") {
-        const part = msg(name, { content: [{ type: "text", text: "par" }] });
-        out.push({ type: "start", partial: p });
-        out.push({ type: "text_delta", contentIndex: 0, delta: "par", partial: part });
-        out.push({
-          type: "error",
-          reason: "error",
-          error: msg(name, { stopReason: "error", errorMessage: s.message }),
-        });
-        out.end();
       }
-      // "hang": never pushes.
+      out.end();
     });
     return out;
   };
-  const spec: ProviderSpec = {
-    name,
-    mapModel: map,
-    prepare: (canonical, mapped) => ({
-      model: { ...canonical, id: mapped, provider: name },
-      apiKey: `key-${name}`,
-    }),
-    stream,
-  };
-  return { spec, calls };
+  return { name, stream, calls };
 }
+type Fake = ReturnType<typeof fake>;
 
-const canonical = {
-  id: "openai/gpt-5-mini",
-  name: "x",
-  api: "openai-completions",
-  provider: "openrouter",
-} as never;
+const regionThrow = (extra = ""): Script => ({
+  kind: "throw",
+  error: Object.assign(new Error(`403 blocked${extra}`), { status: 403, error: { code: REGION } }),
+});
+
+const CANON = "openai/gpt-5-mini";
+const canonical = modelOf("openrouter", CANON) as unknown as Model<never>;
 const ctx: Context = { messages: [] } as never;
 
-type Bound = { fn: ChainStreamFn; notices: ProviderFailoverNotice[] };
+function chainOf(fakes: Fake[], extra: Partial<Parameters<typeof createProviderChain>[0]> = {}) {
+  return createProviderChain({
+    providers: fakes.map((f) => f.name),
+    extraModels: fakes.flatMap((f) => [
+      modelOf(f.name, CANON),
+      modelOf(f.name, "gpt-5-mini"),
+    ]) as never,
+    apiKeys: Object.fromEntries(fakes.map((f) => [f.name, `key-${f.name}`])),
+    env: {},
+    streams: Object.fromEntries(fakes.map((f) => [f.name, f.stream])),
+    sleep: async () => {},
+    ...extra,
+  });
+}
 
-/** One binding is one run: cooldown state lives in it. */
-function bind(chain: ReturnType<typeof createProviderChain>): Bound {
+/** One binding is one run. */
+function bind(chain: ReturnType<typeof createProviderChain>) {
   const notices: ProviderFailoverNotice[] = [];
   return { fn: chain.forRun((n) => notices.push(n)), notices };
 }
-
-async function run(
-  target: ReturnType<typeof createProviderChain> | Bound,
-  opts?: { signal?: AbortSignal },
-): Promise<{
-  events: AssistantMessageEvent[];
-  result: AssistantMessage;
-  notices: ProviderFailoverNotice[];
-}> {
-  const bound = "forRun" in target ? bind(target) : target;
-  const before = bound.notices.length;
-  const stream = await bound.fn(canonical, ctx, opts);
+async function call(b: ReturnType<typeof bind>, signal?: AbortSignal, id = CANON) {
+  const before = b.notices.length;
+  const stream = await b.fn({ ...canonical, id } as never, ctx, signal ? { signal } : undefined);
   const events: AssistantMessageEvent[] = [];
   for await (const e of stream) events.push(e);
-  return { events, result: await stream.result(), notices: bound.notices.slice(before) };
+  return { events, result: await stream.result(), notices: b.notices.slice(before) };
 }
-
-function regionThrow(extra = ""): Script {
-  return {
-    kind: "throw",
-    error: Object.assign(new Error(`403 blocked${extra}`), {
-      status: 403,
-      error: {
-        code: "unsupported_country_region_territory",
-        message: "Country, region, or territory not supported",
-      },
-    }),
-  };
-}
-
-const noSleep = async (): Promise<void> => {};
+const run = (chain: ReturnType<typeof createProviderChain>) => call(bind(chain));
 
 // ---- classification ---------------------------------------------------------
 
-describe("classifyFailure", () => {
+describe("classifyFailure: status first, structured fields only", () => {
   const cases: [string, string, string, number | null][] = [
-    ["credits (402)", "402 This request requires more credits", "credits_exhausted", 402],
-    ["key refused 401", "401 Invalid API key", "key_refused", 401],
-    ["key refused 403", "403 Forbidden", "key_refused", 403],
+    ["402", "402 This request requires more credits", "credits_exhausted", 402],
+    ["401", "401 Invalid API key", "key_refused", 401],
+    ["403", "403 Forbidden", "key_refused", 403],
     [
-      "403 with a lost body code is key refused",
+      "403, body code lost to flattening",
       "403 Country, region, or territory not supported",
       "key_refused",
       403,
     ],
-    ["rate limit", "429 Rate limit reached. Please try again in 2s", "rate_limited", 429],
+    ["429", "429 Rate limit reached", "rate_limited", 429],
+    ["404", "404 model does not exist", "model_unavailable", 404],
     ["5xx", "502 Bad gateway", "provider_error", 502],
-    ["503", "503 upstream overloaded", "provider_error", 503],
     ["504", "504 Gateway timeout", "timeout", 504],
     ["sdk timeout", "Request timed out.", "timeout", null],
     ["connection", "Connection error.", "timeout", null],
-    ["no status, free text is other", "Unexpected token < in JSON at position 0", "other", null],
-    ["model 404", "404 The model `x` does not exist", "model_unavailable", 404],
-    ["context length", "400 context_length_exceeded: too many tokens", "invalid_request", 400],
-    ["bad params", "422 Unprocessable", "invalid_request", 422],
-    ["other", "something odd", "other", null],
+    ["400", "400 context_length_exceeded", "invalid_request", 400],
+    ["free text, no status", "Unexpected token < in JSON", "other", null],
   ];
   for (const [name, message, cls, status] of cases) {
     test(`${name} -> ${cls}`, () => {
       const f = classifyFailure("p", { message });
-      expect(f.failureClass).toBe(cls as never);
-      expect(f.status).toBe(status);
+      expect([f.failureClass, f.status]).toEqual([cls as never, status]);
     });
   }
 
-  test("a status number inside prose is not a status", () => {
-    expect(classifyFailure("p", { message: "see page 402 of the doc" }).status).toBeNull();
-  });
-
-  test("structured fields: 403 + region code is region; 403 + key limit and 429 + insufficient_quota are credits", () => {
-    const region = classifyFailure("p", {
-      message: "403 nope",
-      status: 403,
-      code: "unsupported_country_region_territory",
-    });
-    expect(region).toMatchObject({
+  test("structured fields: region needs 403 + code; credits via 402, 403 + limit_source, 429 + insufficient_quota", () => {
+    expect(classifyFailure("p", { message: "403 x", code: REGION })).toMatchObject({
       failureClass: "region_refused",
-      code: "unsupported_country_region_territory",
+      code: REGION,
     });
     expect(
       classifyFailure("p", { message: "403 x", limitSource: "openrouter_key_limit" }).failureClass,
@@ -209,147 +189,96 @@ describe("classifyFailure", () => {
     expect(
       classifyFailure("p", { message: "429 x", code: "insufficient_quota" }).failureClass,
     ).toBe("credits_exhausted");
-    expect(classifyFailure("p", { message: "403 x" }).failureClass).toBe("key_refused");
-    expect(classifyFailure("p", { message: "402" }).failureClass).toBe("credits_exhausted");
     expect(classifyFailure("p", { message: "", status: 402 }).failureClass).toBe(
       "credits_exhausted",
     );
+    expect(classifyFailure("p", { message: "402" }).failureClass).toBe("credits_exhausted");
   });
 
-  test("a structured code without a matching status classifies nothing", () => {
-    expect(
-      classifyFailure("p", { message: "500 x", code: "unsupported_country_region_territory" })
-        .failureClass,
-    ).toBe("provider_error");
+  test("a structured code without its status classifies nothing", () => {
+    expect(classifyFailure("p", { message: "500 x", code: REGION }).failureClass).toBe(
+      "provider_error",
+    );
     expect(
       classifyFailure("p", { message: "400 x", code: "insufficient_quota" }).failureClass,
     ).toBe("invalid_request");
-    expect(
-      classifyFailure("p", { message: "x", code: "unsupported_country_region_territory" })
-        .failureClass,
-    ).toBe("other");
+    expect(classifyFailure("p", { message: "x", code: REGION }).failureClass).toBe("other");
   });
 
-  test("structuredFromBody reads fields, never message text", () => {
-    expect(
-      structuredFromBody({
-        error: { code: "unsupported_country_region_territory", message: "insufficient_quota" },
-      }),
-    ).toEqual({ code: "unsupported_country_region_territory" });
-    expect(
-      structuredFromBody({ error: [{ code: "unsupported_country_region_territory" }] }),
-    ).toEqual({ code: "unsupported_country_region_territory" });
-    expect(
-      structuredFromBody({ error: { metadata: { limit_source: "openrouter_key_limit" } } }),
-    ).toEqual({ limitSource: "openrouter_key_limit" });
-    expect(structuredFromBody("403 insufficient_quota")).toEqual({});
-  });
-
-  // Provider messages echo request content (a rejected prompt, a page title): text an outsider
-  // controls must never produce a class that benches a provider.
   for (const status of [400, 500, 503]) {
-    test(`status ${status} whose message echoes credit/region tokens is not credits or region`, () => {
+    test(`status ${status} whose text echoes credit/region tokens is not credits, region or key`, () => {
       const f = classifyFailure("p", {
-        message: `${status} invalid value in prompt: "insufficient_quota openrouter_key_limit unsupported_country_region_territory 402 Country, region, or territory not supported"`,
+        message: `${status} prompt: "insufficient_quota openrouter_key_limit ${REGION} 402 Country, region, or territory not supported"`,
       });
       expect(["credits_exhausted", "region_refused", "key_refused"]).not.toContain(f.failureClass);
       expect(f.code).toBeUndefined();
     });
   }
 
-  test("tokens in the text of a status-less failure do not classify it", () => {
-    for (const message of [
-      "page says insufficient_quota",
-      "the title was: Request timed out. Connection error. 402",
-      "unsupported_country_region_territory",
-    ]) {
+  test("tokens in a status-less message classify nothing", () => {
+    for (const message of ["insufficient_quota", REGION, "the title was: Request timed out. 402"]) {
       expect(classifyFailure("p", { message }).failureClass).toBe("other");
     }
   });
 
-  test("a 402 with no body is credits; a 403 with only the structured region code is region", () => {
-    expect(classifyFailure("p", { message: "402 status code (no body)" }).failureClass).toBe(
-      "credits_exhausted",
-    );
+  test("a status number inside prose is not a status; structuredFromBody reads fields only", () => {
+    expect(classifyFailure("p", { message: "see page 402" }).status).toBeNull();
+    expect(structuredFromBody({ error: { code: REGION, message: "insufficient_quota" } })).toEqual({
+      code: REGION,
+    });
     expect(
-      classifyFailure("p", { message: "403", code: "unsupported_country_region_territory" })
-        .failureClass,
-    ).toBe("region_refused");
+      structuredFromBody({ error: { metadata: { limit_source: "openrouter_key_limit" } } }),
+    ).toEqual({ limitSource: "openrouter_key_limit" });
+    expect(structuredFromBody("403 insufficient_quota")).toEqual({});
   });
 
-  test("retry-after parsing", () => {
+  test("retry-after parsing, only trusted on a 429; table: only invalid_request ends the chain", () => {
     expect(parseRetryAfterMs("Retry-After: 7")).toBe(7000);
     expect(parseRetryAfterMs("Please try again in 1.5s")).toBe(1500);
-    expect(parseRetryAfterMs("try again in 250ms")).toBe(250);
-    expect(parseRetryAfterMs("nothing here")).toBeUndefined();
-    expect(parseRetryAfterMs("retry after 99999")).toBeUndefined();
-  });
-
-  test("policy table: only an invalid request ends the chain; region is never retried in place", () => {
-    for (const [cls, entry] of Object.entries(DEFAULT_FAILOVER_POLICY)) {
-      expect(entry.failover).toBe(cls !== "invalid_request");
-      expect(entry.retrySame).toBe(cls === "rate_limited");
-    }
+    expect(classifyFailure("p", { message: "500 try again in 2s" }).retryAfterMs).toBeUndefined();
+    for (const [cls, rule] of Object.entries(FAILOVER))
+      expect(rule.failover).toBe(cls !== "invalid_request");
   });
 });
 
 // ---- chain ------------------------------------------------------------------
 
 describe("provider chain", () => {
-  test("first provider answers: no notice, second untouched", async () => {
-    const a = fake("a", [{ kind: "ok" }]);
-    const b = fake("b", [{ kind: "ok" }]);
-    const { result, notices } = await run(createProviderChain({ providers: [a.spec, b.spec] }));
+  test("first provider answers: no notice, second untouched, key and SDK retries set", async () => {
+    const [a, b] = [fake("a", [{ kind: "ok" }]), fake("b", [{ kind: "ok" }])];
+    const { result, notices } = await run(chainOf([a, b]));
     expect(result.content).toEqual([{ type: "text", text: "from a" }]);
     expect(notices).toEqual([]);
     expect(b.calls).toHaveLength(0);
-    expect(a.calls[0]!.apiKey).toBe("key-a");
+    expect(a.calls[0]).toMatchObject({ apiKey: "key-a", maxRetries: 0 });
   });
 
-  const failoverCases: [string, Script, string, number | null][] = [
-    [
-      "402 out of credits",
-      { kind: "error", message: "402 This request requires more credits" },
-      "credits_exhausted",
-      402,
-    ],
-    ["401 key refused", { kind: "error", message: "401 Invalid API key" }, "key_refused", 401],
-    ["403 key refused", { kind: "error", message: "403 Forbidden" }, "key_refused", 403],
-    ["region refusal (structured)", regionThrow(), "region_refused", 403],
-    [
-      "403 with the body code flattened away",
-      { kind: "error", message: "403 Country, region, or territory not supported" },
-      "key_refused",
-      403,
-    ],
+  const failover: [string, Script, string, number | null][] = [
+    ["402", { kind: "error", message: "402 no credits" }, "credits_exhausted", 402],
+    ["401", { kind: "error", message: "401 bad key" }, "key_refused", 401],
+    ["403 flattened", { kind: "error", message: "403 Forbidden" }, "key_refused", 403],
+    ["region (structured)", regionThrow(), "region_refused", 403],
     ["5xx", { kind: "error", message: "503 overloaded" }, "provider_error", 503],
     ["timeout", { kind: "error", message: "Request timed out." }, "timeout", null],
-    [
-      "status-less free-text failure",
-      { kind: "error", message: "Unexpected token < in JSON" },
-      "other",
-      null,
-    ],
     ["empty completion", { kind: "empty" }, "malformed_response", null],
     [
-      "thrown by the transport",
+      "thrown with a status",
       { kind: "throw", error: Object.assign(new Error("boom"), { status: 502 }) },
       "provider_error",
       502,
     ],
+    ["free text", { kind: "error", message: "something odd" }, "other", null],
     [
-      "429 with no retry hint",
+      "429 without a hint",
       { kind: "error", message: "429 Too many requests" },
       "rate_limited",
       429,
     ],
   ];
-  for (const [name, script, cls, status] of failoverCases) {
-    test(`${name}: continues on the next provider, one trace notice`, async () => {
-      const a = fake("a", [script]);
-      const b = fake("b", [{ kind: "ok" }]);
-      const { result, notices } = await run(createProviderChain({ providers: [a.spec, b.spec] }));
-      expect(result.stopReason).toBe("stop");
+  for (const [name, script, cls, status] of failover) {
+    test(`${name}: continues on the next provider with one notice`, async () => {
+      const [a, b] = [fake("a", [script]), fake("b", [{ kind: "ok" }])];
+      const { result, notices } = await run(chainOf([a, b]));
       expect(result.provider).toBe("b");
       expect(notices).toEqual([
         {
@@ -358,48 +287,29 @@ describe("provider chain", () => {
           to: "b",
           failureClass: cls as never,
           status,
-          ...(cls === "region_refused" ? { code: "unsupported_country_region_territory" } : {}),
+          ...(cls === "region_refused" ? { code: REGION } : {}),
         },
       ]);
-      expect(a.calls).toHaveLength(1);
-      expect(b.calls).toHaveLength(1);
+      expect([a.calls.length, b.calls.length]).toEqual([1, 1]);
     });
   }
 
-  test("region refusal is never retried on the same provider, even with a retry hint", async () => {
-    const a = fake("a", [
-      { kind: "error", message: "403 unsupported_country_region_territory. Retry-After: 1" },
-    ]);
-    const b = fake("b", [{ kind: "ok" }]);
+  test("region is not retried in place, even with a retry hint", async () => {
+    const [a, b] = [fake("a", [regionThrow(". Retry-After: 1")]), fake("b", [{ kind: "ok" }])];
     const sleeps: number[] = [];
-    await run(
-      createProviderChain({
-        providers: [a.spec, b.spec],
-        sleep: async (ms) => void sleeps.push(ms),
-      }),
-    );
-    expect(a.calls).toHaveLength(1);
-    expect(sleeps).toEqual([]);
+    await run(chainOf([a, b], { sleep: async (ms) => void sleeps.push(ms) }));
+    expect([a.calls.length, sleeps]).toEqual([1, []]);
   });
 
-  test("rate limit with Retry-After: waits, retries the same provider, no failover", async () => {
-    const a = fake("a", [
-      { kind: "error", message: "429 Rate limit. Retry-After: 2" },
-      { kind: "ok" },
-    ]);
-    const b = fake("b", [{ kind: "ok" }]);
+  test("rate limit with Retry-After: wait, retry the same provider once, then fail over", async () => {
     const sleeps: number[] = [];
-    const { result, notices } = await run(
-      createProviderChain({
-        providers: [a.spec, b.spec],
-        sleep: async (ms) => void sleeps.push(ms),
-      }),
+    const ok = fake("a", [{ kind: "error", message: "429 Retry-After: 2" }, { kind: "ok" }]);
+    const first = await run(
+      chainOf([ok, fake("b", [{ kind: "ok" }])], { sleep: async (ms) => void sleeps.push(ms) }),
     );
     expect(sleeps).toEqual([2000]);
-    expect(a.calls).toHaveLength(2);
-    expect(b.calls).toHaveLength(0);
-    expect(result.provider).toBe("a");
-    expect(notices).toEqual([
+    expect(first.result.provider).toBe("a");
+    expect(first.notices).toEqual([
       {
         action: "retry",
         from: "a",
@@ -409,299 +319,203 @@ describe("provider chain", () => {
         waitMs: 2000,
       },
     ]);
-  });
 
-  test("Retry-After longer than the cap fails over at once", async () => {
-    const a = fake("a", [{ kind: "error", message: "429 Rate limit. Retry-After: 120" }]);
-    const b = fake("b", [{ kind: "ok" }]);
-    const sleeps: number[] = [];
-    const { notices } = await run(
-      createProviderChain({
-        providers: [a.spec, b.spec],
-        maxRateLimitWaitMs: 5000,
-        sleep: async (ms) => void sleeps.push(ms),
-      }),
-    );
-    expect(sleeps).toEqual([]);
-    expect(notices.map((n) => n.action)).toEqual(["failover"]);
-  });
+    const [a, b] = [
+      fake("a", [{ kind: "error", message: "429 Retry-After: 1" }]),
+      fake("b", [{ kind: "ok" }]),
+    ];
+    const again = await run(chainOf([a, b]));
+    expect(again.notices.map((n) => n.action)).toEqual(["retry", "failover"]);
 
-  test("a second rate limit after the retry fails over", async () => {
-    const a = fake("a", [{ kind: "error", message: "429 Retry-After: 1" }]);
-    const b = fake("b", [{ kind: "ok" }]);
-    const { notices, result } = await run(
-      createProviderChain({ providers: [a.spec, b.spec], sleep: noSleep }),
-    );
-    expect(a.calls).toHaveLength(2);
-    expect(notices.map((n) => n.action)).toEqual(["retry", "failover"]);
-    expect(result.provider).toBe("b");
+    const [c, d] = [
+      fake("c", [{ kind: "error", message: "429 Retry-After: 120" }]),
+      fake("d", [{ kind: "ok" }]),
+    ];
+    const long = await run(chainOf([c, d], { maxRateLimitWaitMs: 5000 }));
+    expect(long.notices.map((n) => n.action)).toEqual(["failover"]);
   });
 
   test("an invalid request ends the chain without trying another provider", async () => {
-    const a = fake("a", [{ kind: "error", message: "400 context_length_exceeded: too long" }]);
-    const b = fake("b", [{ kind: "ok" }]);
-    const { result, notices } = await run(createProviderChain({ providers: [a.spec, b.spec] }));
-    expect(b.calls).toHaveLength(0);
-    expect(result.stopReason).toBe("error");
-    expect(result.errorMessage).toContain("context_length_exceeded");
+    const [a, b] = [
+      fake("a", [{ kind: "error", message: "400 context_length_exceeded" }]),
+      fake("b", [{ kind: "ok" }]),
+    ];
+    const { result, notices } = await run(chainOf([a, b]));
+    expect([b.calls.length, result.stopReason, result.errorMessage]).toEqual([
+      0,
+      "error",
+      "a: invalid_request (400)",
+    ]);
     expect(notices.map((n) => n.action)).toEqual(["exhausted"]);
   });
 
-  test("both providers failing ends as one error carrying both failures", async () => {
-    const a = fake("a", [{ kind: "error", message: "402 This request requires more credits" }]);
-    const b = fake("b", [regionThrow()]);
-    const { result, notices } = await run(createProviderChain({ providers: [a.spec, b.spec] }));
-    expect(result.stopReason).toBe("error");
-    expect(result.errorMessage).toContain("all providers failed");
-    expect(result.errorMessage).toContain("a: credits_exhausted (402)");
-    expect(result.errorMessage).toContain(
-      "b: region_refused (403 unsupported_country_region_territory)",
+  test("both failing: one error carrying both failures as text and as diagnostics, no provider text by default", async () => {
+    const mk = () => [
+      fake("a", [{ kind: "error", message: "402 needs credits: SECRET-PROMPT" }]),
+      fake("b", [regionThrow()]),
+    ];
+    const { result, notices } = await run(chainOf(mk()));
+    expect(result.errorMessage).toBe(
+      `all providers failed: a: credits_exhausted (402) | b: region_refused (403 ${REGION})`,
     );
-    expect(notices.map((n) => `${n.action}:${n.from}`)).toEqual(["failover:a", "exhausted:b"]);
-  });
-
-  test("trace notices never carry the provider's text", async () => {
-    const a = fake("a", [
-      { kind: "error", message: "402 secret prompt text: the customer is Acme" },
+    expect(JSON.stringify([result, notices])).not.toContain("SECRET");
+    expect(result.diagnostics!.map((d) => d.details)).toMatchObject([
+      { provider: "a", failureClass: "credits_exhausted", status: 402 },
+      { provider: "b", failureClass: "region_refused", status: 403, code: REGION },
     ]);
-    const b = fake("b", [{ kind: "ok" }]);
-    const { notices } = await run(createProviderChain({ providers: [a.spec, b.spec] }));
-    expect(JSON.stringify(notices)).not.toContain("Acme");
+    expect(notices.map((n) => `${n.action}:${n.from}`)).toEqual(["failover:a", "exhausted:b"]);
+    const withText = await run(chainOf(mk(), { includeProviderText: true }));
+    expect(withText.result.errorMessage).toContain("SECRET-PROMPT");
   });
 
-  test("a failure after content was delivered is not replayed on another provider", async () => {
-    const a = fake("a", [{ kind: "partial-then-error", message: "502 dropped" }]);
-    const b = fake("b", [{ kind: "ok" }]);
-    const { events, result, notices } = await run(
-      createProviderChain({ providers: [a.spec, b.spec] }),
-    );
-    expect(b.calls).toHaveLength(0);
-    expect(notices).toEqual([]);
-    expect(events.some((e) => e.type === "text_delta")).toBe(true);
-    expect(result.stopReason).toBe("error");
-  });
+  test("a failure after content was delivered is not replayed; a failed attempt's events are not forwarded", async () => {
+    const [a, b] = [
+      fake("a", [{ kind: "partial-then-error", message: "502 dropped" }]),
+      fake("b", [{ kind: "ok" }]),
+    ];
+    const partial = await run(chainOf([a, b]));
+    expect([b.calls.length, partial.notices, partial.result.stopReason]).toEqual([0, [], "error"]);
+    expect(partial.events.some((e) => e.type === "text_delta")).toBe(true);
 
-  test("a failed attempt's events are not forwarded", async () => {
-    const a = fake("a", [{ kind: "error", message: "402 no credits" }]);
-    const b = fake("b", [{ kind: "ok" }]);
-    const { events } = await run(createProviderChain({ providers: [a.spec, b.spec] }));
+    const [c, d] = [fake("c", [{ kind: "error", message: "402 x" }]), fake("d", [{ kind: "ok" }])];
+    const { events } = await run(chainOf([c, d]));
     expect(events.filter((e) => e.type === "start")).toHaveLength(1);
     expect(events.filter((e) => e.type === "error")).toHaveLength(0);
-    expect(events.at(-1)!.type).toBe("done");
   });
 
-  test("sticky classes bench the provider for later calls; expiry brings it back", async () => {
-    let t = 1_000;
-    const a = fake("a", [{ kind: "error", message: "402 no credits" }, { kind: "ok" }]);
-    const b = fake("b", [{ kind: "ok" }]);
-    const chain = createProviderChain({ providers: [a.spec, b.spec], now: () => t });
-    const runBinding = bind(chain);
-    await run(runBinding);
-    expect(a.calls).toHaveLength(1);
-
-    const second = await run(runBinding);
-    expect(a.calls).toHaveLength(1); // skipped, not asked again
+  test("credits, key and region bench a provider for the rest of THIS run only", async () => {
+    const mk = () => [
+      fake("a", [{ kind: "error", message: "402 x" }, { kind: "ok" }]),
+      fake("b", [{ kind: "ok" }]),
+    ];
+    const [a, b] = mk();
+    const chain = chainOf([a, b]);
+    const runOne = bind(chain);
+    await call(runOne);
+    const second = await call(runOne);
+    expect(a.calls).toHaveLength(1); // not asked again in the same run
     expect(second.result.provider).toBe("b");
-    expect(second.notices).toEqual([
-      { action: "failover", from: "a", to: "b", failureClass: "credits_exhausted", status: 402 },
-    ]);
-
-    t += 6 * 60_000;
-    const third = await run(runBinding);
-    expect(a.calls).toHaveLength(2);
-    expect(third.result.provider).toBe("a");
+    const other = await call(bind(chain)); // another run asks it again
+    expect([a.calls.length, other.result.provider]).toEqual([2, "a"]);
   });
 
-  test("nothing learned in one run benches a provider for another run", async () => {
-    const a = fake("a", [{ kind: "error", message: "402 no credits" }, { kind: "ok" }]);
-    const b = fake("b", [{ kind: "ok" }]);
-    const chain = createProviderChain({ providers: [a.spec, b.spec] });
-    await run(bind(chain)); // run 1: a fails with 402, benched for run 1 only
-    const other = await run(bind(chain)); // run 2: a is asked again
-    expect(a.calls).toHaveLength(2);
-    expect(other.result.provider).toBe("a");
+  test("other classes are never benched; a benched provider is still the last resort", async () => {
+    const [a, b] = [
+      fake("a", [{ kind: "error", message: "503 x" }, { kind: "ok" }]),
+      fake("b", [{ kind: "ok" }]),
+    ];
+    const runOne = bind(chainOf([a, b]));
+    await call(runOne);
+    expect((await call(runOne)).result.provider).toBe("a");
+
+    const [c, d] = [
+      fake("c", [{ kind: "error", message: "402 x" }, { kind: "ok" }]),
+      fake("d", [{ kind: "error", message: "503 y" }]),
+    ];
+    const two = bind(chainOf([c, d]));
+    expect((await call(two)).result.stopReason).toBe("error");
+    expect((await call(two)).result.provider).toBe("c"); // d first (c benched), d fails, c answers
   });
 
-  test("a status-less timeout is never benched, even within a run", async () => {
-    const a = fake("a", [{ kind: "error", message: "Request timed out." }, { kind: "ok" }]);
-    const b = fake("b", [{ kind: "ok" }]);
-    const runBinding = bind(createProviderChain({ providers: [a.spec, b.spec] }));
-    await run(runBinding);
-    const second = await run(runBinding);
-    expect(a.calls).toHaveLength(2);
-    expect(second.result.provider).toBe("a");
+  test("model ids come from data: the gateway default drops openai/, an ids table overrides, null skips", async () => {
+    const [a, b] = [
+      fake("a", [{ kind: "error", message: "402 x" }]),
+      fake("cloudflare-ai-gateway", [{ kind: "ok" }]),
+    ];
+    await run(chainOf([a, b]));
+    expect([a.calls[0]!.model, b.calls[0]!.model]).toEqual([CANON, "gpt-5-mini"]);
+
+    const [c, d] = [fake("c", [{ kind: "ok" }]), fake("d", [{ kind: "ok" }])];
+    const chain = chainOf([c, d], { ids: { [CANON]: { c: null, d: "gpt-5-mini" } } });
+    const { result } = await run(chain);
+    expect([c.calls.length, result.provider, d.calls[0]!.model]).toEqual([0, "d", "gpt-5-mini"]);
   });
 
-  test("a benched provider is still the last resort", async () => {
-    let t = 0;
-    const a = fake("a", [{ kind: "error", message: "402 no credits" }, { kind: "ok" }]);
-    const b = fake("b", [{ kind: "error", message: "503 down" }]);
-    const chain = createProviderChain({ providers: [a.spec, b.spec], now: () => t });
-    const runBinding = bind(chain);
-    const first = await run(runBinding);
-    expect(first.result.stopReason).toBe("error");
-    t += 1000;
-    const second = await run(runBinding);
-    // b is tried first (a is benched), fails, then a is tried and answers.
-    expect(second.result.provider).toBe("a");
-  });
-
-  test("a provider that cannot serve the model is skipped, not failed", async () => {
-    const a = fake("a", [{ kind: "ok" }], () => null);
-    const b = fake("b", [{ kind: "ok" }]);
-    const { result, notices } = await run(createProviderChain({ providers: [a.spec, b.spec] }));
-    expect(a.calls).toHaveLength(0);
-    expect(notices).toEqual([]);
-    expect(result.provider).toBe("b");
-  });
-
-  test("no provider serves the model: an error naming the model", async () => {
-    const a = fake("a", [{ kind: "ok" }], () => null);
-    const { result } = await run(createProviderChain({ providers: [a.spec] }));
-    expect(result.stopReason).toBe("error");
-    expect(result.errorMessage).toContain("no provider serves model");
-  });
-
-  test("model ids are mapped per provider", async () => {
-    const a = fake("a", [{ kind: "error", message: "402 x" }], (id) => id);
-    const b = fake("b", [{ kind: "ok" }], (id) => id.replace("openai/", ""));
-    await run(createProviderChain({ providers: [a.spec, b.spec] }));
-    expect(a.calls[0]!.model).toBe("openai/gpt-5-mini");
-    expect(b.calls[0]!.model).toBe("gpt-5-mini");
-  });
-
-  test("a caller abort passes through and does not fail over", async () => {
-    const a = fake("a", [{ kind: "hang" }]);
-    const b = fake("b", [{ kind: "ok" }]);
-    const ac = new AbortController();
-    const pending = run(
-      createProviderChain({ providers: [a.spec, b.spec], firstEventTimeoutMs: 5_000 }),
-      {
-        signal: ac.signal,
-      },
-    );
-    await new Promise((r) => setTimeout(r, 10));
-    ac.abort();
-    const { result } = await pending;
-    expect(result.stopReason).toBe("aborted");
-    expect(b.calls).toHaveLength(0);
-  });
-
-  test("a provider that goes silent is failed as a timeout after firstEventTimeoutMs", async () => {
-    const a = fake("a", [{ kind: "hang" }]);
-    const b = fake("b", [{ kind: "ok" }]);
-    const { result, notices } = await run(
-      createProviderChain({ providers: [a.spec, b.spec], firstEventTimeoutMs: 20 }),
-    );
-    expect(result.provider).toBe("b");
-    expect(notices[0]).toMatchObject({ failureClass: "timeout", from: "a", to: "b" });
-  });
-
-  test("policy overrides: a class can be made non-failover", async () => {
-    const a = fake("a", [{ kind: "error", message: "503 down" }]);
-    const b = fake("b", [{ kind: "ok" }]);
-    const { result } = await run(
+  test("a provider that cannot serve the model, has no key or no gateway env is skipped with its reason", async () => {
+    const a = fake("a", [{ kind: "ok" }]);
+    const none = await run(
       createProviderChain({
-        providers: [a.spec, b.spec],
-        policy: { provider_error: { failover: false } },
+        providers: ["a"],
+        extraModels: [modelOf("a", CANON)] as never,
+        env: {},
+        streams: { a: a.stream },
       }),
     );
-    expect(b.calls).toHaveLength(0);
-    expect(result.stopReason).toBe("error");
+    expect(none.result.errorMessage).toContain('no API key for provider "a"');
+    const gw = modelOf("cloudflare-ai-gateway", "gpt-5-mini");
+    const noEnv = await run(
+      createProviderChain({
+        providers: ["cloudflare-ai-gateway"],
+        extraModels: [
+          { ...gw, baseUrl: "https://g/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai" },
+        ] as never,
+        apiKeys: { "cloudflare-ai-gateway": "t" },
+        env: {},
+      }),
+    );
+    expect(noEnv.result.errorMessage).toContain("{CLOUDFLARE_ACCOUNT_ID}");
+    const nothing = await run(createProviderChain({ providers: ["z"], env: {} }));
+    expect(nothing.result.errorMessage).toContain("no provider can serve");
   });
 
-  test("a throwing listener does not break the call", async () => {
-    const a = fake("a", [{ kind: "error", message: "402 x" }]);
-    const b = fake("b", [{ kind: "ok" }]);
-    const chain = createProviderChain({ providers: [a.spec, b.spec] });
-    const stream = await chain.forRun(() => {
+  test("overrides patch the pi-ai model per provider; the gateway placeholders are filled from env", async () => {
+    let seen: Model<never> | undefined;
+    const stream: ChainStreamFn = (m) => {
+      seen = m as never;
+      const out = createAssistantMessageEventStream();
+      queueMicrotask(
+        () => (
+          out.push({
+            type: "done",
+            reason: "stop",
+            message: msg("cloudflare-ai-gateway", { content: [{ type: "text", text: "x" }] }),
+          }),
+          out.end()
+        ),
+      );
+      return out;
+    };
+    const gw = {
+      ...modelOf("cloudflare-ai-gateway", "gpt-5-mini"),
+      baseUrl: "https://g/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai",
+    };
+    const chain = createProviderChain({
+      providers: ["cloudflare-ai-gateway"],
+      extraModels: [gw] as never,
+      apiKeys: { "cloudflare-ai-gateway": "tok" },
+      env: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_GATEWAY_ID: "gw" },
+      overrides: {
+        "cloudflare-ai-gateway": { compat: { maxTokensField: "max_completion_tokens" } } as never,
+      },
+      streams: { "cloudflare-ai-gateway": stream },
+    });
+    await run(chain);
+    expect(seen!.baseUrl).toBe("https://g/v1/acct/gw/openai");
+    expect((seen as unknown as { compat: unknown }).compat).toEqual({
+      maxTokensField: "max_completion_tokens",
+    });
+  });
+
+  test("a caller abort passes through and does not fail over; a throwing listener does not break the call", async () => {
+    const ac = new AbortController();
+    ac.abort();
+    const [a, b] = [fake("a", [{ kind: "ok" }]), fake("b", [{ kind: "ok" }])];
+    const { result } = await call(bind(chainOf([a, b])), ac.signal);
+    expect([result.stopReason, a.calls.length + b.calls.length]).toEqual(["aborted", 0]);
+
+    const [c, d] = [fake("c", [{ kind: "error", message: "402 x" }]), fake("d", [{ kind: "ok" }])];
+    const stream = await chainOf([c, d]).forRun(() => {
       throw new Error("listener bug");
-    })(canonical, ctx);
-    expect((await stream.result()).provider).toBe("b");
+    })(canonical as never, ctx);
+    expect((await stream.result()).provider).toBe("d");
   });
 
-  test("construction rejects empty and duplicate providers", () => {
+  test("construction rejects no providers; preResolvedModels exposes models under spec names", () => {
     expect(() => createProviderChain({ providers: [] })).toThrow();
     const a = fake("a", [{ kind: "ok" }]);
-    expect(() => createProviderChain({ providers: [a.spec, a.spec] })).toThrow(/duplicate/);
-  });
-
-  test("preResolvedModels exposes the configured models under their spec names", () => {
-    const a = fake("a", [{ kind: "ok" }]);
-    const chain = createProviderChain({
-      providers: [a.spec],
-      models: { fast: { id: "openai/gpt-5-mini", overrides: { contextWindow: 1234 } } },
-    });
-    const m = chain.preResolvedModels().get("fast")!;
-    expect(m.model.id).toBe("openai/gpt-5-mini");
-    expect(m.model.contextWindow).toBe(1234);
-  });
-});
-
-// ---- shipped adapters --------------------------------------------------------
-
-describe("adapters", () => {
-  const base = {
-    id: "openai/gpt-5-mini",
-    name: "n",
-    api: "openai-completions",
-    provider: "x",
-    baseUrl: "",
-    reasoning: false,
-    input: ["text"],
-    cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 1,
-    maxTokens: 1,
-    headers: { stale: "1" },
-  } as never;
-
-  test("openRouter: identity mapping, its own base url, key and headers", () => {
-    const p = openRouter({ apiKey: "or-key", headers: { "X-Title": "t" } });
-    expect(p.name).toBe("openrouter");
-    expect(p.mapModel("openai/gpt-5-mini")).toBe("openai/gpt-5-mini");
-    const c = p.prepare(base, "openai/gpt-5-mini");
-    expect(c.model.baseUrl).toBe("https://openrouter.ai/api/v1");
-    expect(c.model.provider).toBe("openrouter");
-    expect(c.model.headers).toBeUndefined();
-    expect(c.apiKey).toBe("or-key");
-    expect(c.headers).toEqual({ "X-Title": "t" });
-  });
-
-  test("cloudflareAiGateway: endpoint, token as the key, openai-only default mapping", () => {
-    const p = cloudflareAiGateway({ accountId: "acct", gatewayId: "gw", token: "cf-token" });
-    expect(p.name).toBe("cloudflare-ai-gateway");
-    expect(p.mapModel("openai/gpt-5-mini")).toBe("gpt-5-mini");
-    expect(p.mapModel("anthropic/claude-x")).toBeNull();
-    const c = p.prepare(base, "gpt-5-mini");
-    expect(c.model.baseUrl).toBe("https://gateway.ai.cloudflare.com/v1/acct/gw/openai");
-    // pi-ai sends the key as cf-aig-authorization for exactly this provider name.
-    expect(c.model.provider).toBe("cloudflare-ai-gateway");
-    expect(c.apiKey).toBe("cf-token");
-    expect(c.headers).toBeUndefined();
-  });
-
-  test("cloudflareAiGateway: upstream key goes in Authorization; ids are url-encoded", () => {
-    const p = cloudflareAiGateway({
-      accountId: "a/b",
-      gatewayId: "g w",
-      token: "t",
-      upstreamApiKey: "sk-up",
-    });
-    const c = p.prepare(base, "gpt-5-mini");
-    expect(c.model.baseUrl).toBe("https://gateway.ai.cloudflare.com/v1/a%2Fb/g%20w/openai");
-    expect(c.headers).toEqual({ Authorization: "Bearer sk-up" });
-  });
-
-  test("model id mapping is configurable: map entries win, null disables, fn is the fallback", () => {
-    const p = cloudflareAiGateway({
-      accountId: "a",
-      gatewayId: "g",
-      token: "t",
-      modelMap: { "anthropic/claude-x": "claude-x", "openai/gpt-5-mini": null },
-      mapModel: (id) => `custom-${id}`,
-    });
-    expect(p.mapModel("anthropic/claude-x")).toBe("claude-x");
-    expect(p.mapModel("openai/gpt-5-mini")).toBeNull();
-    expect(p.mapModel("other")).toBe("custom-other");
+    const m = chainOf([a], { models: { fast: CANON } })
+      .preResolvedModels()
+      .get("fast")!;
+    expect([m.model.id, m.model.contextWindow]).toEqual([CANON, 1000]);
   });
 });

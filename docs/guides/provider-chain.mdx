@@ -1,171 +1,95 @@
 ---
 title: Provider chain and failover
-description: Give a model an ordered list of providers. A classified failure continues the same call on the next one, mid-run included.
+description: An ordered list of pi-ai providers for a model. A classified failure continues the same call on the next one, mid-run included.
 ---
 
-A model call can fail for reasons that have nothing to do with the model: the
-account is out of credits, the key was rotated, the provider is rate limiting
-or down, a region is refused. A **provider chain** gives an agent an ordered
-list of providers for one model. When a call fails in a way another provider
-could fix, the same call (same messages, same tool results) goes to the next
-provider. Nothing is lost, because the conversation lives in the harness, not
-in the provider.
+A model call can fail for reasons unrelated to the model: the account is out of
+credits, the key was rotated, a rate limit, an outage, a regional refusal. A
+**provider chain** is an ordered list of pi-ai providers. When a call fails in a
+way another provider could fix, the same call (same messages, same tool results)
+goes to the next provider. Nothing is lost: the conversation lives in the harness.
 
 ```ts
-import {
-  runAgent,
-  createProviderChain,
-  openRouter,
-  cloudflareAiGateway,
-} from "@droveragent/facade";
+import { runAgent, createProviderChain } from "@droveragent/facade";
 
 const providers = createProviderChain({
-  providers: [
-    openRouter({ apiKey: process.env.OPENROUTER_API_KEY! }),
-    cloudflareAiGateway({
-      accountId: process.env.CF_ACCOUNT_ID!,
-      gatewayId: "my-gateway",
-      token: process.env.CF_AIG_TOKEN!,
-    }),
-  ],
-  // Spec model name -> canonical (OpenRouter style) model id.
-  models: { "gpt-mini": { id: "openai/gpt-5-mini" } },
+  providers: ["openrouter", "cloudflare-ai-gateway"], // pi-ai provider names, in order
+  models: { "gpt-mini": "openai/gpt-4o-mini" },       // spec model name -> canonical id
 });
 
 const handle = runAgent(spec, input, { providers }); // spec.model = "gpt-mini"
 for await (const e of handle.events) {
   if (e.kind === "provider_failover") console.log(e.from, "->", e.to, e.failureClass, e.status);
 }
-const result = await handle.result;
-console.log(result.usageByProvider); // { "cloudflare-ai-gateway": { inputTokens, ... } }
+console.log((await handle.result).usageByProvider);
 ```
 
-The chain covers every model call of the run: the main loop, subagents, and
-the compaction summariser. Pass it as `RunOptions.providers` (facade) or
-`HarnessDeps.providers` (harness).
+There is no adapter to learn. Each provider is pi-ai's own registry entry (base URL,
+API, request quirks), the key comes from the resolver's env vars (`OPENROUTER_API_KEY`,
+`CLOUDFLARE_API_KEY`), and the gateway's `{CLOUDFLARE_ACCOUNT_ID}` /
+`{CLOUDFLARE_GATEWAY_ID}` come from `env`. The chain covers every model call of the
+run: the main loop, subagents and the compaction summariser.
+
+## Providers and models are data
+
+- **Ids.** A canonical id is OpenRouter style. Per provider it defaults to the same
+  id, except `cloudflare-ai-gateway`, which drops a leading `openai/` (pi-ai lists its
+  OpenAI models unprefixed). Anything else is the `ids` table:
+  `ids: { "openai/gpt-4o-mini": { "cloudflare-ai-gateway": "gpt-4o-mini" } }`; `null`
+  means "this provider does not serve it".
+- **Missing models.** A provider whose registry has no entry for the id is skipped
+  (not a failure). Either bump pi-ai or pass `extraModels`.
+- **Quirks.** A per-provider patch of the pi-ai model: `overrides: { "cloudflare-ai-gateway":
+  { compat: { maxTokensField: "max_completion_tokens" } } }`.
 
 ## What fails over
 
-Classification is **status first and structured only**. The HTTP status ranks
-first, and a class that can bench a provider (credits, key, region) needs the
-status plus, where the class says so, a field of the parsed error body
-(`error.code`, `error.metadata.limit_source`). Free text is never searched for
-those: provider error messages echo request content (a rejected prompt, a tool
-argument, a page title), so text an outsider controls would otherwise be able to
-make a call look like "out of credits" and bench a provider.
+Classification is **status first, structured fields only**. A class that can bench a
+provider (credits, key, region) needs the HTTP status plus, where the class says so,
+a field of the parsed error body. Message text is never searched: provider errors
+echo request content (a rejected prompt, a page title), so text an outsider controls
+could otherwise bench a provider.
 
-| Class | Needs | Fails over | Retried on the same provider | Skipped for the rest of the run |
+| Class | Needs | Fails over | Retried in place | Skipped for the rest of the run |
 |---|---|---|---|---|
-| `credits_exhausted` | 402; or 403 + `limit_source: openrouter_key_limit`; or 429 + `insufficient_quota` | yes | no | 5 min |
-| `key_refused` | 401, or any 403 not matched below | yes | no | 5 min |
-| `region_refused` | 403 + `code: unsupported_country_region_territory` | yes | **never** | 5 min |
+| `credits_exhausted` | 402; 403 + `limit_source: openrouter_key_limit`; 429 + `insufficient_quota` | yes | no | yes |
+| `key_refused` | 401, any other 403 | yes | no | yes |
+| `region_refused` | 403 + `code: unsupported_country_region_territory` | yes | never | yes |
 | `rate_limited` | 429 | yes | once, if `Retry-After` is at most `maxRateLimitWaitMs` | no |
-| `provider_error` | 5xx | yes | no | 15 s |
-| `timeout` | 504, 408, or the SDK's own "Request timed out." / "Connection error." | yes | no | no |
-| `malformed_response` | the chain's own empty or truncated stream | yes | no | no |
-| `model_unavailable` | 404 | yes | no | 5 min |
+| `provider_error` | 5xx | yes | no | no |
+| `timeout` | 504, 408, the SDK's "Request timed out." / "Connection error." | yes | no | no |
+| `malformed_response` | an empty or truncated stream | yes | no | no |
+| `model_unavailable` | 404 | yes | no | no |
 | `invalid_request` | 400, 413, 422 | **no** | no | no |
-| `other` | no usable status | yes, for this call only | no | no |
+| `other` | no usable status | yes, this call only | no | no |
 
-The table is `DEFAULT_FAILOVER_POLICY`; any entry can be overridden with `policy`.
-The skip state belongs to one run and one provider: nothing learned from one
-run's errors affects another run.
+`invalid_request` ends the chain: the same request would fail the same way on the next
+provider. A model answer that fails the output schema is not a provider failure; the
+chain never sees it. "Skipped" means tried last for later calls of the same run; it is
+per run and per provider, nothing is shared.
 
-`invalid_request` ends the chain because the same request would fail the same
-way on the next provider. A content problem with the model's answer (it does
-not match the output schema, a tool call with bad arguments) is not a provider
-failure at all: the chain never sees it, and the harness's own output retry
-handles it.
+If every provider fails, the call ends as an error carrying all failures:
+`all providers failed: openrouter: credits_exhausted (402) | cloudflare-ai-gateway: key_refused (403)`
+(status and code only; `includeProviderText: true` adds the providers' own text, which can quote
+the prompt) and the same fields in the message's `diagnostics`. Pair with the harness change that
+makes provider errors fail the run, so the run ends `status: "error"` instead of an empty success.
 
-"Skipped" means the provider is tried last, not first, for later calls of the
-same run. Credits, keys and regions do not heal in seconds, so asking again every
-turn costs a round trip each time. The trace still shows a `failover` event for
-the bypassed provider on every call.
+A stream that fails **after content was delivered** is not replayed on another provider (it would
+duplicate output); that failure is passed on. A failure before the first content event is always eligible.
 
-## Mid-run and mid-stream
+## Trace and usage
 
-Failover works on the first call and after tool calls, because each model call
-carries the whole message list. The one case it does not cover is a stream that
-fails **after content was already delivered** (some text or a tool call already
-streamed out): replaying it on another provider would duplicate output, so that
-failure is passed on as it is. A failure before the first content event, which
-is where credit, key, region and rate-limit errors happen, is always eligible.
-Set `firstEventTimeoutMs` to fail an attempt that stays silent (a hung
-provider) as a `timeout`.
+Every reaction is a `provider_failover` event (`retry` / `failover` / `exhausted`, from, to,
+failureClass, status, code, waitMs): class and status, never provider text. `usage` events and
+`RunResult.usageByProvider` name the serving provider.
 
-If every provider fails, the call ends as an error whose message carries every
-failure:
+## Limits
 
-```
-all providers failed: openrouter: credits_exhausted (402): ... | cloudflare-ai-gateway: region_refused (403 unsupported_country_region_territory): ...
-```
-
-and a `provider_failover` event with `action: "exhausted"`. Run this together
-with the harness change that makes provider errors fail the run, so the run
-ends with `status: "error"` and this message instead of an empty success.
-
-## Trace events and usage
-
-Every reaction is a `provider_failover` event:
-
-```ts
-{ kind: "provider_failover", action: "retry" | "failover" | "exhausted",
-  from, to, failureClass, status, code?, waitMs?, runId, ts }
-```
-
-It carries the class, status and an allow-listed error code, never the
-provider's text (which can quote the prompt). `usage` events and
-`RunResult.usageByProvider` name the provider that served each call, so cost
-and tokens are attributed per provider. On a resumed run, `usageByProvider`
-covers only the new invocation.
-
-## Writing a provider
-
-A provider is a name, an id mapping and a way to build the pi-ai model and
-credentials:
-
-```ts
-const mine: ProviderSpec = {
-  name: "my-proxy",
-  mapModel: (id) => (id.startsWith("openai/") ? id.slice(7) : null), // null: cannot serve
-  prepare: (canonical, mapped) => ({
-    model: { ...canonical, id: mapped, provider: "my-proxy", baseUrl: "https://llm.example/v1" },
-    apiKey: process.env.MY_KEY!,
-  }),
-};
-```
-
-A provider that cannot serve a model (`mapModel` returns `null`) is skipped, not
-counted as a failure. `stream` replaces the transport (tests, proxies).
-
-### Shipped adapters
-
-- `openRouter({ apiKey, baseUrl?, headers?, modelMap?, mapModel? })`: ids are
-  OpenRouter's own, so the default mapping is the identity.
-- `cloudflareAiGateway({ accountId, gatewayId, token, upstreamApiKey?, upstream?, modelMap?, mapModel? })`:
-  the gateway's OpenAI-compatible endpoint
-  (`https://gateway.ai.cloudflare.com/v1/<account>/<gateway>/openai`). `token`
-  is the gateway token, sent as `cf-aig-authorization`; give `upstreamApiKey`
-  only when the gateway does not hold the provider key itself. The default
-  mapping serves OpenAI models only (`openai/gpt-5-mini` becomes `gpt-5-mini`)
-  and skips the rest; add `modelMap` entries or a `mapModel` function for other
-  upstreams.
-
-## Limits worth knowing
-
-- pi-ai flattens a failed call to error **text** (`"402 ..."`) and drops the
-  response body. Only the SDK's leading status survives, so over the built-in
-  transport a 403 is `key_refused` even when the body said region (it still fails
-  over). A provider with a custom `stream` that throws an error carrying
-  `status` and `error: { code }` gets the precise class. Provider `Retry-After`
-  headers are not visible either; a wait is honoured only on a 429 whose text
-  carries one ("try again in 2s"). Without a hint a rate limit fails over at
-  once.
-- The OpenAI client's own retries are off by default in the chain
-  (`transportRetries: 0`): failing over is the retry.
-- A failed attempt that was still billed by the provider is not counted in
-  `usageByProvider`.
-- The gateway adapter sends `max_completion_tokens` by default (current OpenAI
-  models reject `max_tokens`); override with `compat`.
-- Not verified against live OpenRouter or Cloudflare endpoints: the tests use
-  local servers that return the status codes and bodies those services document.
+- pi-ai flattens a failed call to the SDK's text (`"403 <message>"`) and drops the response body and
+  headers, and `onResponse` is not called for non-2xx. Over the plain transport only the leading status
+  survives: a region refusal arrives as a 403 and is classed `key_refused` (it still fails over, still is
+  not retried in place), and a real `Retry-After` header is invisible. A custom `streams` entry that throws
+  an error with `status` and `error: { code }` gets the precise class.
+- The OpenAI client's own retries are off (`maxRetries: 0`): failing over is the retry.
+- A failed attempt the provider still billed is not counted.
+- Not verified against live OpenRouter or Cloudflare endpoints: tests use local servers.

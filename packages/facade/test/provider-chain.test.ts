@@ -9,7 +9,7 @@ import { Type } from "@sinclair/typebox";
 import { defineAgent, type HarnessEvent } from "@droveragent/core";
 import { createNoneSandbox } from "@droveragent/sandbox";
 
-import { cloudflareAiGateway, createProviderChain, openRouter, runAgent } from "../src/index.ts";
+import { createProviderChain, runAgent } from "../src/index.ts";
 
 const spec = defineAgent({
   id: "provider-chain-probe",
@@ -76,18 +76,34 @@ function server(respond: (n: number, seen: Seen) => Response) {
   return { seen, base: `http://127.0.0.1:${s.port}`, stop: () => s.stop(true) };
 }
 
+/** pi-ai's own provider entries, pointed at the local servers (extraModels stand in for the registry). */
 function chainFor(a: { base: string }, b: { base: string }) {
+  const model = (provider: string, id: string, baseUrl: string) =>
+    ({
+      id,
+      name: id,
+      api: "openai-completions",
+      provider,
+      baseUrl,
+      reasoning: false,
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 128_000,
+      maxTokens: 8_192,
+    }) as never;
   return createProviderChain({
-    providers: [
-      openRouter({ apiKey: "or-key", baseUrl: `${a.base}/api/v1` }),
-      cloudflareAiGateway({
-        accountId: "acct",
-        gatewayId: "gw",
-        token: "cf-token",
-        origin: b.base,
-      }),
+    providers: ["openrouter", "cloudflare-ai-gateway"],
+    extraModels: [
+      model("openrouter", "openai/gpt-5-mini", `${a.base}/api/v1`),
+      model(
+        "cloudflare-ai-gateway",
+        "gpt-5-mini",
+        `${b.base}/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai`,
+      ),
     ],
-    models: { "gpt-mini": { id: "openai/gpt-5-mini" } },
+    apiKeys: { openrouter: "or-key", "cloudflare-ai-gateway": "cf-token" },
+    env: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_GATEWAY_ID: "gw" },
+    models: { "gpt-mini": "openai/gpt-5-mini" },
   });
 }
 

@@ -12,53 +12,23 @@ import {
   type SimpleStreamOptions,
 } from "@mariozechner/pi-ai";
 
-import type { PreResolvedModel } from "../resolve.ts";
+import { readApiKey, type PreResolvedModel } from "../resolve.ts";
 import {
-  DEFAULT_FAILOVER_POLICY,
+  FAILOVER,
   classifyFailure,
   structuredFromBody,
-  type FailoverPolicyEntry,
   type ProviderFailure,
   type RawFailure,
 } from "./classify.ts";
 
-/** The `StreamFn` shape pi-agent-core calls for every model call. */
+/** pi-agent-core's `StreamFn`. */
 export type ChainStreamFn = (
   model: Model<Api>,
   context: Context,
   options?: SimpleStreamOptions,
 ) => AssistantMessageEventStream | Promise<AssistantMessageEventStream>;
 
-/** What a provider adapter hands the chain for one call. */
-export interface PreparedCall {
-  /** The pi-ai model to call: `api`, `baseUrl`, `provider`, `id` as THIS provider wants them. */
-  model: Model<Api>;
-  apiKey: string;
-  /** Extra request headers. */
-  headers?: Record<string, string>;
-}
-
-/**
- * One provider in a chain. Small by design: a name, a model id mapping and a
- * way to build the pi-ai model + credentials. Everything else (classifying
- * failures, retrying, failing over, cooldowns) is the chain's.
- */
-export interface ProviderSpec {
-  /** Stable name: trace events, `usageByProvider` and the `provider` of the model it calls. */
-  name: string;
-  /**
-   * The id this provider serves for a canonical model id, or `null` when it
-   * cannot serve that model. A provider that cannot serve the model is skipped
-   * without counting as a failure.
-   */
-  mapModel(canonicalId: string): string | null;
-  /** Build the model and credentials for a call to `mappedId`. */
-  prepare(canonical: Model<Api>, mappedId: string): PreparedCall;
-  /** Replace the transport (tests, proxies). Defaults to pi-ai's `streamSimple`. */
-  stream?: ChainStreamFn;
-}
-
-/** Event delivered to a run's listener: what the harness turns into `provider_failover`. */
+/** What the harness turns into a `provider_failover` event. */
 export interface ProviderFailoverNotice {
   action: "retry" | "failover" | "exhausted";
   from: string;
@@ -68,113 +38,81 @@ export interface ProviderFailoverNotice {
   code?: string;
   waitMs?: number;
 }
-
 export type ProviderFailoverListener = (notice: ProviderFailoverNotice) => void;
 
-/** A model the chain serves, keyed by the spec's model name. */
-export interface ChainModelDef {
-  /** Canonical model id (OpenRouter style, `openai/gpt-5-mini`). Defaults to the key. */
-  id?: string;
-  /** Overrides on the canonical pi-ai model: cost, contextWindow, maxTokens, reasoning, input. */
-  overrides?: Partial<Omit<Model<Api>, "id" | "api" | "baseUrl" | "provider">>;
-}
-
 export interface ProviderChainOptions {
-  /** Ordered: the first is tried first. */
-  providers: readonly ProviderSpec[];
-  /** Models agents may name; see {@link ProviderChain.preResolvedModels}. */
-  models?: Readonly<Record<string, ChainModelDef>>;
-  /** Per-class overrides of {@link DEFAULT_FAILOVER_POLICY}. */
-  policy?: Partial<Record<ProviderFailureClass, Partial<FailoverPolicyEntry>>>;
+  /** pi-ai provider names, in order of preference: `["openrouter", "cloudflare-ai-gateway"]`. */
+  providers: readonly string[];
   /**
-   * Longest `Retry-After` (ms) the chain waits out before retrying the same
-   * provider. A longer ask fails over at once. Default 10 000.
+   * Spec model name -> canonical model id (OpenRouter style, `openai/gpt-4o-mini`). These become the
+   * harness's `preResolvedModels`; any other name resolves through the normal resolver.
    */
+  models?: Readonly<Record<string, string>>;
+  /**
+   * Canonical id -> id per provider, as data. `null` = that provider does not serve it. Without an
+   * entry the id is used as is, except that `cloudflare-ai-gateway` drops a leading `openai/`
+   * (its OpenAI models are listed unprefixed in pi-ai's registry).
+   */
+  ids?: Readonly<Record<string, Readonly<Record<string, string | null>>>>;
+  /** Per-provider patch of the pi-ai model, e.g. a request quirk: `{ "cloudflare-ai-gateway": { compat: { ... } } }`. */
+  overrides?: Readonly<Record<string, Partial<Model<Api>>>>;
+  /** Models pi-ai's registry does not list yet (checked first). */
+  extraModels?: ReadonlyArray<Model<Api>>;
+  /** API keys by provider; default: the resolver's env vars (`OPENROUTER_API_KEY`, `CLOUDFLARE_API_KEY`, ...). */
+  apiKeys?: Readonly<Record<string, string>>;
+  /** Environment for keys and the gateway's `{CLOUDFLARE_ACCOUNT_ID}` / `{CLOUDFLARE_GATEWAY_ID}` placeholders. */
+  env?: Readonly<Record<string, string | undefined>>;
+  /** Longest `Retry-After` (ms) waited out before one retry on the same provider. Default 10 000. */
   maxRateLimitWaitMs?: number;
-  /** Same-provider retries per call after a rate limit. Default 1. */
-  maxSameProviderRetries?: number;
-  /**
-   * Fail an attempt that has produced no content event within this many ms (a
-   * hung provider), as class `timeout`. Off by default.
-   */
-  firstEventTimeoutMs?: number;
-  /**
-   * The OpenAI SDK's own retries per attempt (it retries 408/409/429/5xx with
-   * backoff and honours `Retry-After`). Default 0: failing over is the
-   * retry, and the SDK's backoff would delay it by seconds. A caller's
-   * `maxRetries` option still wins.
-   */
-  transportRetries?: number;
-  /** Clock for cooldowns (tests). */
-  now?: () => number;
-  /** Wait for retries (tests). Must reject with an AbortError-like when the signal aborts. */
+  /** Put the providers' own text in the final error message. Off: it can quote the prompt. */
+  includeProviderText?: boolean;
+  /** Replace a provider's transport (tests, proxies), by provider name. */
+  streams?: Readonly<Record<string, ChainStreamFn>>;
+  /** Wait for a retry (tests). */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
 export interface ProviderChain {
-  /** Provider names in order. */
   readonly providers: readonly string[];
-  /**
-   * The transport for ONE run: pi's `StreamFn`, with failover notices going to
-   * `listener`. Cooldown state belongs to the binding, so it lives and dies
-   * with the run: nothing learned from one run's errors affects another.
-   */
+  /** The transport for ONE run; failover notices go to `listener`. A provider benched in this run stays benched only in it. */
   forRun(listener?: ProviderFailoverListener): ChainStreamFn;
-  /**
-   * Models for the harness's `preResolvedModels`: the chain's models by spec
-   * name. Their `apiKey` is a placeholder; each provider call uses that
-   * provider's own credentials.
-   */
+  /** `options.models` as harness `preResolvedModels`. The key is a placeholder: each call uses its provider's key. */
   preResolvedModels(): Map<string, PreResolvedModel>;
-}
-
-const DEFAULT_MAX_WAIT_MS = 10_000;
-const DEFAULT_RETRIES = 1;
-
-/** The chain's own failure, surfaced as the final assistant error message. */
-function describe(f: ProviderFailure): string {
-  const parts = [f.failureClass];
-  const detail = [f.status !== null ? String(f.status) : null, f.code ?? null].filter(Boolean);
-  const head = detail.length ? `${parts[0]} (${detail.join(" ")})` : parts[0]!;
-  return f.message ? `${f.provider}: ${head}: ${f.message}` : `${f.provider}: ${head}`;
 }
 
 const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(new Error("aborted"));
-    const t = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    const onAbort = (): void => {
-      clearTimeout(t);
-      reject(new Error("aborted"));
-    };
-    signal?.addEventListener("abort", onAbort, { once: true });
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => (clearTimeout(t), reject(new Error("aborted"))), {
+      once: true,
+    });
   });
 
-/** Events that carry no model content: they do not commit an attempt to its provider. */
-function isContentEvent(ev: AssistantMessageEvent): boolean {
-  return ev.type !== "start";
-}
+const ZERO_USAGE = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
 
-function emptyMessage(model: Model<Api>, provider: string, errorMessage: string): AssistantMessage {
+function errorMessage(
+  model: Model<Api>,
+  provider: string,
+  text: string,
+  stopReason: "error" | "aborted" = "error",
+): AssistantMessage {
   return {
     role: "assistant",
     content: [],
     api: model.api,
     provider,
     model: model.id,
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason: "error",
-    errorMessage,
+    usage: ZERO_USAGE,
+    stopReason,
+    errorMessage: text,
     timestamp: Date.now(),
   };
 }
@@ -187,176 +125,234 @@ function rawFromThrown(err: unknown): RawFailure {
     statusCode?: unknown;
     code?: unknown;
     retryAfterMs?: unknown;
-    headers?: unknown;
     error?: unknown;
-    body?: unknown;
   } | null;
   const raw: RawFailure = { message: typeof e?.message === "string" ? e.message : String(err) };
   const status = typeof e?.status === "number" ? e.status : e?.statusCode;
   if (typeof status === "number") raw.status = status;
-  Object.assign(
-    raw,
-    structuredFromBody({ error: e?.error ?? (e?.body as { error?: unknown })?.error }),
-  );
+  Object.assign(raw, structuredFromBody({ error: e?.error }));
   if (raw.code === undefined && typeof e?.code === "string") raw.code = e.code;
   if (typeof e?.retryAfterMs === "number") raw.retryAfterMs = e.retryAfterMs;
-  const h = e?.headers as Record<string, unknown> | undefined;
-  const ra = h && typeof h === "object" ? h["retry-after"] : undefined;
-  if (raw.retryAfterMs === undefined && ra !== undefined) {
-    const n = Number(ra);
-    if (Number.isFinite(n)) raw.retryAfterMs = Math.round(n * 1000);
-  }
   return raw;
 }
 
-type AttemptResult =
-  | { kind: "done" }
-  | { kind: "failed"; failure: ProviderFailure; message: AssistantMessage | null };
-
 export function createProviderChain(options: ProviderChainOptions): ProviderChain {
   if (options.providers.length === 0) throw new Error("createProviderChain: no providers");
-  const names = new Set<string>();
-  for (const p of options.providers) {
-    if (names.has(p.name)) throw new Error(`createProviderChain: duplicate provider "${p.name}"`);
-    names.add(p.name);
-  }
-  const policy = (cls: ProviderFailureClass): FailoverPolicyEntry =>
-    ({ ...DEFAULT_FAILOVER_POLICY[cls], ...options.policy?.[cls] }) as FailoverPolicyEntry;
-  const now = options.now ?? Date.now;
+  const env = options.env ?? (process.env as Record<string, string | undefined>);
   const sleep = options.sleep ?? defaultSleep;
-  const maxWait = options.maxRateLimitWaitMs ?? DEFAULT_MAX_WAIT_MS;
-  const maxRetries = options.maxSameProviderRetries ?? DEFAULT_RETRIES;
+  const maxWait = options.maxRateLimitWaitMs ?? 10_000;
+
+  const idFor = (provider: string, canonicalId: string): string | null => {
+    const mapped = options.ids?.[canonicalId];
+    if (mapped && provider in mapped) return mapped[provider] ?? null;
+    return provider === "cloudflare-ai-gateway"
+      ? canonicalId.replace(/^openai\//, "")
+      : canonicalId;
+  };
+
+  /** The call for one provider: pi-ai's own model entry (base URL, api, quirks) plus key; null if it cannot serve the id. */
+  const callFor = (
+    provider: string,
+    canonicalId: string,
+  ): { model: Model<Api>; apiKey: string } | string | null => {
+    const id = idFor(provider, canonicalId);
+    if (id === null) return null;
+    const found =
+      options.extraModels?.find((m) => m.provider === provider && m.id === id) ??
+      (getModel(provider as never, id as never) as Model<Api> | undefined);
+    if (!found) return null;
+    const baseUrl = (options.overrides?.[provider]?.baseUrl ?? found.baseUrl).replace(
+      /\{([A-Z_][A-Z0-9_]*)\}/g,
+      (_m, n: string) => env[n] ?? `{${n}}`,
+    );
+    if (/\{[A-Z_]+\}/.test(baseUrl))
+      return `no value for ${baseUrl.match(/\{[A-Z_]+\}/)![0]} in the environment`;
+    const apiKey = options.apiKeys?.[provider] ?? readApiKey(provider, env);
+    if (!apiKey) return `no API key for provider "${provider}"`;
+    return { model: { ...found, ...options.overrides?.[provider], baseUrl, id }, apiKey };
+  };
 
   const forRun = (listener?: ProviderFailoverListener): ChainStreamFn => {
-    /**
-     * provider -> why it is skipped for the rest of THIS run, and until when.
-     * One binding is one run: what one run's errors teach never reaches
-     * another run or tenant.
-     */
-    const cooldowns = new Map<string, { until: number; failure: ProviderFailure }>();
+    const benched = new Set<string>();
     const notify = (n: ProviderFailoverNotice): void => {
       try {
         listener?.(n);
       } catch {
-        // A trace hook must not break the call.
+        /* a trace hook must not break the call */
       }
     };
 
     return (canonical, context, callOptions) => {
       const out = createAssistantMessageEventStream();
-      void (async () => {
-        const signal = callOptions?.signal;
-        const failures: ProviderFailure[] = [];
+      const signal = callOptions?.signal;
+      const end = (msg: AssistantMessage): void => {
+        out.push({
+          type: "error",
+          reason: msg.stopReason === "aborted" ? "aborted" : "error",
+          error: msg,
+        });
+        out.end();
+      };
 
-        // Providers that can serve this model; recently failed ones go last.
-        const servable = options.providers
-          .map((p) => ({ p, mapped: p.mapModel(canonical.id) }))
-          .filter((x): x is { p: ProviderSpec; mapped: string } => x.mapped !== null);
+      /** One call to one provider. Events are held until the first content event, so a failure before it is retryable elsewhere. */
+      const attempt = async (
+        provider: string,
+        call: { model: Model<Api>; apiKey: string },
+      ): Promise<{ failure: ProviderFailure; message: AssistantMessage | null } | null> => {
+        const failed = (raw: RawFailure, message: AssistantMessage | null = null) => ({
+          failure: classifyFailure(provider, raw),
+          message,
+        });
+        const stream = options.streams?.[provider] ?? streamSimple;
+        let inner: AssistantMessageEventStream;
+        try {
+          // The SDK's own retries are off: failing over is the retry.
+          inner = await stream(call.model, context, {
+            ...callOptions,
+            apiKey: call.apiKey,
+            maxRetries: callOptions?.maxRetries ?? 0,
+          });
+        } catch (err) {
+          return failed(rawFromThrown(err));
+        }
+        const held: AssistantMessageEvent[] = [];
+        let committed = false;
+        const send = (ev: AssistantMessageEvent): void => {
+          if (!committed) {
+            committed = true;
+            for (const h of held) out.push(h);
+            held.length = 0;
+          }
+          out.push(ev);
+        };
+        try {
+          for await (const ev of inner) {
+            if (ev.type === "start" && !committed) held.push(ev);
+            else if (ev.type === "error") {
+              // A caller abort, or a failure after content was delivered, passes through unchanged.
+              if (ev.reason === "aborted" || committed) return (send(ev), out.end(), null);
+              return failed({ message: ev.error.errorMessage ?? "provider error" }, ev.error);
+            } else if (ev.type === "done") {
+              const empty = ev.message.content.length === 0 && !ev.message.usage?.output;
+              if (empty && !committed)
+                return failed(
+                  { message: "provider returned an empty completion (malformed response)" },
+                  ev.message,
+                );
+              return (send(ev), out.end(), null);
+            } else send(ev);
+          }
+        } catch (err) {
+          if (committed)
+            return (end(errorMessage(call.model, provider, (err as Error).message)), null);
+          return failed(rawFromThrown(err));
+        }
+        if (committed)
+          return (
+            end(
+              errorMessage(call.model, provider, "provider stream ended without a final message"),
+            ),
+            null
+          );
+        return failed({
+          message: "provider stream ended without a final message (malformed response)",
+        });
+      };
+
+      void (async () => {
+        const servable: Array<{ provider: string; call: { model: Model<Api>; apiKey: string } }> =
+          [];
+        const unusable: string[] = [];
+        for (const provider of options.providers) {
+          const call = callFor(provider, canonical.id);
+          if (call === null) continue;
+          if (typeof call === "string") unusable.push(`${provider}: ${call}`);
+          else servable.push({ provider, call });
+        }
         if (servable.length === 0) {
-          finishError(
-            out,
-            emptyMessage(
+          const why = unusable.length ? `: ${unusable.join("; ")}` : "";
+          return end(
+            errorMessage(
               canonical,
-              options.providers[0]!.name,
-              `no provider serves model "${canonical.id}"`,
+              options.providers[0]!,
+              `no provider can serve model "${canonical.id}"${why}`,
             ),
           );
-          return;
         }
-        const t = now();
-        const live = servable.filter((x) => (cooldowns.get(x.p.name)?.until ?? 0) <= t);
-        const cooled = servable.filter((x) => (cooldowns.get(x.p.name)?.until ?? 0) > t);
-        const order = [...live, ...cooled];
-        // A bypassed provider still shows in the trace, with the failure that benched it.
-        for (const x of cooled) {
-          const first = order.find((o) => !cooled.includes(o));
-          const f = cooldowns.get(x.p.name)!.failure;
-          if (first) {
-            notify({
-              action: "failover",
-              from: x.p.name,
-              to: first.p.name,
+        // Providers that answered credits, key or region earlier in this run go last.
+        const order = [
+          ...servable.filter((s) => !benched.has(s.provider)),
+          ...servable.filter((s) => benched.has(s.provider)),
+        ];
+        const failures: ProviderFailure[] = [];
+        let last: AssistantMessage | null = null;
+        for (let i = 0; i < order.length; i++) {
+          const { provider, call } = order[i]!;
+          const next = order[i + 1]?.provider ?? null;
+          let retried = false;
+          for (;;) {
+            if (signal?.aborted)
+              return end(errorMessage(canonical, provider, "aborted", "aborted"));
+            const res = await attempt(provider, call);
+            if (res === null) return; // the stream is finished
+            const f = res.failure;
+            last = res.message ?? last;
+            const rule = FAILOVER[f.failureClass];
+            const base = {
+              from: provider,
               failureClass: f.failureClass,
               status: f.status,
               ...(f.code ? { code: f.code } : {}),
-            });
-          }
-        }
-
-        let lastMessage: AssistantMessage | null = null;
-        for (let i = 0; i < order.length; i++) {
-          const { p, mapped } = order[i]!;
-          const next = order[i + 1]?.p.name ?? null;
-          let retries = 0;
-          for (;;) {
-            if (signal?.aborted) {
-              finishError(
-                out,
-                { ...emptyMessage(canonical, p.name, "aborted"), stopReason: "aborted" },
-                "aborted",
-              );
-              return;
-            }
-            const res = await attempt(p, mapped, canonical, context, callOptions, out);
-            if (res.kind === "done") return;
-            const f = res.failure;
-            if (res.message) lastMessage = res.message;
-            const entry = policy(f.failureClass);
-            const wait = f.retryAfterMs;
-            if (entry.retrySame && retries < maxRetries && wait !== undefined && wait <= maxWait) {
-              retries++;
-              notify({
-                action: "retry",
-                from: p.name,
-                to: null,
-                failureClass: f.failureClass,
-                status: f.status,
-                ...(f.code ? { code: f.code } : {}),
-                waitMs: wait,
-              });
+            };
+            if (
+              rule.retrySame &&
+              !retried &&
+              f.retryAfterMs !== undefined &&
+              f.retryAfterMs <= maxWait
+            ) {
+              retried = true;
+              notify({ ...base, action: "retry", to: null, waitMs: f.retryAfterMs });
               try {
-                await sleep(wait, signal);
+                await sleep(f.retryAfterMs, signal);
               } catch {
-                finishError(
-                  out,
-                  { ...emptyMessage(canonical, p.name, "aborted"), stopReason: "aborted" },
-                  "aborted",
-                );
-                return;
+                return end(errorMessage(canonical, provider, "aborted", "aborted"));
               }
               continue;
             }
             failures.push(f);
-            if (entry.cooldownMs > 0) {
-              cooldowns.set(p.name, { until: now() + entry.cooldownMs, failure: f });
-            }
-            if (entry.failover && next !== null) {
-              notify({
-                action: "failover",
-                from: p.name,
-                to: next,
-                failureClass: f.failureClass,
-                status: f.status,
-                ...(f.code ? { code: f.code } : {}),
-              });
+            if (rule.bench) benched.add(provider);
+            if (rule.failover && next !== null) {
+              notify({ ...base, action: "failover", to: next });
               break;
             }
-            // Chain over: no provider left, or this class does not fail over.
-            notify({
-              action: "exhausted",
-              from: p.name,
-              to: null,
-              failureClass: f.failureClass,
-              status: f.status,
-              ...(f.code ? { code: f.code } : {}),
-            });
-            const base = lastMessage ?? emptyMessage(canonical, p.name, "");
+            notify({ ...base, action: "exhausted", to: null });
+            const show = (x: ProviderFailure): string => {
+              const detail = [x.status, x.code]
+                .filter((v) => v !== null && v !== undefined)
+                .join(" ");
+              const head = `${x.provider}: ${x.failureClass}${detail ? ` (${detail})` : ""}`;
+              return options.includeProviderText && x.message ? `${head}: ${x.message}` : head;
+            };
             const text =
-              failures.length === 1 && !entry.failover
-                ? failures[0]!.message || describe(failures[0]!)
-                : `all providers failed: ${failures.map(describe).join(" | ")}`;
-            finishError(out, { ...base, stopReason: "error", errorMessage: text });
-            return;
+              failures.length === 1 && !rule.failover
+                ? show(failures[0]!)
+                : `all providers failed: ${failures.map(show).join(" | ")}`;
+            return end({
+              ...(last ?? errorMessage(canonical, provider, "")),
+              stopReason: "error",
+              errorMessage: text,
+              diagnostics: failures.map((x) => ({
+                type: "provider_failure",
+                timestamp: Date.now(),
+                details: {
+                  provider: x.provider,
+                  failureClass: x.failureClass,
+                  status: x.status,
+                  ...(x.code ? { code: x.code } : {}),
+                  ...(x.retryAfterMs !== undefined ? { retryAfterMs: x.retryAfterMs } : {}),
+                },
+              })),
+            });
           }
         }
       })();
@@ -364,213 +360,39 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
     };
   };
 
-  /** One call to one provider. Forwards to `out` once committed; otherwise reports the failure. */
-  async function attempt(
-    p: ProviderSpec,
-    mapped: string,
-    canonical: Model<Api>,
-    context: Context,
-    callOptions: SimpleStreamOptions | undefined,
-    out: AssistantMessageEventStream,
-  ): Promise<AttemptResult> {
-    const fail = (raw: RawFailure, message: AssistantMessage | null = null): AttemptResult => ({
-      kind: "failed",
-      failure: classifyFailure(p.name, raw),
-      message,
-    });
-
-    const ac = new AbortController();
-    const parent = callOptions?.signal;
-    const onParentAbort = (): void => ac.abort();
-    parent?.addEventListener("abort", onParentAbort, { once: true });
-    if (parent?.aborted) ac.abort();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      let prepared: PreparedCall;
-      try {
-        prepared = p.prepare(canonical, mapped);
-      } catch (err) {
-        return fail({ message: `could not prepare call: ${(err as Error).message}` });
-      }
-      const headers = { ...callOptions?.headers, ...prepared.headers };
-      const opts: SimpleStreamOptions = {
-        ...callOptions,
-        apiKey: prepared.apiKey,
-        signal: ac.signal,
-        maxRetries: callOptions?.maxRetries ?? options.transportRetries ?? 0,
-        ...(Object.keys(headers).length ? { headers } : {}),
-      };
-
-      let inner: AssistantMessageEventStream;
-      try {
-        inner = await (p.stream ?? streamSimple)(prepared.model, context, opts);
-      } catch (err) {
-        return fail(rawFromThrown(err));
-      }
-
-      const buffer: AssistantMessageEvent[] = [];
-      let committed = false;
-      const commit = (): void => {
-        committed = true;
-        for (const ev of buffer) out.push(ev);
-        buffer.length = 0;
-      };
-      const timeoutMs = options.firstEventTimeoutMs;
-      const iterator = inner[Symbol.asyncIterator]();
-      let timedOut = false;
-      for (;;) {
-        let step: IteratorResult<AssistantMessageEvent>;
-        try {
-          if (!committed && (timeoutMs !== undefined || parent)) {
-            step = await Promise.race([
-              iterator.next(),
-              new Promise<never>((_, reject) => {
-                if (timeoutMs !== undefined) {
-                  timer = setTimeout(() => {
-                    timedOut = true;
-                    ac.abort();
-                    reject(new Error("timed out waiting for the first event"));
-                  }, timeoutMs);
-                }
-                // A caller abort must not wait for a silent provider.
-                if (parent?.aborted) reject(new Error("aborted"));
-                else
-                  parent?.addEventListener("abort", () => reject(new Error("aborted")), {
-                    once: true,
-                  });
-              }),
-            ]);
-            clearTimeout(timer);
-          } else {
-            step = await iterator.next();
-          }
-        } catch (err) {
-          clearTimeout(timer);
-          if (parent?.aborted) {
-            out.push({
-              type: "error",
-              reason: "aborted",
-              error: { ...emptyMessage(canonical, p.name, "aborted"), stopReason: "aborted" },
-            });
-            out.end();
-            return { kind: "done" };
-          }
-          if (committed) {
-            // Mid-stream after content went out: cannot be replayed on another provider.
-            out.push({
-              type: "error",
-              reason: parent?.aborted ? "aborted" : "error",
-              error: emptyMessage(canonical, p.name, (err as Error).message),
-            });
-            out.end();
-            return { kind: "done" };
-          }
-          return fail(
-            timedOut ? { message: "request timed out", status: null } : rawFromThrown(err),
-          );
-        }
-        if (step.done) break;
-        const ev = step.value;
-
-        if (ev.type === "error") {
-          if (ev.reason === "aborted" || committed) {
-            // A caller abort, or a failure after content was delivered: pass it on.
-            commit();
-            out.push(ev);
-            out.end();
-            return { kind: "done" };
-          }
-          return fail({ message: ev.error.errorMessage ?? "provider error" }, ev.error);
-        }
-        if (ev.type === "done") {
-          const m = ev.message;
-          const empty = m.content.length === 0 && !m.usage?.output;
-          if (empty && !committed) {
-            return fail(
-              { message: "provider returned an empty completion (malformed response)" },
-              m,
-            );
-          }
-          commit();
-          out.push(ev);
-          out.end();
-          return { kind: "done" };
-        }
-        if (committed) out.push(ev);
-        else if (isContentEvent(ev)) {
-          buffer.push(ev);
-          commit();
-        } else buffer.push(ev);
-      }
-      // The stream ended without a terminal event.
-      if (committed) {
-        out.push({
-          type: "error",
-          reason: "error",
-          error: emptyMessage(canonical, p.name, "provider stream ended without a final message"),
-        });
-        out.end();
-        return { kind: "done" };
-      }
-      return fail({
-        message: "provider stream ended without a final message (malformed response)",
-      });
-    } finally {
-      clearTimeout(timer);
-      parent?.removeEventListener("abort", onParentAbort);
-    }
-  }
-
-  const preResolved = (): Map<string, PreResolvedModel> => {
+  const preResolvedModels = (): Map<string, PreResolvedModel> => {
     const map = new Map<string, PreResolvedModel>();
-    for (const [name, def] of Object.entries(options.models ?? {})) {
+    for (const [name, id] of Object.entries(options.models ?? {})) {
+      // The harness needs one model object for cost and context window: the first provider's registry entry, else a plain one.
+      let model: Model<Api> | undefined;
+      for (const p of options.providers) {
+        const pid = idFor(p, id);
+        model =
+          pid === null
+            ? undefined
+            : (options.extraModels?.find((m) => m.provider === p && m.id === pid) ??
+              (getModel(p as never, pid as never) as Model<Api> | undefined));
+        if (model) break;
+      }
+      model ??= {
+        id,
+        name: id,
+        api: "openai-completions",
+        provider: options.providers[0]!,
+        baseUrl: "",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 16_384,
+      };
       map.set(name, {
-        model: canonicalModel(def.id ?? name, def.overrides) as PreResolvedModel["model"],
+        model: { ...model, id } as PreResolvedModel["model"],
         apiKey: "provider-chain",
       });
     }
     return map;
   };
 
-  return {
-    providers: options.providers.map((p) => p.name),
-    forRun,
-    preResolvedModels: preResolved,
-  };
-}
-
-function finishError(
-  out: AssistantMessageEventStream,
-  message: AssistantMessage,
-  reason: "error" | "aborted" = "error",
-): void {
-  out.push({ type: "error", reason, error: { ...message, stopReason: reason } });
-  out.end();
-}
-
-/**
- * The pi-ai model the chain hands the harness for a canonical id: pi's own
- * OpenRouter entry when it knows the id (cost, context window, reasoning),
- * else a plain text model with generous limits. `overrides` win either way.
- */
-export function canonicalModel(id: string, overrides: ChainModelDef["overrides"] = {}): Model<Api> {
-  let known: Model<Api> | undefined;
-  try {
-    known = getModel("openrouter" as never, id as never) as Model<Api> | undefined;
-  } catch {
-    known = undefined;
-  }
-  const base: Model<Api> = known ?? {
-    id,
-    name: id,
-    api: "openai-completions",
-    provider: "openrouter",
-    baseUrl: "",
-    reasoning: false,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128_000,
-    maxTokens: 16_384,
-  };
-  return { ...base, ...overrides, id };
+  return { providers: options.providers, forRun, preResolvedModels };
 }

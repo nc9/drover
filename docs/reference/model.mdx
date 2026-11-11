@@ -85,16 +85,15 @@ in your spec / alias.
 
 ```ts
 function createProviderChain(opts: {
-  providers: ProviderSpec[];                       // ordered; first is tried first
-  models?: Record<string, { id?: string; overrides?: Partial<Model> }>;
-  policy?: Partial<Record<ProviderFailureClass, Partial<FailoverPolicyEntry>>>;
-  maxRateLimitWaitMs?: number;                     // default 10_000
-  maxSameProviderRetries?: number;                 // default 1
-  firstEventTimeoutMs?: number;                    // default off
-  transportRetries?: number;                       // OpenAI client retries, default 0
+  providers: string[];                              // pi-ai provider names, in order
+  models?: Record<string, string>;                  // spec model name -> canonical id
+  ids?: Record<string, Record<string, string | null>>; // canonical id -> id per provider
+  overrides?: Record<string, Partial<Model>>;       // per-provider pi-ai model patch
+  extraModels?: Model[];                            // not in pi-ai's registry yet
+  apiKeys?: Record<string, string>; env?: Record<string, string | undefined>;
+  maxRateLimitWaitMs?: number;                      // default 10_000
+  includeProviderText?: boolean;                    // default false
 }): ProviderChain;
 ```
 
-`classifyFailure`, `DEFAULT_FAILOVER_POLICY`, `openRouter` and
-`cloudflareAiGateway` are exported alongside. See the
-[provider chain guide](/guides/provider-chain).
+See the [provider chain guide](/guides/provider-chain).

@@ -512,11 +512,8 @@ export type {
 } from "@droveragent/core";
 export { staticRegistry, type AgentRegistry, type PreResolvedModel } from "@droveragent/harness";
 export {
-  cloudflareAiGateway,
   createProviderChain,
-  openRouter,
-  DEFAULT_FAILOVER_POLICY,
+  FAILOVER,
   type ProviderChain,
   type ProviderChainOptions,
-  type ProviderSpec,
 } from "@droveragent/model";
