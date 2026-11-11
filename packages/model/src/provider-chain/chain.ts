@@ -16,6 +16,7 @@ import type { PreResolvedModel } from "../resolve.ts";
 import {
   DEFAULT_FAILOVER_POLICY,
   classifyFailure,
+  structuredFromBody,
   type FailoverPolicyEntry,
   type ProviderFailure,
   type RawFailure,
@@ -115,8 +116,8 @@ export interface ProviderChain {
   readonly providers: readonly string[];
   /**
    * The transport for ONE run: pi's `StreamFn`, with failover notices going to
-   * `listener`. State that should outlive a run (cooldowns) is shared across
-   * every binding of the same chain.
+   * `listener`. Cooldown state belongs to the binding, so it lives and dies
+   * with the run: nothing learned from one run's errors affects another.
    */
   forRun(listener?: ProviderFailoverListener): ChainStreamFn;
   /**
@@ -187,11 +188,17 @@ function rawFromThrown(err: unknown): RawFailure {
     code?: unknown;
     retryAfterMs?: unknown;
     headers?: unknown;
+    error?: unknown;
+    body?: unknown;
   } | null;
   const raw: RawFailure = { message: typeof e?.message === "string" ? e.message : String(err) };
   const status = typeof e?.status === "number" ? e.status : e?.statusCode;
   if (typeof status === "number") raw.status = status;
-  if (typeof e?.code === "string") raw.code = e.code;
+  Object.assign(
+    raw,
+    structuredFromBody({ error: e?.error ?? (e?.body as { error?: unknown })?.error }),
+  );
+  if (raw.code === undefined && typeof e?.code === "string") raw.code = e.code;
   if (typeof e?.retryAfterMs === "number") raw.retryAfterMs = e.retryAfterMs;
   const h = e?.headers as Record<string, unknown> | undefined;
   const ra = h && typeof h === "object" ? h["retry-after"] : undefined;
@@ -220,10 +227,13 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
   const maxWait = options.maxRateLimitWaitMs ?? DEFAULT_MAX_WAIT_MS;
   const maxRetries = options.maxSameProviderRetries ?? DEFAULT_RETRIES;
 
-  /** provider -> why it is being skipped, and until when. Shared by every run on this chain. */
-  const cooldowns = new Map<string, { until: number; failure: ProviderFailure }>();
-
   const forRun = (listener?: ProviderFailoverListener): ChainStreamFn => {
+    /**
+     * provider -> why it is skipped for the rest of THIS run, and until when.
+     * One binding is one run: what one run's errors teach never reaches
+     * another run or tenant.
+     */
+    const cooldowns = new Map<string, { until: number; failure: ProviderFailure }>();
     const notify = (n: ProviderFailoverNotice): void => {
       try {
         listener?.(n);
@@ -411,15 +421,23 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       for (;;) {
         let step: IteratorResult<AssistantMessageEvent>;
         try {
-          if (timeoutMs !== undefined && !committed) {
+          if (!committed && (timeoutMs !== undefined || parent)) {
             step = await Promise.race([
               iterator.next(),
               new Promise<never>((_, reject) => {
-                timer = setTimeout(() => {
-                  timedOut = true;
-                  ac.abort();
-                  reject(new Error("timed out waiting for the first event"));
-                }, timeoutMs);
+                if (timeoutMs !== undefined) {
+                  timer = setTimeout(() => {
+                    timedOut = true;
+                    ac.abort();
+                    reject(new Error("timed out waiting for the first event"));
+                  }, timeoutMs);
+                }
+                // A caller abort must not wait for a silent provider.
+                if (parent?.aborted) reject(new Error("aborted"));
+                else
+                  parent?.addEventListener("abort", () => reject(new Error("aborted")), {
+                    once: true,
+                  });
               }),
             ]);
             clearTimeout(timer);
@@ -428,6 +446,15 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
           }
         } catch (err) {
           clearTimeout(timer);
+          if (parent?.aborted) {
+            out.push({
+              type: "error",
+              reason: "aborted",
+              error: { ...emptyMessage(canonical, p.name, "aborted"), stopReason: "aborted" },
+            });
+            out.end();
+            return { kind: "done" };
+          }
           if (committed) {
             // Mid-stream after content went out: cannot be replayed on another provider.
             out.push({

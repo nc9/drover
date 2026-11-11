@@ -176,12 +176,10 @@ describe("provider chain inside a run", () => {
       expect(JSON.stringify(toolMsg.content)).toContain("provider chain inside a run");
 
       const fo = events.find((e) => e.kind === "provider_failover");
-      expect(fo).toMatchObject({
-        failureClass: "region_refused",
-        status: 403,
-        code: "unsupported_country_region_territory",
-      });
-      // The region refusal was not retried in place.
+      // pi-ai flattens the error to text and drops the body's code, so over this transport a
+      // 403 is a key refusal; a transport that keeps the code gets "region_refused".
+      expect(fo).toMatchObject({ failureClass: "key_refused", status: 403 });
+      // Not retried in place.
       expect(a.seen).toHaveLength(2);
 
       // Cost and tokens per provider: turn 1 on openrouter, turn 2 on the gateway.

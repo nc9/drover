@@ -27,7 +27,7 @@ export type ProviderFailureClass =
   | "malformed_response"
   | "model_unavailable"
   | "invalid_request"
-  | "unknown";
+  | "other";
 
 /** Tool invocation result envelope. Mirrors pi-agent-core's shape. */
 export interface ToolResult {

@@ -32,7 +32,8 @@ All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version t
   `cloudflareAiGateway` in `@droveragent/model`; `RunOptions.providers` /
   `HarnessDeps.providers`). An ordered list of providers per model: a classified
   failure (out of credits, key refused, region refused, rate limited, 5xx,
-  timeout, malformed response) continues the same call on the next provider,
+  timeout, malformed response; classified status-first from structured fields,
+  never from message text) continues the same call on the next provider,
   first call or mid-run, without losing conversation or tool state. See
   `docs/guides/provider-chain.mdx`.
 - `provider_failover` event (`retry` / `failover` / `exhausted`, with failure

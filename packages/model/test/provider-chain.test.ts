@@ -13,6 +13,7 @@ import {
   createProviderChain,
   openRouter,
   parseRetryAfterMs,
+  structuredFromBody,
   type ChainStreamFn,
   type ProviderFailoverNotice,
   type ProviderSpec,
@@ -116,19 +117,41 @@ const canonical = {
 } as never;
 const ctx: Context = { messages: [] } as never;
 
+type Bound = { fn: ChainStreamFn; notices: ProviderFailoverNotice[] };
+
+/** One binding is one run: cooldown state lives in it. */
+function bind(chain: ReturnType<typeof createProviderChain>): Bound {
+  const notices: ProviderFailoverNotice[] = [];
+  return { fn: chain.forRun((n) => notices.push(n)), notices };
+}
+
 async function run(
-  chain: ReturnType<typeof createProviderChain>,
+  target: ReturnType<typeof createProviderChain> | Bound,
   opts?: { signal?: AbortSignal },
 ): Promise<{
   events: AssistantMessageEvent[];
   result: AssistantMessage;
   notices: ProviderFailoverNotice[];
 }> {
-  const notices: ProviderFailoverNotice[] = [];
-  const stream = await chain.forRun((n) => notices.push(n))(canonical, ctx, opts);
+  const bound = "forRun" in target ? bind(target) : target;
+  const before = bound.notices.length;
+  const stream = await bound.fn(canonical, ctx, opts);
   const events: AssistantMessageEvent[] = [];
   for await (const e of stream) events.push(e);
-  return { events, result: await stream.result(), notices };
+  return { events, result: await stream.result(), notices: bound.notices.slice(before) };
+}
+
+function regionThrow(extra = ""): Script {
+  return {
+    kind: "throw",
+    error: Object.assign(new Error(`403 blocked${extra}`), {
+      status: 403,
+      error: {
+        code: "unsupported_country_region_territory",
+        message: "Country, region, or territory not supported",
+      },
+    }),
+  };
 }
 
 const noSleep = async (): Promise<void> => {};
@@ -138,30 +161,12 @@ const noSleep = async (): Promise<void> => {};
 describe("classifyFailure", () => {
   const cases: [string, string, string, number | null][] = [
     ["credits (402)", "402 This request requires more credits", "credits_exhausted", 402],
-    [
-      "openrouter key limit",
-      "403 Key limit exceeded (openrouter_key_limit)",
-      "credits_exhausted",
-      403,
-    ],
-    [
-      "insufficient quota",
-      "429 You exceeded your current quota (insufficient_quota)",
-      "credits_exhausted",
-      429,
-    ],
     ["key refused 401", "401 Invalid API key", "key_refused", 401],
     ["key refused 403", "403 Forbidden", "key_refused", 403],
     [
-      "region",
-      "403 request_forbidden: unsupported_country_region_territory",
-      "region_refused",
-      403,
-    ],
-    [
-      "region by OpenAI's message (the SDK text drops the body code)",
+      "403 with a lost body code is key refused",
       "403 Country, region, or territory not supported",
-      "region_refused",
+      "key_refused",
       403,
     ],
     ["rate limit", "429 Rate limit reached. Please try again in 2s", "rate_limited", 429],
@@ -170,11 +175,11 @@ describe("classifyFailure", () => {
     ["504", "504 Gateway timeout", "timeout", 504],
     ["sdk timeout", "Request timed out.", "timeout", null],
     ["connection", "Connection error.", "timeout", null],
-    ["malformed", "Unexpected token < in JSON at position 0", "malformed_response", null],
+    ["no status, free text is other", "Unexpected token < in JSON at position 0", "other", null],
     ["model 404", "404 The model `x` does not exist", "model_unavailable", 404],
     ["context length", "400 context_length_exceeded: too many tokens", "invalid_request", 400],
     ["bad params", "422 Unprocessable", "invalid_request", 422],
-    ["unknown", "something odd", "unknown", null],
+    ["other", "something odd", "other", null],
   ];
   for (const [name, message, cls, status] of cases) {
     test(`${name} -> ${cls}`, () => {
@@ -188,11 +193,88 @@ describe("classifyFailure", () => {
     expect(classifyFailure("p", { message: "see page 402 of the doc" }).status).toBeNull();
   });
 
-  test("region code is carried; free text codes are not", () => {
-    expect(classifyFailure("p", { message: "403 unsupported_country_region_territory" }).code).toBe(
-      "unsupported_country_region_territory",
+  test("structured fields: 403 + region code is region; 403 + key limit and 429 + insufficient_quota are credits", () => {
+    const region = classifyFailure("p", {
+      message: "403 nope",
+      status: 403,
+      code: "unsupported_country_region_territory",
+    });
+    expect(region).toMatchObject({
+      failureClass: "region_refused",
+      code: "unsupported_country_region_territory",
+    });
+    expect(
+      classifyFailure("p", { message: "403 x", limitSource: "openrouter_key_limit" }).failureClass,
+    ).toBe("credits_exhausted");
+    expect(
+      classifyFailure("p", { message: "429 x", code: "insufficient_quota" }).failureClass,
+    ).toBe("credits_exhausted");
+    expect(classifyFailure("p", { message: "403 x" }).failureClass).toBe("key_refused");
+    expect(classifyFailure("p", { message: "402" }).failureClass).toBe("credits_exhausted");
+    expect(classifyFailure("p", { message: "", status: 402 }).failureClass).toBe(
+      "credits_exhausted",
     );
-    expect(classifyFailure("p", { message: "500 totally_custom_code" }).code).toBeUndefined();
+  });
+
+  test("a structured code without a matching status classifies nothing", () => {
+    expect(
+      classifyFailure("p", { message: "500 x", code: "unsupported_country_region_territory" })
+        .failureClass,
+    ).toBe("provider_error");
+    expect(
+      classifyFailure("p", { message: "400 x", code: "insufficient_quota" }).failureClass,
+    ).toBe("invalid_request");
+    expect(
+      classifyFailure("p", { message: "x", code: "unsupported_country_region_territory" })
+        .failureClass,
+    ).toBe("other");
+  });
+
+  test("structuredFromBody reads fields, never message text", () => {
+    expect(
+      structuredFromBody({
+        error: { code: "unsupported_country_region_territory", message: "insufficient_quota" },
+      }),
+    ).toEqual({ code: "unsupported_country_region_territory" });
+    expect(
+      structuredFromBody({ error: [{ code: "unsupported_country_region_territory" }] }),
+    ).toEqual({ code: "unsupported_country_region_territory" });
+    expect(
+      structuredFromBody({ error: { metadata: { limit_source: "openrouter_key_limit" } } }),
+    ).toEqual({ limitSource: "openrouter_key_limit" });
+    expect(structuredFromBody("403 insufficient_quota")).toEqual({});
+  });
+
+  // Provider messages echo request content (a rejected prompt, a page title): text an outsider
+  // controls must never produce a class that benches a provider.
+  for (const status of [400, 500, 503]) {
+    test(`status ${status} whose message echoes credit/region tokens is not credits or region`, () => {
+      const f = classifyFailure("p", {
+        message: `${status} invalid value in prompt: "insufficient_quota openrouter_key_limit unsupported_country_region_territory 402 Country, region, or territory not supported"`,
+      });
+      expect(["credits_exhausted", "region_refused", "key_refused"]).not.toContain(f.failureClass);
+      expect(f.code).toBeUndefined();
+    });
+  }
+
+  test("tokens in the text of a status-less failure do not classify it", () => {
+    for (const message of [
+      "page says insufficient_quota",
+      "the title was: Request timed out. Connection error. 402",
+      "unsupported_country_region_territory",
+    ]) {
+      expect(classifyFailure("p", { message }).failureClass).toBe("other");
+    }
+  });
+
+  test("a 402 with no body is credits; a 403 with only the structured region code is region", () => {
+    expect(classifyFailure("p", { message: "402 status code (no body)" }).failureClass).toBe(
+      "credits_exhausted",
+    );
+    expect(
+      classifyFailure("p", { message: "403", code: "unsupported_country_region_territory" })
+        .failureClass,
+    ).toBe("region_refused");
   });
 
   test("retry-after parsing", () => {
@@ -233,18 +315,19 @@ describe("provider chain", () => {
     ],
     ["401 key refused", { kind: "error", message: "401 Invalid API key" }, "key_refused", 401],
     ["403 key refused", { kind: "error", message: "403 Forbidden" }, "key_refused", 403],
+    ["region refusal (structured)", regionThrow(), "region_refused", 403],
     [
-      "region refusal",
-      { kind: "error", message: "403 unsupported_country_region_territory" },
-      "region_refused",
+      "403 with the body code flattened away",
+      { kind: "error", message: "403 Country, region, or territory not supported" },
+      "key_refused",
       403,
     ],
     ["5xx", { kind: "error", message: "503 overloaded" }, "provider_error", 503],
     ["timeout", { kind: "error", message: "Request timed out." }, "timeout", null],
     [
-      "malformed",
+      "status-less free-text failure",
       { kind: "error", message: "Unexpected token < in JSON" },
-      "malformed_response",
+      "other",
       null,
     ],
     ["empty completion", { kind: "empty" }, "malformed_response", null],
@@ -366,7 +449,7 @@ describe("provider chain", () => {
 
   test("both providers failing ends as one error carrying both failures", async () => {
     const a = fake("a", [{ kind: "error", message: "402 This request requires more credits" }]);
-    const b = fake("b", [{ kind: "error", message: "403 unsupported_country_region_territory" }]);
+    const b = fake("b", [regionThrow()]);
     const { result, notices } = await run(createProviderChain({ providers: [a.spec, b.spec] }));
     expect(result.stopReason).toBe("error");
     expect(result.errorMessage).toContain("all providers failed");
@@ -412,10 +495,11 @@ describe("provider chain", () => {
     const a = fake("a", [{ kind: "error", message: "402 no credits" }, { kind: "ok" }]);
     const b = fake("b", [{ kind: "ok" }]);
     const chain = createProviderChain({ providers: [a.spec, b.spec], now: () => t });
-    await run(chain);
+    const runBinding = bind(chain);
+    await run(runBinding);
     expect(a.calls).toHaveLength(1);
 
-    const second = await run(chain);
+    const second = await run(runBinding);
     expect(a.calls).toHaveLength(1); // skipped, not asked again
     expect(second.result.provider).toBe("b");
     expect(second.notices).toEqual([
@@ -423,9 +507,29 @@ describe("provider chain", () => {
     ]);
 
     t += 6 * 60_000;
-    const third = await run(chain);
+    const third = await run(runBinding);
     expect(a.calls).toHaveLength(2);
     expect(third.result.provider).toBe("a");
+  });
+
+  test("nothing learned in one run benches a provider for another run", async () => {
+    const a = fake("a", [{ kind: "error", message: "402 no credits" }, { kind: "ok" }]);
+    const b = fake("b", [{ kind: "ok" }]);
+    const chain = createProviderChain({ providers: [a.spec, b.spec] });
+    await run(bind(chain)); // run 1: a fails with 402, benched for run 1 only
+    const other = await run(bind(chain)); // run 2: a is asked again
+    expect(a.calls).toHaveLength(2);
+    expect(other.result.provider).toBe("a");
+  });
+
+  test("a status-less timeout is never benched, even within a run", async () => {
+    const a = fake("a", [{ kind: "error", message: "Request timed out." }, { kind: "ok" }]);
+    const b = fake("b", [{ kind: "ok" }]);
+    const runBinding = bind(createProviderChain({ providers: [a.spec, b.spec] }));
+    await run(runBinding);
+    const second = await run(runBinding);
+    expect(a.calls).toHaveLength(2);
+    expect(second.result.provider).toBe("a");
   });
 
   test("a benched provider is still the last resort", async () => {
@@ -433,10 +537,11 @@ describe("provider chain", () => {
     const a = fake("a", [{ kind: "error", message: "402 no credits" }, { kind: "ok" }]);
     const b = fake("b", [{ kind: "error", message: "503 down" }]);
     const chain = createProviderChain({ providers: [a.spec, b.spec], now: () => t });
-    const first = await run(chain);
+    const runBinding = bind(chain);
+    const first = await run(runBinding);
     expect(first.result.stopReason).toBe("error");
     t += 1000;
-    const second = await run(chain);
+    const second = await run(runBinding);
     // b is tried first (a is benched), fails, then a is tried and answers.
     expect(second.result.provider).toBe("a");
   });

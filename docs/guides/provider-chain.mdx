@@ -46,21 +46,30 @@ the compaction summariser. Pass it as `RunOptions.providers` (facade) or
 
 ## What fails over
 
-Failures are classified from the provider's error. The table is
-`DEFAULT_FAILOVER_POLICY`; any entry can be overridden with `policy`.
+Classification is **status first and structured only**. The HTTP status ranks
+first, and a class that can bench a provider (credits, key, region) needs the
+status plus, where the class says so, a field of the parsed error body
+(`error.code`, `error.metadata.limit_source`). Free text is never searched for
+those: provider error messages echo request content (a rejected prompt, a tool
+argument, a page title), so text an outsider controls would otherwise be able to
+make a call look like "out of credits" and bench a provider.
 
-| Class | Typical signal | Fails over | Retried on the same provider | Provider skipped afterwards |
+| Class | Needs | Fails over | Retried on the same provider | Skipped for the rest of the run |
 |---|---|---|---|---|
-| `credits_exhausted` | 402, OpenRouter key limit, `insufficient_quota` | yes | no | 5 min |
-| `key_refused` | 401, 403 | yes | no | 5 min |
-| `region_refused` | 403 with `unsupported_country_region_territory` | yes | **never** | 5 min |
+| `credits_exhausted` | 402; or 403 + `limit_source: openrouter_key_limit`; or 429 + `insufficient_quota` | yes | no | 5 min |
+| `key_refused` | 401, or any 403 not matched below | yes | no | 5 min |
+| `region_refused` | 403 + `code: unsupported_country_region_territory` | yes | **never** | 5 min |
 | `rate_limited` | 429 | yes | once, if `Retry-After` is at most `maxRateLimitWaitMs` | no |
 | `provider_error` | 5xx | yes | no | 15 s |
-| `timeout` | timed out, connection error, 504 | yes | no | 15 s |
-| `malformed_response` | unparseable body, empty completion | yes | no | no |
-| `model_unavailable` | 404, model not found | yes | no | 5 min |
-| `invalid_request` | 400, 413, 422, context too long | **no** | no | no |
-| `unknown` | anything else | yes | no | no |
+| `timeout` | 504, 408, or the SDK's own "Request timed out." / "Connection error." | yes | no | no |
+| `malformed_response` | the chain's own empty or truncated stream | yes | no | no |
+| `model_unavailable` | 404 | yes | no | 5 min |
+| `invalid_request` | 400, 413, 422 | **no** | no | no |
+| `other` | no usable status | yes, for this call only | no | no |
+
+The table is `DEFAULT_FAILOVER_POLICY`; any entry can be overridden with `policy`.
+The skip state belongs to one run and one provider: nothing learned from one
+run's errors affects another run.
 
 `invalid_request` ends the chain because the same request would fail the same
 way on the next provider. A content problem with the model's answer (it does
@@ -68,10 +77,10 @@ not match the output schema, a tool call with bad arguments) is not a provider
 failure at all: the chain never sees it, and the harness's own output retry
 handles it.
 
-"Skipped afterwards" means the provider is tried last, not first, for later
-calls in any run on the same chain. Credits, keys and regions do not heal in
-seconds, so asking again every turn costs a round trip each time. The trace
-still shows a `failover` event for the bypassed provider on every call.
+"Skipped" means the provider is tried last, not first, for later calls of the
+same run. Credits, keys and regions do not heal in seconds, so asking again every
+turn costs a round trip each time. The trace still shows a `failover` event for
+the bypassed provider on every call.
 
 ## Mid-run and mid-stream
 
@@ -144,12 +153,14 @@ counted as a failure. `stream` replaces the transport (tests, proxies).
 
 ## Limits worth knowing
 
-- pi-ai reports a failed call as error **text** (`"402 ..."`), not a response
-  object. The status is read from that text, and a body `code` is not in it, so
-  the region refusal is also recognised by OpenAI's fixed message. Provider
-  `Retry-After` headers are not visible on a failed call; a wait is honoured
-  only when the text carries one ("try again in 2s"). Without a hint a rate
-  limit fails over at once.
+- pi-ai flattens a failed call to error **text** (`"402 ..."`) and drops the
+  response body. Only the SDK's leading status survives, so over the built-in
+  transport a 403 is `key_refused` even when the body said region (it still fails
+  over). A provider with a custom `stream` that throws an error carrying
+  `status` and `error: { code }` gets the precise class. Provider `Retry-After`
+  headers are not visible either; a wait is honoured only on a 429 whose text
+  carries one ("try again in 2s"). Without a hint a rate limit fails over at
+  once.
 - The OpenAI client's own retries are off by default in the chain
   (`transportRetries: 0`): failing over is the retry.
 - A failed attempt that was still billed by the provider is not counted in
