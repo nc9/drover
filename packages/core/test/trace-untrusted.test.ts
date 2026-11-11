@@ -4,6 +4,7 @@ import {
   REDACTED,
   UNTRUSTED_FIELDS,
   parseTraceJsonl,
+  readEvent,
   redactEvent,
   safeStringify,
   summarizeTrace,
@@ -17,7 +18,9 @@ const header = { traceVersion: 1, runId: "run_1" };
 describe("trace untrusted fields", () => {
   test("every marked field exists on its sample, and tool_call_end carries a trust hint", () => {
     for (const [kind, fields] of Object.entries(UNTRUSTED_FIELDS)) {
-      for (const f of fields ?? []) expect(Object.hasOwn(SAMPLES[kind as never], f)).toBe(true);
+      // The top-level field of every path exists on the sample (nested keys may be optional).
+      for (const f of fields ?? [])
+        expect(Object.hasOwn(SAMPLES[kind as never], f.split(".")[0]!)).toBe(true);
     }
     expect((SAMPLES.tool_call_end as { trust?: string }).trust).toBe("untrusted");
   });
@@ -56,11 +59,13 @@ describe("trace untrusted fields", () => {
         },
       },
     );
-    expect(seen).toEqual(["tool_call_start.input", "tool_call_end.result"]);
+    // result.data is absent on the sample, so the hook is not called for it.
+    expect(seen).toEqual(["tool_call_start.input", "tool_call_end.result.content"]);
     const p = parseTraceJsonl(text).events as unknown as Record<string, unknown>[];
     expect(p[0]!.input).toBe(REDACTED);
-    expect(p[1]!.result).toBe(REDACTED);
+    expect(p[1]!.result).toEqual({ content: REDACTED });
     expect(p[1]!.toolName).toBe("read");
+    expect("unknown" in p[1]!).toBe(false);
     expect(p[2]).toEqual(SAMPLES.turn_start);
   });
 
@@ -74,5 +79,62 @@ describe("trace untrusted fields", () => {
     expect(s.toolCalls.count).toBe(1);
     expect(Object.getPrototypeOf(s.toolCalls.byTool)).toBeNull();
     expect(s.errors).toBe(0);
+  });
+});
+
+describe("trace redaction does not open the reader", () => {
+  // String fields accept any string, "[redacted]" included; the point is non-string fields.
+  test('"[redacted]" in an unmarked non-string required field is malformed, not a typed event', () => {
+    for (const [kind, field] of [
+      ["tool_call_end", "durationMs"],
+      ["compaction", "collapsedRange"],
+      ["memory_written", "entry"],
+      ["turn_start", "turn"],
+      ["usage", "usage"],
+      ["run_end", "ts"],
+    ] as const) {
+      const e = readEvent({ ...SAMPLES[kind], [field]: REDACTED });
+      expect(e).toMatchObject({ unknown: true, reason: `malformed: ${field}` });
+    }
+  });
+
+  test("a masked marked field still reads as typed", () => {
+    for (const [kind, field] of [
+      ["assistant_text", "text"],
+      ["error", "message"],
+      ["output_retry", "reason"],
+      ["prompt_rendered", "warnings"],
+    ] as const) {
+      expect("unknown" in readEvent({ ...SAMPLES[kind], [field]: REDACTED })).toBe(false);
+    }
+  });
+
+  test("masking tool output keeps result.isError, so the summary still counts the error", () => {
+    const failed = {
+      ...SAMPLES.tool_call_end,
+      result: { content: "boom", isError: true, data: { raw: "x" } },
+    } as HarnessEvent;
+    const masked = redactEvent(failed, () => "mask");
+    expect((masked as { result: unknown }).result).toEqual({
+      content: REDACTED,
+      isError: true,
+      data: REDACTED,
+    });
+    expect((failed as { result: { content: string } }).result.content).toBe("boom");
+    const back = parseTraceJsonl(traceToJsonl({ header, events: [masked] })).events;
+    expect(summarizeTrace(back).toolCalls.errors).toBe(1);
+  });
+
+  test("nested remove drops only the key; memory summary and recall query are marked", () => {
+    const removed = redactEvent(SAMPLES.memory_written, () => "remove") as {
+      entry: Record<string, unknown>;
+    };
+    expect(removed.entry).toEqual({ id: "m1", scope: "global", kind: "user" });
+    expect("unknown" in readEvent(removed)).toBe(false);
+    const recalled = redactEvent(
+      { ...SAMPLES.memory_recalled, query: "secret" } as HarnessEvent,
+      () => "mask",
+    );
+    expect((recalled as { query: unknown }).query).toBe(REDACTED);
   });
 });

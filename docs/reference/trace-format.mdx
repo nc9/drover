@@ -66,15 +66,18 @@ still show that they happened.
 ## Untrusted fields
 
 A trace holds text that came from outside the harness: model output, tool arguments and results, error
-messages, memory content. These fields are marked in `UNTRUSTED_FIELDS`:
+messages, memory content, recall queries. These fields are marked in `UNTRUSTED_FIELDS`. A path is a
+top-level field or `field.key` one level into an object, so structural flags next to the text
+(`result.isError`, `entry.id`) are not marked and stay readable after redaction:
 
 | Kind | Untrusted fields |
 |---|---|
 | `assistant_text`, `thinking`, `assistant_delta`, `thinking_delta` | `text` |
 | `tool_call_start` | `input` |
-| `tool_call_end` | `result` (also carries `trust`, below) |
+| `tool_call_end` | `result.content`, `result.data` (the event also carries `trust`, below) |
 | `output_retry` | `reason` |
-| `memory_written` / `memory_recalled` | `entry` / `hits` |
+| `memory_written` | `entry.summary` |
+| `memory_recalled` | `query` |
 | `error` | `message` |
 | `prompt_rendered` | `warnings` |
 
@@ -94,8 +97,11 @@ const text = traceToJsonl(trace, {
 });
 ```
 
-The hook is called once per marked field. `mask` writes `"[redacted]"`, `remove` drops the field. Events of
-kinds this reader does not know are written as stored: redact those yourself.
+The hook is called once per marked field present on the event, with `field` set to the path
+(`result.content`). `mask` writes `"[redacted]"`, `remove` drops the field. A masked trace still reads
+as typed events: the reader accepts `"[redacted]"` in place of a marked top-level field of any type
+(`prompt_rendered.warnings`), and nowhere else, so `"[redacted]"` in `durationMs` or `usage` makes the
+event malformed. Events of kinds this reader does not know are written as stored: redact those yourself.
 
 ## Complete example
 

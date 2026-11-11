@@ -69,9 +69,10 @@ export const KNOWN_EVENT_KINDS: ReadonlyArray<Kind> = Object.keys(REQUIRED_FIELD
 
 /**
  * Fields that can hold text from outside the harness: model output, tool output or arguments,
- * error text, memory content. A consumer MUST treat them as untrusted data: HTML-escape before
- * rendering, and never feed them back to a model as instructions. `summarizeTrace` never reads
- * them. Paths are dotted; `*` stands for any array index or object key.
+ * error text, memory content, a recall query. A consumer MUST treat them as untrusted data:
+ * HTML-escape before rendering, and never feed them back to a model as instructions.
+ * `summarizeTrace` never reads them. A path is a top-level field or `field.key` (one level into an
+ * object), so structural flags next to the text (`result.isError`, `entry.id`) stay readable.
  */
 export const UNTRUSTED_FIELDS: Readonly<Partial<Record<Kind, ReadonlyArray<string>>>> = {
   assistant_text: ["text"],
@@ -79,10 +80,10 @@ export const UNTRUSTED_FIELDS: Readonly<Partial<Record<Kind, ReadonlyArray<strin
   assistant_delta: ["text"],
   thinking_delta: ["text"],
   tool_call_start: ["input"],
-  tool_call_end: ["result"],
+  tool_call_end: ["result.content", "result.data"],
   output_retry: ["reason"],
-  memory_written: ["entry"],
-  memory_recalled: ["hits"],
+  memory_written: ["entry.summary"],
+  memory_recalled: ["query"],
   error: ["message"],
   prompt_rendered: ["warnings"],
 };
@@ -91,8 +92,9 @@ export const UNTRUSTED_FIELDS: Readonly<Partial<Record<Kind, ReadonlyArray<strin
 export type Redaction = "remove" | "mask";
 
 /**
- * Hook for {@link redactEvent} / {@link traceToJsonl}: called once per marked field; return
- * `"remove"` to drop it, `"mask"` to replace it with {@link REDACTED}, or `undefined` to keep it.
+ * Hook for {@link redactEvent} / {@link traceToJsonl}: called once per marked field present on
+ * the event (`field` is the path, e.g. `result.content`); return `"remove"` to drop it, `"mask"`
+ * to replace it with {@link REDACTED}, or `undefined` to keep it.
  */
 export type RedactHook = (info: {
   kind: string;
@@ -102,19 +104,27 @@ export type RedactHook = (info: {
 
 export const REDACTED = "[redacted]";
 
+const markedFields = (kind: string): ReadonlyArray<string> =>
+  (Object.hasOwn(UNTRUSTED_FIELDS, kind) ? UNTRUSTED_FIELDS[kind as Kind] : undefined) ?? [];
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  v !== null && typeof v === "object" && !Array.isArray(v);
+
 /** Apply a redaction hook to the marked fields of one event. Returns a copy; the input is untouched. */
 export function redactEvent(e: TraceEvent, hook: RedactHook): TraceEvent {
   if ("unknown" in e) return e;
-  const fields = Object.hasOwn(UNTRUSTED_FIELDS, e.kind)
-    ? UNTRUSTED_FIELDS[e.kind as Kind]
-    : undefined;
-  if (!fields) return e;
   const out = { ...e } as Record<string, unknown>;
-  for (const f of fields) {
-    if (!Object.hasOwn(out, f)) continue;
-    const action = hook({ kind: e.kind, field: f, value: out[f] });
-    if (action === "remove") delete out[f];
-    else if (action === "mask") out[f] = REDACTED;
+  for (const path of markedFields(e.kind)) {
+    const [head = "", key] = path.split(".");
+    // One level deep: copy the parent object so the input event is never mutated.
+    const parent =
+      key === undefined ? out : isPlainObject(out[head]) ? { ...out[head] } : undefined;
+    const field = key ?? head;
+    if (!parent || !Object.hasOwn(parent, field)) continue;
+    const action = hook({ kind: e.kind, field: path, value: parent[field] });
+    if (action === "remove") delete parent[field];
+    else if (action === "mask") parent[field] = REDACTED;
+    if (key !== undefined) out[head] = parent;
   }
   return out as unknown as TraceEvent;
 }
@@ -151,9 +161,12 @@ export function readEvent(value: unknown): TraceEvent {
   // Own keys only: a kind of `__proto__` / `constructor` must not find Object.prototype members.
   const spec = Object.hasOwn(REQUIRED_FIELDS, kind) ? REQUIRED_FIELDS[kind as Kind] : undefined;
   if (!spec) return { unknown: true, kind, reason: "unknown_kind", raw };
+  // A masked top-level marked field (see `redactEvent`) still reads as typed. Only marked
+  // fields: "[redacted]" in `durationMs`, `turn` or `usage` is malformed, not redacted.
+  const masked = new Set(markedFields(kind).filter((f) => !f.includes(".")));
   for (const [field, type] of Object.entries({ ...COMMON, ...spec })) {
-    // A masked field (see `redactEvent`) satisfies any type: a redacted trace still reads as typed events.
-    if (raw[field] !== REDACTED && typeOf(raw[field]) !== type)
+    if (masked.has(field) && raw[field] === REDACTED) continue;
+    if (typeOf(raw[field]) !== type)
       return { unknown: true, kind, reason: `malformed: ${field}`, raw };
   }
   return raw as unknown as HarnessEvent;
