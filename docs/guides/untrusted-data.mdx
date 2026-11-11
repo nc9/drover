@@ -102,12 +102,22 @@ takes a string or any JSON-able value; `wrapText` is the whole-text variant.
   under the working directory can plant text there for the next run. The markdown
   memory adapter ignores `trusted: true` in a file's frontmatter unless it was
   opened with `allowTrustedFrontmatter: true`, for the same reason.
-- **Tool descriptions and schemas.** MCP tool descriptions (server-supplied), and
-  every `description` and `title` inside a tool's input schema, are cleaned and
-  bounded to 500 characters each before the model sees them, but are not fenced.
-  Tool names, property names, `enum`, `const`, `default` and `examples` values are
-  passed as sent, because arguments must match them. Only connect servers you would
-  run code from.
+- **Tool descriptions.** MCP tool descriptions (server-supplied) are cleaned and
+  bounded to 500 characters before the model sees them, but are not fenced. Only
+  connect servers you would run code from.
+- **Tool schemas.** An MCP tool's input schema also reaches the model unfenced, so
+  only a JSON Schema keyword allowlist passes (`type`, `properties`, `required`,
+  `items`, `prefixItems`, `enum`, `const`, `anyOf`, `oneOf`, `allOf`, `not`,
+  `additionalProperties`, numeric and length bounds, `pattern`, `format`,
+  `uniqueItems`, `default`, `description`, `title`, local `$ref`, `$defs`,
+  `definitions`); `$comment`, `x-*`, `examples` and unknown keys are dropped.
+  `description` and `title` are cleaned like tool descriptions. Property names,
+  `required`, `enum`, `const` and `$ref` must match the server exactly, so they are
+  not rewritten: one with control, zero-width or look-alike characters, `<` or `>`,
+  or over 128 characters refuses the tool (logged, the tool is not offered). An
+  unsafe `default`, `pattern` or `format` is dropped. A schema over 32 KB or 32
+  levels deep, an unknown `type`, or a tool name outside `[A-Za-z0-9_.-]{1,64}`
+  also refuses the tool.
 - **Resume with a fence plugin.** A resume is refused when the plugin cannot find
   the run's nonce, which includes a run that was started without the plugin and
   resumed with it. Pass a persistent `nonces` store to resume across processes.

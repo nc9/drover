@@ -1,12 +1,5 @@
 import { Type, type TSchema } from "@sinclair/typebox";
-import {
-  type AnyToolDef,
-  createFence,
-  defineTool,
-  escapeTags,
-  SandboxError,
-  type ToolResult,
-} from "@droveragent/core";
+import { type AnyToolDef, defineTool, SandboxError, type ToolResult } from "@droveragent/core";
 import { Effect } from "effect";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -18,6 +11,7 @@ import {
   parsePrefixedToolName,
   prefixedToolName,
 } from "./config.ts";
+import { MCP_TOOL_NAME, sanitizeInputSchema, sanitizeToolDescription } from "./schema.ts";
 
 /**
  * Live MCP runtime. Holds connected `Client` instances and the flat
@@ -66,7 +60,17 @@ export async function createMcpRuntime(
         const transport = buildTransport(cfg);
         await client.connect(transport);
         const list = await client.listTools();
-        const tools = list.tools.map((t) => mcpToolToDroverTool(cfg.id, client, t));
+        const tools = list.tools.flatMap((t) => {
+          const tool = mcpToolToDroverTool(cfg.id, client, t);
+          if ("refused" in tool) {
+            // The name is server text too: log a cleaned, bounded copy.
+            console.error(
+              `[mcp] server ${cfg.id}: tool ${JSON.stringify(sanitizeToolDescription(String(t.name)).slice(0, 80))} refused: ${tool.refused}`,
+            );
+            return [];
+          }
+          return [tool];
+        });
         return { id: cfg.id, client, transport: cfg.transport, tools };
       } catch (err) {
         // Surface as zero-tool server; consumers see it in servers() output.
@@ -146,61 +150,23 @@ interface McpToolDescriptor {
   inputSchema?: unknown;
 }
 
-/** Longest server-supplied tool description the model sees. */
-export const MAX_MCP_DESCRIPTION_CHARS = 500;
-
-const descriptionCleaner = createFence({ nonce: "" });
-
-/**
- * A server-supplied tool description goes into the model's tool list, outside any
- * fence, so it is cleaned (NFKC, control and look-alike characters, angle brackets
- * escaped) and bounded: a poisoned description cannot hide or hijack much.
- */
-export function sanitizeToolDescription(text: string): string {
-  return escapeTags(descriptionCleaner.clean(text, MAX_MCP_DESCRIPTION_CHARS));
-}
-
-/** Deepest JSON Schema nesting kept from a server; anything deeper becomes `{}` (accept any). */
-const MAX_SCHEMA_DEPTH = 32;
-
-/**
- * A server-supplied input schema also reaches the model's tool list unfenced: every
- * `description` and `title` in it (at any depth) gets the same cleaning and bound as the
- * tool description. Property names, `enum`, `const`, `default` and `examples` are kept
- * as sent, because arguments must match them exactly. A schema nested deeper than
- * {@link MAX_SCHEMA_DEPTH} is cut to `{}` there rather than passed through unread.
- */
-export function sanitizeInputSchema(schema: unknown, depth = 0): unknown {
-  if (Array.isArray(schema)) {
-    return depth >= MAX_SCHEMA_DEPTH ? [] : schema.map((v) => sanitizeInputSchema(v, depth + 1));
-  }
-  if (schema === null || typeof schema !== "object") return schema;
-  if (depth >= MAX_SCHEMA_DEPTH) return {};
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(schema)) {
-    const value =
-      (k === "description" || k === "title") && typeof v === "string"
-        ? sanitizeToolDescription(v)
-        : sanitizeInputSchema(v, depth + 1);
-    // defineProperty: a server key named `__proto__` stays a plain key.
-    Object.defineProperty(out, k, { value, enumerable: true, writable: true, configurable: true });
-  }
-  return out;
-}
-
 function mcpToolToDroverTool(
   serverId: string,
   client: Client,
   tool: McpToolDescriptor,
-): AnyToolDef {
-  // The MCP tool's JSON Schema keeps its shape via Type.Unsafe so the LLM sees
-  // the right args (server-side enforcement is the source of truth for
-  // validation); its description and title strings are cleaned first.
-  const schema: TSchema = (
-    tool.inputSchema && typeof tool.inputSchema === "object"
-      ? Type.Unsafe(sanitizeInputSchema(tool.inputSchema) as object)
-      : Type.Object({}, { additionalProperties: true })
-  ) as TSchema;
+): AnyToolDef | { refused: string } {
+  // Only an allowlisted subset of the server's JSON Schema reaches the model
+  // (see schema.ts); server-side enforcement stays the source of truth for
+  // validation. A tool whose name or schema cannot be made safe is refused.
+  if (typeof tool.name !== "string" || !MCP_TOOL_NAME.test(tool.name)) {
+    return { refused: "tool name must match /^[A-Za-z0-9_.-]{1,64}$/" };
+  }
+  let schema: TSchema = Type.Object({}, { additionalProperties: true });
+  if (tool.inputSchema !== undefined && tool.inputSchema !== null) {
+    const cleaned = sanitizeInputSchema(tool.inputSchema);
+    if (!cleaned.ok) return { refused: cleaned.reason };
+    schema = Type.Unsafe(cleaned.schema) as TSchema;
+  }
 
   const prefixed = prefixedToolName(serverId, tool.name);
   return defineTool({
