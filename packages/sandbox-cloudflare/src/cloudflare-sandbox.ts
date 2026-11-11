@@ -711,8 +711,22 @@ export function createCloudflareSandbox(opts: CloudflareSandboxOptions): Cloudfl
     Effect.tryPromise({
       try: async (): Promise<void> => {
         const sandbox = await acquire();
-        const result = await sandbox.writeFile(p, contents);
-        if (!result.success) throw new Error(`writeFile failed for '${p}'`);
+        const write = async (): Promise<void> => {
+          const result = await sandbox.writeFile(p, contents);
+          if (!result.success) throw new Error(`writeFile failed for '${p}'`);
+        };
+        try {
+          await write();
+        } catch (err) {
+          // `writeFile` must create missing parents (the SandboxAdapter conformance suite
+          // checks it). A backend that refuses to write into a missing directory gets the
+          // parent made with `mkdir -p` and one retry.
+          const parent = normalizePosix(`${p}/..`);
+          if (!sandbox.mkdir || parent === normalizePosix(p)) throw err;
+          const made = await sandbox.mkdir(parent, { recursive: true });
+          if (!made.success) throw err;
+          await write();
+        }
       },
       catch: (err): SandboxError => failed("write", err, p),
     });
