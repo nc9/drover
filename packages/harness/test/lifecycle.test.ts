@@ -146,3 +146,27 @@ describe("runLifecycleSteps", () => {
     }
   });
 });
+
+describe("lifecycle fencing", () => {
+  const fence = (section: string, text: string) => `[[${section}]]${text}[[/${section}]]`;
+
+  test("mcp output and skill bodies are fenced; prompt and command steps are not", async () => {
+    const blocks = await runLifecycleSteps({
+      ...base([
+        { kind: "prompt", text: "operator prompt" },
+        { kind: "command", name: "lint" },
+        { kind: "skill", name: "house-style" },
+        { kind: "mcp", tool: "github__list_issues" },
+      ]),
+      fence,
+    });
+    expect(blocks[0]).toBe("operator prompt");
+    expect(blocks[1]).not.toContain("[[");
+    expect(blocks[2]).toBe(
+      "## Skill: house-style\n\n[[skill-house-style]]Two-space indent.[[/skill-house-style]]",
+    );
+    expect(blocks[3]).toBe(
+      "## github__list_issues\n\n[[github__list_issues]]result for github__list_issues[[/github__list_issues]]",
+    );
+  });
+});

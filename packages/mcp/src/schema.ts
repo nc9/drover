@@ -42,7 +42,6 @@ export const SCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
   "exclusiveMaximum",
   "minLength",
   "maxLength",
-  "pattern",
   "format",
   "minItems",
   "maxItems",
@@ -92,6 +91,20 @@ function exactToken(v: string, what: string): string {
   if (cleaner.clean(v, MAX_SCHEMA_TOKEN_CHARS) !== v || /[\n\t]/.test(v)) {
     refuse(`${what} contains control, invisible, look-alike or non-NFKC characters`);
   }
+  // Short tokens, not prose: each enum / const string reaches the tool list
+  // unfenced, so a run of words is refused (at most 3 whitespace characters).
+  if ((v.match(/\s/g)?.length ?? 0) > MAX_TOKEN_SPACES) refuse(`${what} reads like prose`);
+  return v;
+}
+
+/** At most this many whitespace characters in an exact token (enum / const string). */
+export const MAX_TOKEN_SPACES = 3;
+
+/** Property names, `required` entries and `$defs` names: identifier-like, at most 64 chars. */
+export const SCHEMA_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
+
+function schemaName(v: string, what: string): string {
+  if (!SCHEMA_NAME.test(v)) refuse(`${what} must match ${SCHEMA_NAME}`);
   return v;
 }
 
@@ -155,7 +168,7 @@ function walk(node: unknown, depth: number, path: string): unknown {
       if (!Array.isArray(v)) refuse(`${at} is not an array`);
       out = (v as unknown[]).map((n) =>
         typeof n === "string"
-          ? exactToken(n, `${at} entry`)
+          ? schemaName(n, `${at} entry`)
           : refuse(`${at} entry is not a string`),
       );
     } else if (k === "enum") {
@@ -165,7 +178,7 @@ function walk(node: unknown, depth: number, path: string): unknown {
       out = exactValue(v, at, depth + 1);
     } else if (k === "default") {
       out = optional(() => exactValue(v, at, depth + 1));
-    } else if (k === "pattern" || k === "format") {
+    } else if (k === "format") {
       out =
         typeof v === "string"
           ? optional(() => {
@@ -185,7 +198,7 @@ function walk(node: unknown, depth: number, path: string): unknown {
       if (v === null || typeof v !== "object" || Array.isArray(v)) refuse(`${at} is not an object`);
       out = defineAll(
         Object.entries(v as object).map(([name, sub]) => [
-          exactToken(name, `${at} name`),
+          schemaName(name, `${at} name`),
           walk(sub, depth + 1, `${at}.${name}`),
         ]),
       );
@@ -210,10 +223,14 @@ function walk(node: unknown, depth: number, path: string): unknown {
  *
  * - Only {@link SCHEMA_KEYWORDS} pass; `$comment`, `x-*`, `examples` and unknown keys are dropped.
  * - `description` / `title`: cleaned, tags escaped, bounded (as tool descriptions).
- * - Property names, `required`, `enum`, `const`, `$ref`: must already be clean, at most
- *   {@link MAX_SCHEMA_TOKEN_CHARS} chars, without `<` or `>`; otherwise the tool is refused
- *   (a rewritten name or value would no longer match the server).
- * - `default`, `pattern`, `format` with such text are dropped instead.
+ * - Property names, `required` entries, `$defs` names: {@link SCHEMA_NAME} (identifier-like,
+ *   at most 64 chars), else the tool is refused.
+ * - `enum` / `const` strings and `$ref`: must already be clean, at most
+ *   {@link MAX_SCHEMA_TOKEN_CHARS} chars, without `<` or `>`, at most
+ *   {@link MAX_TOKEN_SPACES} whitespace characters (a token, not prose); otherwise the tool is
+ *   refused (a rewritten value would no longer match the server).
+ * - `default` and `format` with such text are dropped instead. `pattern` is always dropped:
+ *   a server-supplied regex run by a validator is a ReDoS risk.
  * - Over {@link MAX_SCHEMA_BYTES} serialised or {@link MAX_SCHEMA_DEPTH} deep: refused.
  */
 export function sanitizeInputSchema(schema: unknown): SchemaSanitizeResult {
@@ -239,4 +256,7 @@ export function sanitizeInputSchema(schema: unknown): SchemaSanitizeResult {
 }
 
 /** MCP tool names reach the model's tool list too; providers accept only this shape. */
-export const MCP_TOOL_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
+export const MCP_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Longest prefixed tool id (`<server>__<tool>`) the model sees: most providers cap names at 64. */
+export const MAX_PREFIXED_TOOL_NAME = 64;

@@ -18,7 +18,7 @@ import {
   type Usage,
 } from "@droveragent/core";
 import { resolveModel } from "@droveragent/model";
-import { fenceSummarizer, systemAddenda, untrustedFencer } from "./plugin-hooks.ts";
+import { fenceSummarizer, fencersLast, systemAddenda, untrustedFencer } from "./plugin-hooks.ts";
 import {
   forgetTool,
   loadInstructionFiles,
@@ -522,6 +522,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       plugins,
     });
 
+    // Lifecycle `mcp` and `skill` step output is fenced like the matching tools'.
+    const lifecycleFence = untrustedFencer(plugins, ctx);
+
     // Deterministic `init` lifecycle — resolve steps to text blocks that
     // prepend to the opening user turn. Skipped on resume (the blocks are
     // already in the checkpointed message history). A misconfigured step
@@ -540,6 +543,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             deps,
             engine: promptEngine,
             scope: lifecycleScope,
+            ...(lifecycleFence ? { fence: lifecycleFence } : {}),
           }),
         catch: (err): LifecycleError =>
           err instanceof LifecycleError
@@ -820,7 +824,8 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             isError: aCtx.isError,
             data: aCtx.result.details,
           };
-          for (const p of plugins) {
+          // Fencing plugins run last: they see (and fence) every other rewrite.
+          for (const p of fencersLast(plugins)) {
             if (!p.afterToolCall) continue;
             const next = await Effect.runPromise(
               Effect.either(p.afterToolCall(aCtx.toolCall.name, aCtx.args, current, ctx)),
@@ -1231,6 +1236,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
               deps,
               engine: promptEngine,
               scope: lifecycleScope,
+              ...(lifecycleFence ? { fence: lifecycleFence } : {}),
             }),
           catch: (err): LifecycleError =>
             err instanceof LifecycleError
@@ -1494,9 +1500,10 @@ function composeTools(
     for (const t of p.tools) out.push(t);
   }
 
-  // Apply wrapTool decorators in registration order — outermost-last so
-  // earlier plugins wrap closer to the underlying execute.
-  for (const p of plugins) {
+  // Apply wrapTool decorators in registration order, outermost-last so earlier
+  // plugins wrap closer to the underlying execute; fencing plugins always last
+  // (outermost), so no other wrapper can rewrite a result after the fence.
+  for (const p of fencersLast(plugins)) {
     if (!p.wrapTool) continue;
     out = out.map((t) => p.wrapTool!(t));
   }

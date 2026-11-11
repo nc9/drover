@@ -149,3 +149,10 @@ describe("cleaning table", () => {
     expect(out).toBe("ab");
   });
 });
+
+describe("nonce stripping", () => {
+  test("an upper-case copy of the nonce is replaced too", () => {
+    const f = createFence({ nonce: "00aa11bb22cc33dd" });
+    expect(f.clean("x 00AA11BB22CC33DD y 00aa11bb22cc33dd")).toBe("x [nonce] y [nonce]");
+  });
+});

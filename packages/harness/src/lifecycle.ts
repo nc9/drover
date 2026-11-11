@@ -24,6 +24,12 @@ export interface RunLifecycleArgs {
   deps: LifecycleStepDeps;
   engine: PromptEngine;
   scope: PromptScope;
+  /**
+   * The run's untrusted-data fence (from a fencing plugin), if any. `mcp` step output
+   * is server text and `skill` step bodies are files on disk, so both are fenced like
+   * the `mcp__*` and `skill_load` tools; `prompt` and `command` steps are the operator's.
+   */
+  fence?: (section: string, text: string) => string;
 }
 
 /**
@@ -73,7 +79,8 @@ async function resolveStep(step: LifecycleStep, args: RunLifecycleArgs): Promise
       if (!deps.skills) throw fail(label, "no skill registry wired into the run");
       const skill = deps.skills.get(step.name);
       if (!skill) throw fail(label, "skill not found in the registry");
-      return `## Skill: ${skill.name}\n\n${skill.body}`;
+      const body = args.fence ? args.fence(`skill-${step.name}`, skill.body) : skill.body;
+      return `## Skill: ${skill.name}\n\n${body}`;
     }
 
     case "mcp": {
@@ -86,7 +93,7 @@ async function resolveStep(step: LifecycleStep, args: RunLifecycleArgs): Promise
       }
       try {
         const result = await deps.mcpRuntime.callTool(step.tool, step.args ?? {});
-        return `## ${step.tool}\n\n${result}`;
+        return `## ${step.tool}\n\n${args.fence ? args.fence(step.tool, result) : result}`;
       } catch (err) {
         throw fail(label, `MCP call failed: ${(err as Error).message}`);
       }

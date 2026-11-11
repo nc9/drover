@@ -11,7 +11,12 @@ import {
   parsePrefixedToolName,
   prefixedToolName,
 } from "./config.ts";
-import { MCP_TOOL_NAME, sanitizeInputSchema, sanitizeToolDescription } from "./schema.ts";
+import {
+  MAX_PREFIXED_TOOL_NAME,
+  MCP_TOOL_NAME,
+  sanitizeInputSchema,
+  sanitizeToolDescription,
+} from "./schema.ts";
 
 /**
  * Live MCP runtime. Holds connected `Client` instances and the flat
@@ -100,6 +105,11 @@ export async function createMcpRuntime(
       if (!server || !server.client) {
         throw new Error(`mcp callTool: server '${parsed.serverId}' not connected`);
       }
+      // Only tools the runtime offers: a tool refused for its name or schema is not
+      // callable by name either (lifecycle `mcp` steps go through here).
+      if (!server.tools.some((t) => t.id === name)) {
+        throw new Error(`mcp callTool: '${name}' is not an offered tool of '${parsed.serverId}'`);
+      }
       const result = await server.client.callTool({
         name: parsed.toolName,
         arguments: args ?? {},
@@ -159,7 +169,10 @@ function mcpToolToDroverTool(
   // (see schema.ts); server-side enforcement stays the source of truth for
   // validation. A tool whose name or schema cannot be made safe is refused.
   if (typeof tool.name !== "string" || !MCP_TOOL_NAME.test(tool.name)) {
-    return { refused: "tool name must match /^[A-Za-z0-9_.-]{1,64}$/" };
+    return { refused: `tool name must match ${MCP_TOOL_NAME}` };
+  }
+  if (prefixedToolName(serverId, tool.name).length > MAX_PREFIXED_TOOL_NAME) {
+    return { refused: `"<server>__<tool>" is longer than ${MAX_PREFIXED_TOOL_NAME} chars` };
   }
   let schema: TSchema = Type.Object({}, { additionalProperties: true });
   if (tool.inputSchema !== undefined && tool.inputSchema !== null) {

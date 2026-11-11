@@ -12,6 +12,15 @@ export function systemAddenda(
     .filter((a): a is string => typeof a === "string" && a.trim() !== "");
 }
 
+/**
+ * Plugins with fencing plugins (`wrapUntrusted`) moved to the end, order kept otherwise.
+ * Used for `wrapTool` (so a fence wraps outermost) and `afterToolCall` (so a fence sees
+ * every other plugin's rewrite last): registration order cannot weaken the fence.
+ */
+export function fencersLast(plugins: ReadonlyArray<HarnessPlugin>): ReadonlyArray<HarnessPlugin> {
+  return [...plugins.filter((p) => !p.wrapUntrusted), ...plugins.filter((p) => p.wrapUntrusted)];
+}
+
 /** The fence for harness-made text derived from untrusted input; undefined without a fencing plugin. */
 export function untrustedFencer(
   plugins: ReadonlyArray<HarnessPlugin>,

@@ -116,6 +116,9 @@ export function createFence(opts: FenceOptions = {}): Fence {
   const nonce = opts.nonce ?? createNonce();
   const fieldMax = opts.maxFieldChars ?? DEFAULT_FIELD_MAX;
   const tag = `untrusted-data-${nonce}`;
+  const nonceRe = nonce
+    ? new RegExp(nonce.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi")
+    : undefined;
 
   const clean = (v: string, max: number = fieldMax): string => {
     let t = v.normalize("NFKC").replace(LONE_SURROGATE, "\ufffd");
@@ -126,7 +129,8 @@ export function createFence(opts: FenceOptions = {}): Fence {
         LOOKALIKE,
         (c) => `[U+${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")}]`,
       );
-    if (nonce) t = t.split(nonce).join("[nonce]");
+    // Case-insensitive: an upper-case copy of the (hex) nonce is replaced too.
+    if (nonce) t = t.replace(nonceRe!, "[nonce]");
     t = t.slice(0, max);
     // A cut inside a surrogate pair leaves a lone high surrogate: drop it.
     if (t.length > 0 && /[\ud800-\udbff]/.test(t[t.length - 1]!)) t = t.slice(0, -1);

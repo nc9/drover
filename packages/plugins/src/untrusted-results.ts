@@ -23,9 +23,11 @@
  *   The nonce is kept in `nonces` (default: in memory), so a resumed run in the
  *   same process keeps it; across processes, pass a store backed by your storage.
  *
- * Plugin order does not decide safety (reads are fenced from the result's own
- * provenance), only how tidy a fenced truncated head looks: list this plugin after
- * `truncatePlugin`.
+ * Plugin order does not decide safety: the harness applies a fencing plugin's
+ * `wrapTool` outermost and its `afterToolCall` last, whatever the registration
+ * order, and `afterToolCall` fences anything another plugin added or changed
+ * outside a fence block. Order only decides how tidy a fenced truncated head looks:
+ * list this plugin after `truncatePlugin`.
  */
 import {
   createFence,
@@ -88,6 +90,7 @@ export const NEVER_TRUSTED: ReadonlyArray<string> = [
   "recall",
   "show_tool_result",
   "skill_load",
+  "skill_resource",
 ];
 
 /** In-memory nonce store. Least recently used goes first, so a live run keeps its nonce. */
@@ -120,29 +123,73 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
     }
   }
   const selfFenced = new Set(opts.selfFenced ?? []);
+  for (const id of NEVER_TRUSTED) {
+    if (selfFenced.has(id)) {
+      throw new Error(
+        `untrustedResultsPlugin: "${id}" cannot be on the selfFenced list: its output is derived from or quotes untrusted text and is fenced by this plugin.`,
+      );
+    }
+  }
   const readers = new Set(opts.readers ?? ["show_tool_result"]);
   const nonces = opts.nonces ?? memoryNonces();
   const sectionOf = opts.section ?? ((n: string) => n);
-  const fences = new Map<string, Fence>();
+  // Fences of LIVE runs (dropped at run end). The nonce store is always read, so a
+  // live run refreshes its entry on every use, and a live run whose nonce went
+  // missing is an error: minting a new one would leave the system prompt naming
+  // the old nonce while results carry the new one.
+  const live = new Map<string, Fence>();
+  // Result contents this plugin produced, per run: `afterToolCall` passes those
+  // through unchanged and fences anything another plugin added outside a block.
+  const produced = new Map<string, Set<string>>();
 
   const fenceFor = (runId: string): Fence => {
-    let f = fences.get(runId);
-    if (!f) {
-      let nonce = nonces.get(runId);
-      if (nonce === undefined) {
-        nonce = createNonce();
-        nonces.set(runId, nonce);
-      }
-      f = createFence({
-        nonce,
-        ...(opts.maxFieldChars !== undefined ? { maxFieldChars: opts.maxFieldChars } : {}),
-      });
-      // A cache only: an evicted fence is rebuilt from the same stored nonce.
-      fences.set(runId, f);
-      if (fences.size > MAX_REMEMBERED_NONCES) fences.delete(fences.keys().next().value as string);
+    const stored = nonces.get(runId);
+    const f = live.get(runId);
+    if (f) {
+      if (stored === f.nonce) return f;
+      throw new Error(
+        `untrustedResultsPlugin: the fence nonce of live run ${runId} is ${stored === undefined ? "missing from" : "different in"} the nonce store; refusing to mint a new one mid-run.`,
+      );
     }
-    return f;
+    let nonce = stored;
+    if (nonce === undefined) {
+      nonce = createNonce();
+      nonces.set(runId, nonce);
+    }
+    const fresh = createFence({
+      nonce,
+      ...(opts.maxFieldChars !== undefined ? { maxFieldChars: opts.maxFieldChars } : {}),
+    });
+    live.set(runId, fresh);
+    return fresh;
   };
+
+  const record = (runId: string, result: ToolResult): ToolResult => {
+    let set = produced.get(runId);
+    if (!set) produced.set(runId, (set = new Set()));
+    set.add(result.content);
+    return result;
+  };
+
+  // Every non-blank stretch of `text` outside this run's fence blocks becomes its own block.
+  const fenceOutside = (f: Fence, text: string): string => {
+    const open = `<${f.tag} section="`;
+    const close = `</${f.tag}>`;
+    const parts: string[] = [];
+    let i = 0;
+    while (i < text.length) {
+      const start = text.indexOf(open, i);
+      const end = start === -1 ? -1 : text.indexOf(close, start);
+      const outside = text.slice(i, start === -1 || end === -1 ? text.length : start);
+      if (outside.trim() !== "") parts.push(f.wrapText("after-tool-call", outside));
+      else if (outside !== "") parts.push(outside);
+      if (start === -1 || end === -1) break;
+      parts.push(text.slice(start, end + close.length));
+      i = end + close.length;
+    }
+    return parts.join("");
+  };
+
   const isTrusted = (toolId: string): boolean => trusted.has(toolId) && !readers.has(toolId);
 
   const wrapTool = (tool: AnyToolDef): AnyToolDef => {
@@ -177,6 +224,7 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
                     isError: true,
                   }),
             ),
+            Effect.map((r) => record(ctx.runId, r)),
           ),
       };
     }
@@ -203,6 +251,7 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
                   isError: true,
                 }),
           ),
+          Effect.map((r) => record(ctx.runId, r)),
         ),
     };
   };
@@ -215,6 +264,21 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
     systemPromptAddendum: (ctx: RunContext) => fenceFor(ctx.runId).note(),
     wrapUntrusted: (section, text, ctx) => fenceFor(ctx.runId).wrapText(section, text),
     inheritToSubagents: true,
+    // Runs after every other plugin's afterToolCall (the harness orders fence plugins
+    // last). A result this plugin produced and nobody changed passes as is; anything
+    // else (another plugin rewrote it, or it never went through wrapTool) has every
+    // stretch outside this run's fence blocks fenced. Trusted tools pass.
+    afterToolCall: (toolName, _input, result, ctx) =>
+      Effect.sync((): ToolResult => {
+        if (isTrusted(toolName)) return result;
+        if (produced.get(ctx.runId)?.delete(result.content)) return result;
+        return { ...result, content: fenceOutside(fenceFor(ctx.runId), result.content) };
+      }),
+    onRunEnd: (_result, ctx) =>
+      Effect.sync(() => {
+        live.delete(ctx.runId);
+        produced.delete(ctx.runId);
+      }),
     assertResumable(ctx) {
       // Restored history carries fences that name the old nonce. Without it the
       // new nonce would leave that history looking like ordinary text.
@@ -230,9 +294,16 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
 
 function errorText(cause: Cause.Cause<unknown>): string {
   const e = Cause.squash(cause);
-  return e instanceof Error
-    ? e.message
-    : typeof e === "string"
-      ? e
-      : (JSON.stringify(e) ?? String(e));
+  if (e instanceof Error) return e.message;
+  if (typeof e === "string") return e;
+  // JSON.stringify throws on a BigInt or a cycle: never let that escape the fence.
+  try {
+    return JSON.stringify(e) ?? String(e);
+  } catch {
+    try {
+      return String(e);
+    } catch {
+      return "tool failed with an unprintable error";
+    }
+  }
 }
