@@ -55,10 +55,10 @@ describe("trace format v1", () => {
   });
 
   test("unknown kinds, unknown fields and non-objects are tolerated", () => {
-    const future = { kind: "provider_failover", runId: "r", ts: 1, from: "a", to: "b" };
+    const future = { kind: "some_future_kind", runId: "r", ts: 1, from: "a", to: "b" };
     expect(readEvent(future)).toEqual({
       unknown: true,
-      kind: "provider_failover",
+      kind: "some_future_kind",
       reason: "unknown_kind",
       raw: future,
     });
@@ -118,8 +118,8 @@ describe("trace format v1", () => {
       SAMPLES.compaction,
       SAMPLES.subagent_start,
       SAMPLES.error,
-      readEvent({ kind: "provider_failover", runId: "run_1", ts: 3 }),
-      readEvent({ kind: "provider_failover", runId: "run_1", ts: 4 }),
+      readEvent({ kind: "some_future_kind", runId: "run_1", ts: 3 }),
+      readEvent({ kind: "some_future_kind", runId: "run_1", ts: 4 }),
       readEvent({ ...SAMPLES.llm_call, modelName: undefined }),
       SAMPLES.run_end,
     ];
@@ -142,7 +142,7 @@ describe("trace format v1", () => {
       subagents: 1,
       errors: 1,
       unknownEvents: 3,
-      unknownKinds: { provider_failover: 2 },
+      unknownKinds: { some_future_kind: 2 },
     });
     expect(s.usage.costUsd).toBeCloseTo(0.02);
   });
