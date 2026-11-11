@@ -59,6 +59,17 @@ export interface AttemptResponse {
 const records = new Map<string, AttemptResponse>();
 /** Billed-cost waiters, for attempts opened with `{ cost: true }`. */
 const costs = new Map<string, (cost: number | undefined) => void>();
+/** The tap's reader of a 2xx body being read for its cost, per tag (cancelled on settle or dispose). */
+const costReaders = new Map<string, BodyReader>();
+/** The part of a stream reader the tap uses (structural: runtimes type readers differently). */
+interface BodyReader {
+  read(): Promise<{ done: boolean; value?: Uint8Array }>;
+  cancel(): Promise<void>;
+}
+/** Longest the tap reads a 2xx body for its cost: a streamed answer, so generous. */
+const COST_BODY_TIMEOUT_MS = 10 * 60_000;
+/** A line longer than this cannot be a usage chunk worth parsing: dropped, not buffered. */
+const MAX_COST_LINE_CHARS = 64 * 1024;
 /** Tags of attempts still running. A response for any other tag is ignored, so nothing is stored after `dispose()`. */
 const live = new Set<string>();
 let installed = false;
@@ -143,8 +154,12 @@ function install(): boolean {
         return res;
       }
       // Tee: the SDK reads one branch untouched, the tap reads `usage.cost` from the other.
+      // The tap's reader is kept per tag, so dispose (or settling) cancels it and the tee
+      // stops buffering for a branch nobody reads.
       const [forCaller, forTap] = res.body.tee();
-      void readCost(forTap).then(settle, () => settle(undefined));
+      const reader = forTap.getReader() as unknown as BodyReader;
+      costReaders.set(tag, reader);
+      void readCost(reader).then(settle, () => settle(undefined));
       return new Response(forCaller, {
         status: res.status,
         statusText: res.statusText,
@@ -212,6 +227,9 @@ export function startAttemptTap(opts: { cost?: boolean } = {}): AttemptTap {
     billed = new Promise((resolve) => {
       costs.set(tag, (c) => {
         costs.delete(tag);
+        const reader = costReaders.get(tag);
+        costReaders.delete(tag);
+        void reader?.cancel().catch(() => {});
         resolve(c);
       });
     });
@@ -233,15 +251,18 @@ export function startAttemptTap(opts: { cost?: boolean } = {}): AttemptTap {
     dispose: () => {
       live.delete(tag);
       records.delete(tag);
-      costs.get(tag)?.(undefined);
+      costs.get(tag)?.(undefined); // also cancels the tag's body reader
+      const reader = costReaders.get(tag);
+      costReaders.delete(tag);
+      void reader?.cancel().catch(() => {});
     },
   };
 }
 
-/** Test seam: attempts still holding tap state (0 when idle). */
-export const liveAttemptTaps = (): number => live.size + costs.size;
+/** @internal Test seam: attempts still holding tap state (0 when idle). */
+export const liveAttemptTaps = (): number => live.size + costs.size + costReaders.size;
 
-/** Test seam: whether the process-wide `fetch` tap is installed. */
+/** @internal Test seam: whether the process-wide `fetch` tap is installed. */
 export const attemptTapInstalled = (): boolean => installed;
 
 const costFromObject = (o: unknown): number | undefined => {
@@ -251,37 +272,60 @@ const costFromObject = (o: unknown): number | undefined => {
     : undefined;
 };
 
-/** `usage.cost` from an SSE or JSON 2xx body, read to the end (the last one wins). */
-async function readCost(body: ReadableStream<Uint8Array>): Promise<number | undefined> {
-  const reader = body.getReader();
+/**
+ * `usage.cost` from an SSE or JSON 2xx body, read to the end or until `COST_BODY_TIMEOUT_MS`
+ * (the last value wins). Lines are scanned from a moving offset and the buffer is compacted
+ * once per chunk; a line over `MAX_COST_LINE_CHARS` is dropped unread; only lines that mention
+ * `"cost"` are parsed. @internal (exported for tests).
+ */
+export async function readCost(
+  reader: BodyReader,
+  timeoutMs = COST_BODY_TIMEOUT_MS,
+): Promise<number | undefined> {
   const decoder = new TextDecoder();
   let buf = "";
+  let skipping = false; // inside an oversized line: drop until its newline
   let found: number | undefined;
   const scan = (line: string): void => {
+    if (!line.includes('"cost"')) return;
     const t = line.trim();
     const json = t.startsWith("data:") ? t.slice(5).trim() : t;
-    if (json === "" || json === "[DONE]" || !json.startsWith("{")) return;
+    if (!json.startsWith("{")) return;
     try {
       found = costFromObject(JSON.parse(json)) ?? found;
     } catch {
       /* partial or non-JSON line */
     }
   };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"timeout">((r) => {
+    timer = setTimeout(() => r("timeout"), timeoutMs);
+  });
   try {
     for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      let nl = buf.indexOf("\n");
+      const step = await Promise.race([reader.read(), deadline]);
+      if (step === "timeout" || step.done || !step.value) break;
+      buf += decoder.decode(step.value, { stream: true });
+      let start = 0;
+      let nl = buf.indexOf("\n", start);
       while (nl >= 0) {
-        scan(buf.slice(0, nl));
-        buf = buf.slice(nl + 1);
-        nl = buf.indexOf("\n");
+        if (skipping) skipping = false;
+        else if (nl - start <= MAX_COST_LINE_CHARS) scan(buf.slice(start, nl));
+        start = nl + 1;
+        nl = buf.indexOf("\n", start);
+      }
+      buf = buf.slice(start); // compact once per chunk
+      if (buf.length > MAX_COST_LINE_CHARS) {
+        buf = "";
+        skipping = true;
       }
     }
-    scan(buf);
+    if (!skipping) scan(buf);
   } catch {
-    /* aborted: whatever was found stands */
+    /* aborted or cancelled: whatever was found stands */
+  } finally {
+    clearTimeout(timer);
+    void reader.cancel().catch(() => {});
   }
   return found;
 }

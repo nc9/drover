@@ -244,3 +244,80 @@ test("the default entry re-exports createDisabledSandbox", async () => {
   const main = await import("../src/index.ts");
   expect(typeof main.createDisabledSandbox).toBe("function");
 });
+
+test("the core entry takes `streamFn` and exports withProviderCost", async () => {
+  const core = await import("../src/core.ts");
+  expect(typeof core.withProviderCost).toBe("function");
+  let calls = 0;
+  // A minimal pi-shaped event stream (the facade does not depend on pi-ai directly).
+  const streamFn = (() => {
+    calls += 1;
+    const m = {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: "via streamFn" }],
+      api: "openai-completions",
+      provider: "openrouter",
+      model: "custom/sf",
+      usage: {
+        input: 1,
+        output: 1,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 2,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop" as const,
+      timestamp: 0,
+    };
+    const events = [
+      { type: "start", partial: m },
+      { type: "done", reason: "stop", message: m },
+    ];
+    return {
+      async *[Symbol.asyncIterator]() {
+        yield* events;
+      },
+      result: async () => m,
+    };
+  }) as never;
+  const spec = defineAgent({
+    id: "core-streamfn",
+    systemPrompt: "probe",
+    inputSchema: Type.Object({ q: Type.String() }),
+    outputSchema: Type.Unknown(),
+    model: "m",
+    tools: [],
+  });
+  const models = new Map<string, PreResolvedModel>([
+    [
+      "m",
+      {
+        model: {
+          id: "custom/sf",
+          name: "sf",
+          api: "openai-completions",
+          provider: "openrouter",
+          baseUrl: "http://127.0.0.1:1/v1",
+          reasoning: false,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 1000,
+          maxTokens: 100,
+        } as unknown as PreResolvedModel["model"],
+        apiKey: "k",
+      },
+    ],
+  ]);
+  const r = await runAgent(
+    spec,
+    { q: "x" },
+    {
+      models,
+      sandbox: createDisabledSandbox(),
+      env: {},
+      streamFn,
+    },
+  ).result;
+  expect(r.finalText).toBe("via streamFn");
+  expect(calls).toBe(1);
+});

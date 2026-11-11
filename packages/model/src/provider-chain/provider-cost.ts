@@ -29,8 +29,17 @@ import type { ChainStreamFn as StreamFn } from "./chain.ts";
 import { startAttemptTap, type AttemptTap } from "./response-tap.ts";
 
 /** OpenRouter is the provider that reports `usage.cost`. */
-export const isOpenRouter = (model: { provider?: string; baseUrl?: string }): boolean =>
-  model.provider === "openrouter" || (model.baseUrl ?? "").includes("openrouter.ai");
+export const isOpenRouter = (model: { provider?: string; baseUrl?: string }): boolean => {
+  if (model.provider === "openrouter") return true;
+  // The base URL's parsed host, not a substring: `https://evil.test/openrouter.ai` or
+  // `https://openrouter.ai.evil.test` is not OpenRouter.
+  try {
+    const host = new URL(model.baseUrl ?? "").hostname.toLowerCase();
+    return host === "openrouter.ai" || host.endsWith(".openrouter.ai");
+  } catch {
+    return false;
+  }
+};
 
 /** Compose a caller `onPayload` with `usage: { include: true }`. */
 export const withUsageInclude = (
