@@ -127,20 +127,33 @@ export function createNoneSandbox(opts: NoneSandboxOptions = {}): SandboxAdapter
           env: runOpts?.env ? { ...process.env, ...runOpts.env } : process.env,
           stdout: "pipe",
           stderr: "pipe",
+          // Own process group, so a timeout/abort can kill the whole tree.
+          // Killing only the direct child (`sh -c 'sleep 5'`) leaves the
+          // grandchild holding the stdout pipe open and the call hangs.
+          detached: true,
         });
+
+        const killTree = (): void => {
+          try {
+            process.kill(-proc.pid, "SIGKILL");
+          } catch {
+            proc.kill();
+          }
+        };
 
         const timeoutMs = runOpts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         let killed = false;
         const timer = setTimeout(() => {
           killed = true;
-          proc.kill();
+          killTree();
         }, timeoutMs);
 
         const onAbort = (): void => {
           killed = true;
-          proc.kill();
+          killTree();
         };
-        runOpts?.signal?.addEventListener("abort", onAbort, { once: true });
+        if (runOpts?.signal?.aborted) onAbort();
+        else runOpts?.signal?.addEventListener("abort", onAbort, { once: true });
 
         try {
           const [stdout, stderr, exitCode] = await Promise.all([

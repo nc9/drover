@@ -107,6 +107,11 @@ Contract details that bite:
 
 ### Writing a new adapter
 
+Run the shared conformance suite against it:
+`sandboxConformanceCases({ expectShell })` from `@droveragent/sandbox` (see
+`docs/guides/sandboxes.mdx`). It checks exit codes, env, cwd, timeout/abort
+(`killed: true`), file round trips and typed read errors with no network.
+
 Follow `packages/sandbox-vercel` (Firecracker VM) and
 `packages/sandbox-cloudflare` (container behind a Durable Object).
 
