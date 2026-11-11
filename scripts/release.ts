@@ -31,6 +31,7 @@ import {
   isValidVersion,
   repositoryProblem,
 } from "./release-lib.ts";
+import { publishEntries } from "./release-publish.ts";
 import {
   PACK_INDEX,
   PACKAGE_ORDER,
@@ -123,17 +124,6 @@ const plan = (args: readonly string[]): void => {
 
 // --- publish ---------------------------------------------------------------
 
-type Registry = "published" | "missing";
-
-// Mirrors scripts/publish-all.sh: require success AND non-empty stdout to
-// call it published; an E404 is "missing"; anything else aborts.
-const registryState = (spec: string, cwd: string): Registry => {
-  const r = exec(["npm", "view", spec, "version"], cwd, true);
-  if (r.code === 0 && r.stdout.trim() !== "") return "published";
-  if (r.code === 0 || /E404/.test(`${r.stdout}\n${r.stderr}`)) return "missing";
-  return fail(`registry check failed for ${spec} (not a 404):\n${r.stdout}${r.stderr}`);
-};
-
 const readIndex = (dir: string): PackEntry[] => {
   const entries = JSON.parse(readFileSync(join(dir, PACK_INDEX), "utf8")) as PackEntry[];
   const order = entries.map((e) => e.pkg).join(",");
@@ -182,54 +172,20 @@ const publish = (args: readonly string[]): void => {
     if (problems.length > 0) fail(`refusing to publish:\n  ${problems.join("\n  ")}`);
   }
 
-  const counts = { published: 0, skipped: 0 };
-  for (const e of entries) {
-    const spec = `${e.name}@${e.version}`;
-    if (registryState(spec, dir) === "published") {
-      console.log(`↷ SKIP ${spec}: exact version already on registry`);
-      counts.skipped += 1;
-      continue;
-    }
-    const tag = distTagFor(e.version);
-    const firstPublish = registryState(e.name, dir) === "missing";
-    console.log(`── ${dryRun ? "dry-run publishing" : "publishing"} ${spec} (dist-tag ${tag})`);
-    // cwd = the pack dir, outside the repo: the repo .npmrc expects NPM_TOKEN,
-    // which is unset under trusted publishing.
-    const cmd = [
-      "npm",
-      "publish",
-      `./${e.tarball}`,
-      "--access",
-      "public",
-      "--tag",
-      tag,
-      ...(dryRun ? ["--dry-run"] : ["--provenance"]),
-    ];
-    if (exec(cmd, dir, false).code !== 0) {
-      fail(`publish FAILED: ${spec}; aborting, later packages NOT published`);
-    }
-    counts.published += 1;
-    // The registry gives a package's first version `latest` whatever --tag
-    // says, so a brand-new package published as a prerelease would sit on
-    // `latest`. Try to remove it; the registry may refuse to drop the only
-    // `latest`, in which case say so loudly (RELEASING.md covers it).
-    if (firstPublish && tag !== "latest") {
-      if (dryRun) {
-        summary(
-          `ℹ ${e.name} is new: a real run would also try \`npm dist-tag rm ${e.name} latest\``,
-        );
-        continue;
-      }
-      const rm = exec(["npm", "dist-tag", "rm", e.name, "latest"], dir, true);
-      if (rm.code === 0) summary(`✓ ${e.name} is new: removed the registry-assigned latest tag`);
-      else {
-        summary(
-          `⚠ ${e.name} is new and npm kept \`latest\` -> ${e.version} (dist-tag rm failed: ${rm.stderr.trim().split("\n").at(-1) ?? ""}). ` +
-            `\`npm install ${e.name}\` resolves to this prerelease until a stable version is published.`,
-        );
-      }
-    }
-  }
+  // cwd = the pack dir, outside the repo: the repo .npmrc expects NPM_TOKEN,
+  // which is unset under trusted publishing.
+  const counts = publishEntries(
+    {
+      npm: (a) => exec(["npm", ...a], dir, true),
+      npmLoud: (a) => exec(["npm", ...a], dir, false).code,
+      summary,
+      log: (line) => console.log(line),
+      fail,
+      dryRun,
+    },
+    entries,
+    ["--provenance"],
+  );
   const verb = dryRun ? "would publish" : "published";
   console.log(
     `✓ done: ${counts.published} ${verb}, ${counts.skipped} skipped (already on registry)`,
