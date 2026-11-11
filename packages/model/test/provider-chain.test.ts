@@ -138,11 +138,16 @@ function chainOf(fakes: Fake[], extra: Partial<Parameters<typeof createProviderC
 /** One binding is one run. */
 function bind(chain: ReturnType<typeof createProviderChain>) {
   const notices: ProviderFailoverNotice[] = [];
-  return { fn: chain.forRun((n) => notices.push(n)), notices };
+  return { fn: chain.forRun((n) => notices.push(n)), notices, provider: chain.providers[0]! };
 }
 async function call(b: ReturnType<typeof bind>, signal?: AbortSignal, id = CANON) {
   const before = b.notices.length;
-  const stream = await b.fn({ ...canonical, id } as never, ctx, signal ? { signal } : undefined);
+  // The harness hands the chain a model whose provider is a chain provider (its preResolvedModels).
+  const stream = await b.fn(
+    { ...canonical, id, provider: b.provider } as never,
+    ctx,
+    signal ? { signal } : undefined,
+  );
   const events: AssistantMessageEvent[] = [];
   for await (const e of stream) events.push(e);
   return { events, result: await stream.result(), notices: b.notices.slice(before) };
@@ -539,7 +544,7 @@ describe("provider chain", () => {
     const [c, d] = [fake("c", [{ kind: "error", message: "402 x" }]), fake("d", [{ kind: "ok" }])];
     const stream = await chainOf([c, d]).forRun(() => {
       throw new Error("listener bug");
-    })(canonical as never, ctx);
+    })({ ...canonical, provider: "c" } as never, ctx);
     expect((await stream.result()).provider).toBe("d");
   });
 
@@ -579,5 +584,75 @@ describe("provider chain", () => {
       env: {},
     });
     expect((await call(bind(keyed), undefined, "x")).result.errorMessage).toContain("no API key");
+  });
+
+  test("a model whose provider is not in the chain goes straight to pi-ai (no failover, no notice)", async () => {
+    let hits = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        hits += 1;
+        return new Response(
+          `data: ${JSON.stringify({ id: "1", object: "chat.completion.chunk", created: 1, model: "x", choices: [{ index: 0, delta: { role: "assistant", content: "outside" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      },
+    });
+    try {
+      const [a, b] = [fake("a", [{ kind: "ok" }]), fake("b", [{ kind: "ok" }])];
+      const bound = bind(chainOf([a, b]));
+      const outside = {
+        ...modelOf("elsewhere", "small-model"),
+        baseUrl: `http://127.0.0.1:${server.port}/v1`,
+      };
+      const stream = await bound.fn(outside as never, ctx, { apiKey: "resolver-key" });
+      const result = await stream.result();
+      expect(result.stopReason).toBe("stop");
+      expect(result.content).toEqual([{ type: "text", text: "outside" }]);
+      expect(hits).toBe(1);
+      expect([a.calls.length, b.calls.length, bound.notices.length]).toEqual([0, 0, 0]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("an abort during the last attempt ends aborted, not error (a transport error after abort is a cancel)", async () => {
+    // The provider reacts to the abort the way the SDK can: a plain "Connection error." error event.
+    const dying = (name: string, committed: boolean, ac: AbortController): Fake => {
+      const calls: Fake["calls"] = [];
+      const stream: ChainStreamFn = (model, _c, options) => {
+        calls.push({ model: model.id });
+        const out = createAssistantMessageEventStream();
+        out.push({ type: "start", partial: msg(name) });
+        if (committed)
+          out.push({
+            type: "text_delta",
+            contentIndex: 0,
+            delta: "par",
+            partial: msg(name, { content: [{ type: "text", text: "par" }] }),
+          });
+        options?.signal?.addEventListener("abort", () => {
+          out.push({
+            type: "error",
+            reason: "error",
+            error: msg(name, { stopReason: "error", errorMessage: "Connection error." }),
+          });
+          out.end();
+        });
+        queueMicrotask(() => ac.abort());
+        return out;
+      };
+      return { name, stream, calls };
+    };
+    for (const committed of [false, true]) {
+      const ac = new AbortController();
+      const a = dying("a", committed, ac);
+      const bound = bind(chainOf([a]));
+      const { result } = await call(bound, ac.signal);
+      expect(result.stopReason).toBe("aborted");
+      expect(result.errorMessage).toBe("aborted");
+      expect(bound.notices).toEqual([]); // not classified, no failover/exhausted notice
+      expect(a.calls).toHaveLength(1); // the attempt really started before the abort
+    }
   });
 });
