@@ -59,11 +59,4 @@ jobs:
         run: bun scripts/ci.ts pack
 
       - name: Test (bun test, per package)
-        run: bun scripts/ci.ts test --skip runtime
-
-      # Quarantined: packages/runtime has a test failing on main, fixed under
-      # #16. Remove continue-on-error (and fold runtime back into the step
-      # above) once #16 lands.
-      - name: Test runtime (quarantined, #16)
-        continue-on-error: true
-        run: bun scripts/ci.ts test --only runtime
+        run: bun scripts/ci.ts test
