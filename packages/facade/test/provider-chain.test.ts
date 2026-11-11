@@ -192,10 +192,12 @@ describe("provider chain inside a run", () => {
       expect(JSON.stringify(toolMsg.content)).toContain("provider chain inside a run");
 
       const fo = events.find((e) => e.kind === "provider_failover");
-      // pi-ai flattens the error to text and drops the body's code, so over this transport a
-      // 403 is only "forbidden" (fails over, not benched); a transport that keeps the code
-      // gets "region_refused".
-      expect(fo).toMatchObject({ failureClass: "forbidden", status: 403 });
+      // The response tap restores the body's code that pi-ai drops: a region refusal, not a key refusal.
+      expect(fo).toMatchObject({
+        failureClass: "region_refused",
+        status: 403,
+        code: "unsupported_country_region_territory",
+      });
       // Not retried in place.
       expect(a.seen).toHaveLength(2);
 

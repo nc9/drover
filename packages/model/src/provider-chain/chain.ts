@@ -20,6 +20,7 @@ import {
   type ProviderFailure,
   type RawFailure,
 } from "./classify.ts";
+import { rawFromResponse, startAttemptTap, type AttemptTap } from "./response-tap.ts";
 
 /** pi-agent-core's `StreamFn`. */
 export type ChainStreamFn = (
@@ -137,6 +138,7 @@ function failureDiagnostics(
       status: x.status,
       ...(x.code ? { code: x.code } : {}),
       ...(x.retryAfterMs !== undefined ? { retryAfterMs: x.retryAfterMs } : {}),
+      ...(x.headers ? { headers: x.headers } : {}),
     },
   }));
 }
@@ -232,14 +234,28 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       });
 
       /** One call to one provider. Events are held until the first content event, so a failure before it is retryable elsewhere. */
-      const attempt = async (
+      const attempt = async (provider: string, call: { model: Model<Api>; apiKey: string }) => {
+        // The response tap restores what pi-ai drops (status, body code, Retry-After) for the real
+        // transport; a custom `streams` entry never touches fetch, so it is not tapped.
+        const tap = own(options.streams, provider) ? undefined : startAttemptTap();
+        try {
+          return await attemptOnce(provider, call, tap);
+        } finally {
+          tap?.dispose();
+        }
+      };
+      const attemptOnce = async (
         provider: string,
         call: { model: Model<Api>; apiKey: string },
+        tap?: AttemptTap,
       ): Promise<{ failure: ProviderFailure; message: AssistantMessage | null } | null> => {
-        const failed = (raw: RawFailure, message: AssistantMessage | null = null) => ({
-          failure: classifyFailure(provider, raw),
-          message,
-        });
+        const failed = (raw: RawFailure, message: AssistantMessage | null = null) => {
+          const seen = tap?.take();
+          return {
+            failure: classifyFailure(provider, seen ? rawFromResponse(seen, raw.message) : raw),
+            message,
+          };
+        };
         const stream = own(options.streams, provider) ?? streamSimple;
         let inner: AssistantMessageEventStream;
         try {
@@ -248,6 +264,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
             ...callOptions,
             apiKey: call.apiKey,
             maxRetries: callOptions?.maxRetries ?? 0,
+            ...(tap ? { headers: { ...callOptions?.headers, ...tap.header } } : {}),
           });
         } catch (err) {
           return failed(rawFromThrown(err));

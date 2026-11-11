@@ -98,13 +98,28 @@ failureClass, status, code, waitMs): class and status, never provider text. `usa
 `RunResult.usageByProvider` name the serving provider. `usageByProvider` covers the calls of this
 invocation: a resumed run starts it empty (the cumulative `usage` is restored from the checkpoint).
 
+## Structured provider errors
+
+pi-ai flattens a failed call to the OpenAI SDK's text (`"403 <message>"`) and drops the response body
+and headers (`onResponse` is not called for non-2xx). The chain restores them per attempt with a
+**response tap**: it tags the attempt's request with a header, and one process-wide `fetch` wrapper
+(installed once, pass-through for every untagged request, tag stripped before the request leaves the
+process) reads a bounded copy of a non-2xx body and records the status, a header allow-list
+(`retry-after`, `retry-after-ms`, `x-ratelimit-*`, `x-request-id`, `cf-ray`; nothing else) and the parsed
+error fields (`error.code`, `limit_source`). Classification then uses those fields, never message text, so a
+region refusal is `region_refused` and a real `Retry-After` header is honoured. The failure's status, code,
+`retryAfterMs` and kept headers are on the final message's `diagnostics`; events and the default message
+carry status and code only, and `includeProviderText: true` opts in to the providers' own text.
+
+The tap needs the OpenAI SDK to resolve `globalThis.fetch` when its client is created (true for the version
+pi-ai uses); a `streams` entry (custom transport) is not tapped and supplies its own `status` / `error: { code }`
+on a thrown error. Without a tap record the chain falls back to the SDK's leading status.
+
 ## Limits
 
-- pi-ai flattens a failed call to the SDK's text (`"403 <message>"`) and drops the response body and
-  headers, and `onResponse` is not called for non-2xx. Over the plain transport only the leading status
-  survives: a region refusal arrives as a 403 and is classed `forbidden` (it fails over, is not retried
-  in place and is not benched), and a real `Retry-After` header is invisible. A custom `streams` entry that throws
-  an error with `status` and `error: { code }` gets the precise class.
+- Without a tap record (a custom `streams` entry, or a runtime where `fetch` cannot be patched) only the
+  SDK's leading status survives: a region refusal is then a bare 403, classed `forbidden` (it fails over,
+  is not retried in place and is not benched).
 - The OpenAI client's own retries are off (`maxRetries: 0`): failing over is the retry.
 - A failed attempt the provider still billed is not counted.
 - Not verified against live OpenRouter or Cloudflare endpoints: tests use local servers.

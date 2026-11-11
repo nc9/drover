@@ -10,6 +10,8 @@ export interface ProviderFailure {
   code?: string;
   /** Wait the provider asked for, in ms. */
   retryAfterMs?: number;
+  /** Allow-listed response headers (rate limit, request id), when the response tap saw them. */
+  headers?: Record<string, string>;
   /** The provider's text, truncated. Can quote the prompt: only used with `includeProviderText`; never in events. */
   message: string;
 }
@@ -30,6 +32,8 @@ export interface RawFailure {
   code?: string;
   /** `error.metadata.limit_source` (OpenRouter). */
   limitSource?: string;
+  /** Allow-listed response headers, carried onto the failure. */
+  headers?: Record<string, string>;
 }
 
 /** The gateway and its upstream use this code on a 403 for a region refusal. */
@@ -80,6 +84,7 @@ export function classifyFailure(provider: string, raw: RawFailure): ProviderFail
   if (raw.code && KNOWN_CODES.has(raw.code)) out.code = raw.code;
   const wait = raw.retryAfterMs ?? (status === 429 ? parseRetryAfterMs(text) : undefined);
   if (wait !== undefined) out.retryAfterMs = wait;
+  if (raw.headers && Object.keys(raw.headers).length > 0) out.headers = raw.headers;
   return out;
 }
 
