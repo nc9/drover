@@ -726,7 +726,13 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         }
       }
       // Emit translated drover events. safeEmit fans out to plugin observers.
-      for (const ev of translator.translate(e)) safeEmit(ev);
+      for (const ev of translator.translate(e)) {
+        if (ev.kind === "tool_call_end" && deniedCalls.has(ev.toolUseId)) {
+          const denied = deniedCalls.get(ev.toolUseId)!;
+          deniedCalls.delete(ev.toolUseId);
+          safeEmit({ ...ev, result: { ...ev.result, denied } });
+        } else safeEmit(ev);
+      }
       // Persist checkpoint at the end of every turn — covers tool-using runs
       // (turn_end fires after each tool batch) and pure-text runs.
       if (e.type === "turn_end") {
@@ -776,6 +782,8 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // first `deny` wins. `allow` → pi sees `{}` (proceed). A plugin that
     // errors fails-closed (acts like deny) — observability shouldn't be
     // able to short-circuit policy.
+    // Calls a `beforeToolCall` plugin refused, by tool-use id, until their `tool_call_end`.
+    const deniedCalls = new Map<string, { plugin: string; code?: string }>();
     const beforeToolCall = plugins.some((p) => p.beforeToolCall)
       ? async (pCtx: {
           toolCall: { name: string; id?: string };
@@ -798,7 +806,15 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
               };
             }
             const d = decision.right;
-            if (d.kind === "deny") return { block: true, reason: d.reason };
+            if (d.kind === "deny") {
+              // Remembered so the call's `tool_call_end` says who refused it (and why, as a code).
+              if (pCtx.toolCall.id !== undefined)
+                deniedCalls.set(pCtx.toolCall.id, {
+                  plugin: p.id,
+                  ...(d.code !== undefined ? { code: d.code } : {}),
+                });
+              return { block: true, reason: d.reason };
+            }
             // allow → continue chain
           }
           return {};

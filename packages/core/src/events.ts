@@ -38,6 +38,12 @@ export interface ToolResult {
   isError?: boolean;
   /** Optional structured payload for plugins/observers. */
   data?: unknown;
+  /**
+   * Set by the harness when a `beforeToolCall` plugin refused the call (the tool did
+   * not run): which plugin, and its decision's `code` when it gave one. Absent for a
+   * tool that ran, whether it succeeded or failed.
+   */
+  denied?: { plugin: string; code?: string };
 }
 
 /**
