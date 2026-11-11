@@ -102,9 +102,15 @@ takes a string or any JSON-able value; `wrapText` is the whole-text variant.
   under the working directory can plant text there for the next run. The markdown
   memory adapter ignores `trusted: true` in a file's frontmatter unless it was
   opened with `allowTrustedFrontmatter: true`, for the same reason.
-- **Tool descriptions.** MCP tool descriptions (server-supplied) are cleaned and
-  bounded to 500 characters before the model sees them, but are not fenced; only
-  connect servers you would run code from.
+- **Tool descriptions and schemas.** MCP tool descriptions (server-supplied), and
+  every `description` and `title` inside a tool's input schema, are cleaned and
+  bounded to 500 characters each before the model sees them, but are not fenced.
+  Tool names, property names, `enum`, `const`, `default` and `examples` values are
+  passed as sent, because arguments must match them. Only connect servers you would
+  run code from.
+- **Resume with a fence plugin.** A resume is refused when the plugin cannot find
+  the run's nonce, which includes a run that was started without the plugin and
+  resumed with it. Pass a persistent `nonces` store to resume across processes.
 - **Harness-made tool errors.** Errors produced outside a tool's `execute`
   (argument-validation errors that echo arguments, unknown-tool text,
   `beforeToolCall` deny reasons, output-schema retry feedback) are not fenced.
