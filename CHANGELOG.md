@@ -52,6 +52,15 @@ Every package (`@droveragent/*` and the `droveragent` umbrella) moves to 0.3.0-n
 - `@droveragent/sandbox-vercel`, `@droveragent/sandbox-cloudflare`: `writeFile` creates missing parent directories (one `mkdir -p` and a retry after a failed write), as the conformance suite requires (#55, #41).
 - `@droveragent/eval` replay: a recorded call that cannot be hashed no longer marks later calls concurrent, and ambiguity is judged only on the matching turns, ignoring `timestamp` and `responseId` (#60, #22).
 
+### Added
+
+- `withProviderCost(streamFn?)` (harness, re-exported by facade) and
+  `RunOptions.streamFn` / `ResumeOptions.streamFn` (facade): pass the
+  provider-billed cost (OpenRouter `usage.cost`) through as `Usage.costUsd`, so
+  `quota.maxCostUsd` runs on what was actually billed instead of list-price
+  rates. pi-ai drops that field, so the wrapper asks for `usage: { include: true }`
+  and taps the response body. See `packages/harness/src/provider-cost.ts`.
+
 ## 0.2.0 — 2026-08-25
 
 `@droveragent/harness` + `@droveragent/facade` only; every other package is
