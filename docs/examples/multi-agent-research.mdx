@@ -12,7 +12,7 @@ synthesises the findings.
 
 ```ts title="research.ts"
 import { Type } from "@sinclair/typebox";
-import { defineAgent } from "@drover/core";
+import { defineAgent } from "@droveragent/core";
 
 // Child
 const researcher = defineAgent({
@@ -55,7 +55,7 @@ const planner = defineAgent({
 ## Wire the registry and run
 
 ```ts
-import { runAgent, staticRegistry } from "@drover/facade";
+import { runAgent, staticRegistry } from "@droveragent/facade";
 
 const registry = staticRegistry({ researcher });
 
@@ -112,7 +112,7 @@ When you wire `storage`, each child gets its own `runs` row with
 `parent_run_id` set. The eval-viewer's storage page surfaces lineage.
 
 ```ts
-import { createLibsqlStorage } from "@drover/storage";
+import { createLibsqlStorage } from "@droveragent/storage";
 
 const storage = await createLibsqlStorage({ url: "file:./var/runs.db" });
 runAgent(planner, input, { agentRegistry: registry, storage });

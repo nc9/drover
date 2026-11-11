@@ -10,15 +10,15 @@ pool can run on a different machine.
 
 ```ts title="server.ts"
 import { Type } from "@sinclair/typebox";
-import { defineAgent } from "@drover/core";
-import { staticRegistry } from "@drover/facade";
+import { defineAgent } from "@droveragent/core";
+import { staticRegistry } from "@droveragent/facade";
 import {
   createLibsqlQueue,
   createRunApi,
   createWorkerPool,
-} from "@drover/runtime";
-import { createLibsqlStorage } from "@drover/storage";
-import { createNoneSandbox } from "@drover/sandbox";
+} from "@droveragent/runtime";
+import { createLibsqlStorage } from "@droveragent/storage";
+import { createNoneSandbox } from "@droveragent/sandbox";
 
 // 1. Define your agents
 const echo = defineAgent({

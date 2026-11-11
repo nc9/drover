@@ -35,8 +35,8 @@ The `postSuccess` step is a literal `prompt` block telling the agent to run the
 suite once it believes it is done.
 
 ```ts title="coding-agent.ts"
-import { defineAgent } from "@drover/core";
-import { bashBlocklistPlugin } from "@drover/plugins";
+import { defineAgent } from "@droveragent/core";
+import { bashBlocklistPlugin } from "@droveragent/plugins";
 import { Type } from "@sinclair/typebox";
 
 export const codingAgent = defineAgent({
@@ -93,7 +93,7 @@ explicitly when you want to mount a path other than `cwd`, fence the toolchain,
 or set a per-call timeout.
 
 ```ts title="coding-agent.ts"
-import { createJustBashSandbox } from "@drover/sandbox-just-bash";
+import { createJustBashSandbox } from "@droveragent/sandbox-just-bash";
 
 const repo = "/work/my-project";
 
@@ -125,8 +125,8 @@ plugins fresh per run and pass them through `options.plugins`.
 `spec.plugins`. The loop detector and tracer are built inside the run function:
 
 ```ts title="coding-agent.ts"
-import { runAgent } from "@drover/facade";
-import { loopDetectPlugin, stepTracerPlugin } from "@drover/plugins";
+import { runAgent } from "@droveragent/facade";
+import { loopDetectPlugin, stepTracerPlugin } from "@droveragent/plugins";
 
 export async function runCodingTask(task: string) {
   // fresh state each call
@@ -150,7 +150,7 @@ Optionally fence writes tighter than the mount — useful when the mount is broa
 but the agent should only touch one subtree:
 
 ```ts
-import { writePolicyPlugin } from "@drover/plugins";
+import { writePolicyPlugin } from "@droveragent/plugins";
 
 // write-policy is stateless → could live on spec.plugins,
 // or pass per run alongside the others:

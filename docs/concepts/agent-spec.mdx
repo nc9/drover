@@ -32,7 +32,7 @@ type ModelSpec =
   | { name: string; reasoning?: ReasoningLevel; temperature?: number; maxTokens?: number };
 ```
 
-Lookup order: alias map (`@drover/model`'s `DEFAULT_ALIASES` plus per-
+Lookup order: alias map (`@droveragent/model`'s `DEFAULT_ALIASES` plus per-
 call overrides) → provider-prefixed slug `provider:modelId` → pi-ai
 builtin model id (searched across every registered provider).
 

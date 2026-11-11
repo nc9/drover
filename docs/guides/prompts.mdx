@@ -3,7 +3,7 @@ title: Prompt templates
 description: Compose system prompts from Liquid templates with drover builtins.
 ---
 
-`@drover/prompt` assembles system prompts from [Liquid](https://liquidjs.com)
+`@droveragent/prompt` assembles system prompts from [Liquid](https://liquidjs.com)
 templates instead of hand-concatenated strings. A template is markdown with two
 kinds of directive:
 
@@ -69,7 +69,7 @@ state, renders the template, and uses it as the system prompt. When
 is not used for assembly.
 
 ```ts
-import { defineAgent } from "@drover/core";
+import { defineAgent } from "@droveragent/core";
 
 defineAgent({
   id: "writer",
@@ -89,7 +89,7 @@ The engine works without the harness — useful for previewing or bespoke
 assembly:
 
 ```ts
-import { createPromptEngine } from "@drover/prompt";
+import { createPromptEngine } from "@droveragent/prompt";
 
 const engine = createPromptEngine();
 const { text, cache } = await engine.render(templateSource, {

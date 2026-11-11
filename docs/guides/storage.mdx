@@ -3,7 +3,7 @@ title: Storage
 description: Persist runs + events + checkpoints. Plug in libsql or your own.
 ---
 
-`@drover/storage` defines a `StorageAdapter` interface and ships two
+`@droveragent/storage` defines a `StorageAdapter` interface and ships two
 implementations: in-memory (for tests) and libsql (for durability).
 
 ## Interface
@@ -37,7 +37,7 @@ execution. They surface in logs but the run continues.
 ## In-memory
 
 ```ts
-import { createMemoryStorage } from "@drover/storage";
+import { createMemoryStorage } from "@droveragent/storage";
 
 const storage = createMemoryStorage();
 ```
@@ -48,7 +48,7 @@ and the eval suite.
 ## libsql
 
 ```ts
-import { createLibsqlStorage } from "@drover/storage";
+import { createLibsqlStorage } from "@droveragent/storage";
 
 // local file
 const storage = await createLibsqlStorage({ url: "file:./var/runs.db" });

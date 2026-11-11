@@ -1,5 +1,5 @@
 ---
-title: "@drover/core"
+title: "@droveragent/core"
 description: Public types and identity builders. No runtime.
 ---
 
@@ -29,7 +29,7 @@ import {
   SubagentLimitError, QuotaExceededError,
   CancelledError, PausedForConfirmationError,
   ModelError, SandboxError, StorageError, PluginError,
-} from "@drover/core";
+} from "@droveragent/core";
 ```
 
 ## `defineAgent`
@@ -59,7 +59,7 @@ Every drover error is a `Data.TaggedError` from Effect, so consumers
 can match by `_tag`:
 
 ```ts
-import { OutputValidationError } from "@drover/core";
+import { OutputValidationError } from "@droveragent/core";
 
 if (err._tag === "OutputValidationError") {
   // err.attempts, err.lastIssues, err.lastText all typed

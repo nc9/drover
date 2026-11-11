@@ -27,7 +27,7 @@ const researcher = defineAgent({
   /* ... */
 });
 
-import { staticRegistry } from "@drover/facade";
+import { staticRegistry } from "@droveragent/facade";
 
 runAgent(planner, input, {
   agentRegistry: staticRegistry({ researcher, summariser }),

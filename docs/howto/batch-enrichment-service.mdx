@@ -3,7 +3,7 @@ title: A Durable Batch Enrichment Service
 description: Turn the lead-enrichment agent into durable queued jobs with a worker pool, crash recovery, and horizontal scale.
 ---
 
-You have a CSV of leads, not one lead. Running them inline blocks your process, loses work on a crash, and pins you to one machine. This recipe wraps the [Level-4 enrichment agent](/howto/lead-enrichment) in `@drover/runtime`: a durable libsql queue, a worker pool with leases and crash recovery, and a `RunApi` for enqueue / wait / cancel. The producer that enqueues is fully decoupled from the workers that run — they can live on different machines pointed at the same database.
+You have a CSV of leads, not one lead. Running them inline blocks your process, loses work on a crash, and pins you to one machine. This recipe wraps the [Level-4 enrichment agent](/howto/lead-enrichment) in `@droveragent/runtime`: a durable libsql queue, a worker pool with leases and crash recovery, and a `RunApi` for enqueue / wait / cancel. The producer that enqueues is fully decoupled from the workers that run — they can live on different machines pointed at the same database.
 
 **Level 7 of 7 — the top of the ladder.** This recipe assumes the lead-enrichment agent from Level 4 (grounded output over a network allowlist) and the storage + pause/resume you wired in Level 5. Here you stop calling `runAgent` yourself and let a pool do it.
 
@@ -15,7 +15,7 @@ In every prior recipe you called `runAgent(spec, input, options)` and awaited th
 - **Durability** — jobs and runs live in libsql, so a crash mid-enrichment is recoverable.
 - **Horizontal scale** — N pools on N machines drain the same queue with no app-side coordination.
 
-`@drover/runtime` adds three pieces over the library: a `QueueAdapter`, a `WorkerPool`, and a `RunApi`. See [Runtime](/guides/runtime) for the full surface.
+`@droveragent/runtime` adds three pieces over the library: a `QueueAdapter`, a `WorkerPool`, and a `RunApi`. See [Runtime](/guides/runtime) for the full surface.
 
 ## Boot the service
 
@@ -23,15 +23,15 @@ The enrichment agent is the job payload. Each job runs in its own sandbox via th
 
 ```ts title="server.ts"
 import { Type } from "@sinclair/typebox";
-import { defineAgent } from "@drover/core";
-import { staticRegistry } from "@drover/facade";
+import { defineAgent } from "@droveragent/core";
+import { staticRegistry } from "@droveragent/facade";
 import {
   createLibsqlQueue,
   createRunApi,
   createWorkerPool,
-} from "@drover/runtime";
-import { createLibsqlStorage } from "@drover/storage";
-import { createJustBashSandbox } from "@drover/sandbox-just-bash";
+} from "@droveragent/runtime";
+import { createLibsqlStorage } from "@droveragent/storage";
+import { createJustBashSandbox } from "@droveragent/sandbox-just-bash";
 
 // 1. The Level-4 agent, unchanged — it is just a JSON-serialisable spec.
 const enrich = defineAgent({

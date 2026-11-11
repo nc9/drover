@@ -61,8 +61,8 @@ Two real ways to reach the web. Pick one.
 Define the server config, boot a runtime, allowlist it on the spec.
 
 ```ts title="enrich-mcp.ts"
-import type { McpServerConfig } from "@drover/mcp";
-import { createMcpRuntime } from "@drover/mcp";
+import type { McpServerConfig } from "@droveragent/mcp";
+import { createMcpRuntime } from "@droveragent/mcp";
 
 const configs: McpServerConfig[] = [
   {
@@ -83,7 +83,7 @@ console.log(mcpRuntime.servers());
 The agent declares the server in `mcpServers` — the per-agent allowlist:
 
 ```ts
-import { defineAgent } from "@drover/core";
+import { defineAgent } from "@droveragent/core";
 
 const enrich = defineAgent({
   id: "lead-enrich",
@@ -108,7 +108,7 @@ Per the runtime contract, tools from allowlisted MCP servers are **merged into t
 Pass the runtime on the run:
 
 ```ts
-import { runAgent } from "@drover/facade";
+import { runAgent } from "@droveragent/facade";
 
 const handle = runAgent(
   enrich,
@@ -133,8 +133,8 @@ process.on("SIGTERM", async () => {
 No MCP server. Give the default sandbox a curl allowlist and let the agent fetch directly:
 
 ```ts title="enrich-bash.ts"
-import { createJustBashSandbox } from "@drover/sandbox-just-bash";
-import { defineAgent } from "@drover/core";
+import { createJustBashSandbox } from "@droveragent/sandbox-just-bash";
+import { defineAgent } from "@droveragent/core";
 
 const sandbox = createJustBashSandbox({
   mounts: [],
@@ -165,7 +165,7 @@ const enrich = defineAgent({
 `network` is off by default; only the listed origins are reachable via `curl`/`wget`. Anything else fails. The sandbox can't escape a mount root. Wire it on the run:
 
 ```ts
-import { runAgent } from "@drover/facade";
+import { runAgent } from "@droveragent/facade";
 
 const handle = runAgent(
   enrich,

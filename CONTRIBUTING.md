@@ -14,7 +14,21 @@ Packages resolve each other through `dist`, so build the packages you depend on 
 
 ## Local gates
 
-Run these before opening a PR, for the packages and files you touched only.
+CI (`.github/workflows/ci.yml`) runs `scripts/ci.ts`, one gate per step. Run the same gates locally, in this order (build before typecheck and test: packages resolve each other through `dist/`):
+
+```bash
+bun install --frozen-lockfile
+bun scripts/ci.ts lint        # oxlint packages scripts
+bun scripts/ci.ts format      # oxfmt --check on files changed since origin/main (committed)
+bun scripts/ci.ts build       # tsc build of every package, dependency order
+bun scripts/ci.ts typecheck   # tsgo --noEmit per workspace, sequential
+bun scripts/ci.ts pack        # pack each package, fail on stale bun.lock workspace versions
+bun scripts/ci.ts test        # bun test per package (--only a,b / --skip a,b)
+```
+
+`bun scripts/ci.ts all` runs every gate. The package build order lives in `scripts/workspace.ts`; a new package must be added there (CI fails until it is).
+
+While iterating on one package, the narrow versions are faster:
 
 ```bash
 # typecheck one package (never the whole repo at once)
@@ -23,16 +37,12 @@ cd packages/<pkg> && ../../node_modules/.bin/tsgo --noEmit
 # lint and format only your changed files
 bunx oxlint <changed files>
 bunx oxfmt <changed files>
-bunx oxfmt --check <changed files>
 
-# tests: always explicit file paths, from the package dir, a few at a time
+# tests: explicit file paths, from the package dir, a few at a time
 cd packages/<pkg> && bun test test/foo.test.ts test/bar.test.ts
-
-# build check
-cd packages/<pkg> && bunx tsc -p tsconfig.build.json --noEmit
 ```
 
-Do not run `oxfmt` on a directory: it reformats the whole repo. Do not run a bare `bun test`: a package's test files share one process.
+The repo is not fully oxfmt-formatted yet, so CI checks only the files a PR changes, and `oxfmt` on a directory reformats far more than your change. Format the files you touch.
 
 ## Commits
 
@@ -58,9 +68,71 @@ Use `type(scope): message #issue`, for example `fix(harness): retry output decod
 bun x tangly build --root docs --out dist --base /drover/
 ```
 
+## Developing a consumer against a local build
+
+A consumer app that needs unreleased Drover changes should run against a **pinned, built copy** of Drover, never the checkout you are editing: rebuilding `dist/` in a linked checkout changes the code under a running consumer.
+
+### 1. Build a pinned copy
+
+```bash
+git -C ~/src/drover worktree add ../drover-pinned <commit or branch>
+cd ~/src/drover-pinned
+bun install --frozen-lockfile
+bun scripts/ci.ts build
+```
+
+Rebuild it only when the consumer is stopped, and only when you mean to move the consumer to new code.
+
+### 2a. Tarballs (recommended: survives an install)
+
+```bash
+cd ~/src/drover-pinned
+bun scripts/ci.ts pack --out ~/src/drover-tarballs
+```
+
+`pack --out` keeps one `.tgz` per package with `workspace:*` already rewritten to real versions. In the consumer's `package.json`, point every Drover package at its tarball, both as a dependency and as an override, so transitive `@droveragent/*` deps resolve to the tarballs too:
+
+```json
+{
+  "dependencies": {
+    "droveragent": "file:../drover-tarballs/droveragent-0.1.0.tgz"
+  },
+  "overrides": {
+    "@droveragent/core": "file:../drover-tarballs/droveragent-core-0.1.0.tgz",
+    "@droveragent/facade": "file:../drover-tarballs/droveragent-facade-0.1.0.tgz"
+  }
+}
+```
+
+List every `@droveragent/*` package the consumer pulls in (the umbrella pulls in most of them; `index.json` in the tarball directory lists them all, and an override for a package the consumer does not use is harmless). Then `bun install`. Because the tarball paths are in `package.json`, a later `bun install` keeps them.
+
+### 2b. bun link (quick, fragile)
+
+```bash
+cd ~/src/drover-pinned/packages/droveragent && bun link   # repeat for each package you use
+cd ~/src/my-app && bun link droveragent @droveragent/core ...
+```
+
+A plain `bun install` in the consumer **drops these links** and puts the npm release back, silently. A long-running job can then import the published version mid-run. Re-run `bun link <names>` after every install, or use `bun link <name> --save`, which writes `link:<name>` into `package.json` so the link survives an install.
+
+### 3. Verify which build the consumer loads
+
+```bash
+cd ~/src/my-app
+ls -l node_modules/droveragent node_modules/@droveragent      # links point at drover-pinned
+bun -e 'console.log(Bun.resolveSync("droveragent", process.cwd()))'
+grep '"@droveragent/core": \["' bun.lock                      # tarball route: @droveragent/core@../drover-tarballs/...
+```
+
+Run the check after every `bun install` in the consumer. Drover packages do not yet expose a build identifier that tells a local build from a published one with the same version yet; until one exists the resolved path is the check.
+
+### 4. Go back to the published release
+
+Remove the `file:` entries and overrides (tarballs) or run `bun unlink` in each linked package and `bun remove` the links in the consumer, then `bun add droveragent@<version>` and repeat step 3.
+
 ## Releases
 
-Maintainers cut releases with `scripts/publish-all.sh`, which builds every package in dependency order and publishes only versions not already on the registry. Release tracking lives in the issue tracker: https://github.com/nc9/drover/issues?q=label%3Arelease.
+Releases are tag-triggered and published by `.github/workflows/release.yml` behind an approval; the procedure and owner setup are in [RELEASING.md](RELEASING.md). The versioning plan (lockstep versions, `0.3.0-next.N` prereleases on the `next` dist-tag) is tracked in [#34](https://github.com/nc9/drover/issues/34). `scripts/publish-all.sh` is the laptop fallback only.
 
 ## Security
 

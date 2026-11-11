@@ -90,7 +90,7 @@ console.log(tracer.steps);
 ## Author a custom plugin
 
 ```ts
-import type { HarnessPlugin } from "@drover/core";
+import type { HarnessPlugin } from "@droveragent/core";
 import { Effect } from "effect";
 
 export function redactSecretsPlugin(): HarnessPlugin {
@@ -147,8 +147,8 @@ output-validate's trace) the right pattern is to construct per run
 via `options.plugins`:
 
 ```ts
-import { runAgent } from "@drover/facade";
-import { circuitBreakerPlugin, stepTracerPlugin } from "@drover/plugins";
+import { runAgent } from "@droveragent/facade";
+import { circuitBreakerPlugin, stepTracerPlugin } from "@droveragent/plugins";
 
 // Per-run construction → fresh state
 for (const input of inputs) {

@@ -55,6 +55,8 @@ describe("licence metadata", () => {
     for (const d of dirs) {
       const j = JSON.parse(read(`packages/${d}/package.json`));
       expect(j.license).toBe("MIT");
+      // npm provenance (scripts/release.ts verify) needs exactly this url
+      expect(j.repository.url).toBe("git+https://github.com/nc9/drover.git");
       expect(j.repository.directory).toBe(`packages/${d}`);
       expect(j.homepage).toBeTruthy();
       expect(j.bugs.url).toBeTruthy();
@@ -69,5 +71,25 @@ describe("templates", () => {
     expect(read(".github/ISSUE_TEMPLATE/feature_request.md")).toMatch(
       /## Acceptance Criteria\n\n- \[ \]/,
     );
+  });
+});
+
+describe("docs", () => {
+  const walk = (dir: string): string[] =>
+    readdirSync(join(root, dir), { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory()
+        ? e.name === "node_modules" || e.name === "dist"
+          ? []
+          : walk(`${dir}/${e.name}`)
+        : /\.(mdx?|json)$/.test(e.name)
+          ? [`${dir}/${e.name}`]
+          : [],
+    );
+
+  test("no stale @drover/* package names (the npm scope is @droveragent)", () => {
+    const stale = [...walk("docs"), "README.md", "CONTRIBUTING.md"].filter((f) =>
+      read(f).includes("@drover/"),
+    );
+    expect(stale).toEqual([]);
   });
 });

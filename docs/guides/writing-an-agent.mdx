@@ -9,7 +9,7 @@ A drover agent is a `AgentSpec` plus the deps the harness needs to run it.
 
 ```ts
 import { Type } from "@sinclair/typebox";
-import { defineAgent } from "@drover/core";
+import { defineAgent } from "@droveragent/core";
 
 const summariser = defineAgent({
   id: "summariser",
@@ -33,7 +33,7 @@ const summariser = defineAgent({
 ## Run it
 
 ```ts
-import { runAgent } from "@drover/facade";
+import { runAgent } from "@droveragent/facade";
 
 const handle = runAgent(summariser, { file: "incident.md" });
 const result = await handle.result;
@@ -43,7 +43,7 @@ The facade builds a default `none` sandbox rooted at `cwd` and resolves
 the model via the alias map. Override either via `RunOptions`:
 
 ```ts
-import { createNoneSandbox } from "@drover/sandbox";
+import { createNoneSandbox } from "@droveragent/sandbox";
 
 runAgent(summariser, input, {
   sandbox: createNoneSandbox({ allowedRoots: ["/tmp/safe"] }),
@@ -80,7 +80,7 @@ executing argv). Only flip this for trusted agents. See [Sandboxes](/guides/sand
 ## Custom tools
 
 ```ts
-import { defineTool } from "@drover/core";
+import { defineTool } from "@droveragent/core";
 import { Effect } from "effect";
 
 const compute = defineTool({
@@ -123,7 +123,7 @@ const planner = defineAgent({
 Provide a registry:
 
 ```ts
-import { staticRegistry } from "@drover/facade";
+import { staticRegistry } from "@droveragent/facade";
 
 runAgent(planner, input, {
   agentRegistry: staticRegistry({ researcher: researcherSpec }),
@@ -140,7 +140,7 @@ For long-form instructions the agent loads on demand. Build a registry
 from `SKILL.md` files:
 
 ```ts
-import { createSkillRegistry, scanSkillDirs } from "@drover/skills";
+import { createSkillRegistry, scanSkillDirs } from "@droveragent/skills";
 
 const skills = createSkillRegistry(await scanSkillDirs(["./skills"]));
 
@@ -159,7 +159,7 @@ See [Skills](/guides/skills).
 Wire storage to persist runs + enable pause/resume:
 
 ```ts
-import { createLibsqlStorage } from "@drover/storage";
+import { createLibsqlStorage } from "@droveragent/storage";
 
 const storage = await createLibsqlStorage({ url: "file:./var/runs.db" });
 runAgent(spec, input, { storage });

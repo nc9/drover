@@ -60,7 +60,7 @@ assumes only [the quickstart](/guides/quickstart): a Bun runtime and
     one spare for an output-retry.
 
     ```ts title="triage.ts"
-    import { defineAgent } from "@drover/core";
+    import { defineAgent } from "@droveragent/core";
 
     const triageAgent = defineAgent({
       id: "ticket-triage",
@@ -84,7 +84,7 @@ assumes only [the quickstart](/guides/quickstart): a Bun runtime and
     the terminal `result`.
 
     ```ts title="triage.ts"
-    import { runAgent } from "@drover/facade";
+    import { runAgent } from "@droveragent/facade";
 
     const handle = runAgent(triageAgent, {
       ticket:
@@ -199,7 +199,7 @@ model: { name: "openai/gpt-5-mini", reasoning: "medium", temperature: 0 },
   want the same ticket to land the same label run-to-run.
 </Note>
 
-See [`@drover/model`](/reference/model) for the alias map and `withAliases`.
+See [`@droveragent/model`](/reference/model) for the alias map and `withAliases`.
 
 ## What you assembled
 

@@ -3,14 +3,14 @@ title: MCP
 description: Connect Model Context Protocol servers and expose their tools to agents.
 ---
 
-`@drover/mcp` wraps `@modelcontextprotocol/sdk` with drover's tool
+`@droveragent/mcp` wraps `@modelcontextprotocol/sdk` with drover's tool
 contract. Configure servers, build a runtime, drover prefixes every
 tool so cross-server collisions are impossible.
 
 ## Config
 
 ```ts
-import type { McpServerConfig } from "@drover/mcp";
+import type { McpServerConfig } from "@droveragent/mcp";
 
 const configs: McpServerConfig[] = [
   {
@@ -34,7 +34,7 @@ via streamable HTTP (also handles SSE).
 ## Boot the runtime
 
 ```ts
-import { createMcpRuntime } from "@drover/mcp";
+import { createMcpRuntime } from "@droveragent/mcp";
 
 const mcpRuntime = await createMcpRuntime(configs);
 console.log(mcpRuntime.servers());
@@ -82,7 +82,7 @@ token refresh in your `headers` factory (re-create the runtime on
 expiry, or use a header-emitting closure once `McpServerConfig` accepts
 one).
 
-Full OAuth refresh will migrate into `@drover/mcp` once the runtime
+Full OAuth refresh will migrate into `@droveragent/mcp` once the runtime
 layer gets HTTP control-plane support.
 
 ## Lifetime

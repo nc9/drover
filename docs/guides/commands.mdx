@@ -41,7 +41,7 @@ Check correctness, security, and test coverage. Post findings as a summary.
 Point a registry at one or more directories of `.md` files:
 
 ```ts
-import { scanCommandDirs, createCommandRegistry } from "@drover/commands";
+import { scanCommandDirs, createCommandRegistry } from "@droveragent/commands";
 
 const commands = createCommandRegistry(
   await scanCommandDirs([".agents/commands"]),

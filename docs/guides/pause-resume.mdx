@@ -17,7 +17,7 @@ and the run is marked `cancelled` — there's no checkpoint to resume
 from.
 
 ```ts
-import { createLibsqlStorage } from "@drover/storage";
+import { createLibsqlStorage } from "@droveragent/storage";
 
 const storage = await createLibsqlStorage({ url: "file:./var/runs.db" });
 ```
@@ -43,7 +43,7 @@ console.log(result.runId);    // record this for the resume call
 ## Resume
 
 ```ts
-import { resumeAgent } from "@drover/facade";
+import { resumeAgent } from "@droveragent/facade";
 
 const handle = resumeAgent(spec, runId, { storage });
 const result = await handle.result;
@@ -100,7 +100,7 @@ const handle = resumeAgent(spec, runId, { storage });
 
 ## Pause / resume with the runtime layer
 
-When you're using `@drover/runtime`:
+When you're using `@droveragent/runtime`:
 
 ```ts
 const api = createRunApi({ queue, storage, registry, sandboxFor });

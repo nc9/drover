@@ -39,7 +39,7 @@ keeps the run shell-free here.
 
 ```ts title="search-agent.ts"
 import { Type } from "@sinclair/typebox";
-import { defineAgent } from "@drover/core";
+import { defineAgent } from "@droveragent/core";
 
 export const codeSearch = defineAgent({
   id: "code-search",
@@ -83,7 +83,7 @@ you want the opposite: mount the repo `readonly` so even a stray `write` (which
 isn't in the toolset anyway) could not reach disk.
 
 ```ts title="search-agent.ts"
-import { createJustBashSandbox } from "@drover/sandbox-just-bash";
+import { createJustBashSandbox } from "@droveragent/sandbox-just-bash";
 
 function readonlyRepo(repoPath: string) {
   return createJustBashSandbox({
@@ -114,7 +114,7 @@ Pass the sandbox and a `cwd` so relative paths the model uses resolve against
 the repo root:
 
 ```ts title="search-agent.ts"
-import { runAgent } from "@drover/facade";
+import { runAgent } from "@droveragent/facade";
 
 const repoPath = process.argv[2] ?? process.cwd();
 
@@ -153,7 +153,7 @@ A plausible run prints:
 → calling read
 ← done    read
 status: success
-answer: Defined in @drover/model as DEFAULT_ALIASES (packages/model/src).
+answer: Defined in @droveragent/model as DEFAULT_ALIASES (packages/model/src).
 files: [ "packages/model/src/aliases.ts" ]
 ```
 
@@ -167,7 +167,7 @@ status is `quota`, not `error`.
 ## What you assembled
 
 - **Built-in tools** `ls`, `grep`, `find`, `read` from
-  [`@drover/tools`](/reference/tools) — discovery + reading, no mutation.
+  [`@droveragent/tools`](/reference/tools) — discovery + reading, no mutation.
 - **`createJustBashSandbox`** with a single `readonly` mount — a real
   filesystem boundary; the agent can't escape `repoPath`.
 - **`cwd`** in `RunOptions` so relative paths resolve against the repo root.
