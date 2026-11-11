@@ -49,7 +49,9 @@ Do these before pushing the first release tag.
    and grants `id-token: write` to the publish job only; npm uses OIDC where a
    trusted publisher is configured and the token elsewhere. When every package
    publishes through OIDC, set each package's publishing access to "Require
-   two-factor authentication and disallow tokens" and delete `NPM_TOKEN`.
+   two-factor authentication and disallow tokens" and delete `NPM_TOKEN`, but
+   only once no package has a prerelease on `latest`: removing a dist-tag still
+   needs a token (see "`dist-tag rm` needs a token" below).
 
 5. **Package metadata (#32) must be merged before the first tag.** npm
    provenance rejects a manifest without
@@ -95,17 +97,27 @@ Do these before pushing the first release tag.
    CHANGELOG section (marked prerelease for a prerelease).
 6. Check: `npm view @droveragent/core dist-tags`.
 
-**First publish of a package as a prerelease.** The npm registry gives a
-package's first version the `latest` dist-tag whatever `--tag` says. After
-publishing a prerelease of a package that had no prior version, the workflow
-runs `npm dist-tag rm <pkg> latest`. If the registry refuses (it may not let the
-only `latest` go), the run summary says so, and `npm install <pkg>` resolves to
-that prerelease until a stable version is published. For `0.3.0-next.1` this
-applies to `@droveragent/sandbox-cloudflare`, `@droveragent/storage-d1` and
-`droveragent`.
+**A prerelease never stays on `latest`.** The npm registry gives a package's first
+version the `latest` dist-tag whatever `--tag` says. After every prerelease the
+workflow publishes, and for every prerelease a re-run skips as already published,
+it reads `npm view <pkg> dist-tags.latest`; when that points at a prerelease it runs
+`npm dist-tag rm <pkg> latest`. If the registry refuses (it may not let the only
+`latest` go), the run summary says so, and `npm install <pkg>` resolves to that
+prerelease until a stable version is published. A first publish is detected from
+`npm view <pkg> versions` (empty or 404), not `version`, which is empty once
+`latest` has been removed. For `0.3.0-next.1` this applies to
+`@droveragent/sandbox-cloudflare`, `@droveragent/storage-d1` and `droveragent`.
+
+**`dist-tag rm` needs a token.** npm trusted publishing (OIDC) authorises `npm
+publish` only. Removing a dist-tag needs `NPM_TOKEN` on the `npm-publish`
+environment. Keep the token while any package still has a prerelease on `latest`,
+and when a brand-new package is first published as a prerelease after the token
+was deleted, add a token back for that release, or remove the tag by hand
+(`npm dist-tag rm <pkg> latest`) and re-run the job to confirm.
 
 If `publish` fails part way, fix the cause and re-run the failed job: packages
-already published are skipped.
+already published are skipped, and a leftover prerelease `latest` is cleaned up on
+the re-run.
 
 ## Dry run
 
