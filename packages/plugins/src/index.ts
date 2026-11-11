@@ -8,3 +8,4 @@ export * from "./confirm-gate.ts";
 export * from "./dedup.ts";
 export * from "./output-validate.ts";
 export * from "./truncate.ts";
+export * from "./tool-call-cap.ts";

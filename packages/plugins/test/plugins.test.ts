@@ -11,6 +11,7 @@ import {
   loopDetectPlugin,
   outputValidatePlugin,
   stepTracerPlugin,
+  toolCallCapPlugin,
   truncatePlugin,
   writePolicyPlugin,
 } from "../src/index.ts";
@@ -443,5 +444,51 @@ describe("dedupPlugin", () => {
     expect(d.size("r5")).toBe(1);
     await Effect.runPromise(d.plugin.onRunEnd!({} as never, { ...fakeCtx, runId: "r5" }));
     expect(d.size("r5")).toBe(0);
+  });
+});
+
+describe("toolCallCapPlugin", () => {
+  const call = (p: ReturnType<typeof toolCallCapPlugin>, name: string, ctx = fakeCtx) =>
+    Effect.runPromise(p.beforeToolCall!(name, {}, ctx));
+
+  test("allows up to the cap, then refuses with a reason the model can act on", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 2 });
+    expect((await call(p, "a")).kind).toBe("allow");
+    expect((await call(p, "b")).kind).toBe("allow");
+    const d = await call(p, "a");
+    expect(d.kind).toBe("deny");
+    expect(d.kind === "deny" && d.reason).toContain("Do not call more tools");
+  });
+
+  test("refused calls do not count: the same answer every time", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 1 });
+    await call(p, "a");
+    const first = await call(p, "a");
+    const second = await call(p, "a");
+    expect(first).toEqual(second);
+  });
+
+  test("per-tool caps leave other tools alone", async () => {
+    const p = toolCallCapPlugin({ perTool: { fetch: 1 } });
+    expect((await call(p, "fetch")).kind).toBe("allow");
+    const d = await call(p, "fetch");
+    expect(d.kind === "deny" && d.reason).toContain("fetch");
+    expect((await call(p, "read")).kind).toBe("allow");
+  });
+
+  test("counts are per run, and cleared at run end", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 1 });
+    const other: RunContext = { ...fakeCtx, runId: "other" };
+    expect((await call(p, "a")).kind).toBe("allow");
+    expect((await call(p, "a", other)).kind).toBe("allow");
+    expect((await call(p, "a")).kind).toBe("deny");
+    await Effect.runPromise(p.onRunEnd!({} as never, fakeCtx));
+    expect((await call(p, "a")).kind).toBe("allow");
+  });
+
+  test("a custom message replaces the default", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 0, message: ({ limit }) => `no more (${limit})` });
+    const d = await call(p, "a");
+    expect(d.kind === "deny" && d.reason).toBe("no more (0)");
   });
 });
