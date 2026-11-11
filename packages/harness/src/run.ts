@@ -581,8 +581,8 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // post-loop section to resolve the terminal status. Boxed so a closure
     // write survives TS control-flow narrowing at the post-loop read site.
     const quotaBreach: { value: QuotaBreach | null } = { value: null };
-    // The assistant message whose usage tripped a cost/token budget (see the
-    // "validated answer wins" rule in the post-loop section).
+    // The assistant message whose usage tripped a budget (turns, cost, tokens):
+    // see the "validated answer wins" rule in the post-loop section.
     const breachMessage: { value: unknown } = { value: null };
 
     // Snapshot of pi's message list, updated each LLM call via transformContext.
@@ -1092,9 +1092,13 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     let forgiven = false;
     /** The last assistant message is a final answer (no tool call) that passes the output contract. */
     const finalAnswerValidates = (): boolean => {
-      const content = (
-        lastAssistantMsg.value as { content?: ReadonlyArray<{ type?: string }> } | null
-      )?.content;
+      const last = lastAssistantMsg.value as {
+        content?: ReadonlyArray<{ type?: string }>;
+        stopReason?: string;
+      } | null;
+      // A provider error (even with partial text) or an abort is never a final answer.
+      if (last?.stopReason === "error" || last?.stopReason === "aborted") return false;
+      const content = last?.content;
       if (!Array.isArray(content) || content.some((b) => b.type === "toolCall")) return false;
       if (!finalText || finalText.trim().length === 0) return false;
       return isOpenSchema(spec.outputSchema) || tryDecode(spec.outputSchema, finalText).ok;
@@ -1116,26 +1120,42 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       // budget must not be reported as success). Then loop errors, then the
       // output check.
       //
-      // One exception, only under `quota.wrapUp` (once the warning fired): when
-      // the breach was caused by the run's FINAL answer (the call that ended
-      // the loop: no tool call) and that answer validates, the answer wins
-      // ("a budget, not a tripwire"). The run is `success` and the `postSuccess`
-      // lifecycle is skipped (the budget is spent). A cost/token breach is an
-      // overshoot, recorded on `RunResult.wrapUp.overshoot`; reaching the turn
-      // cap on the answer turn is not an overshoot (that turn was allowed). An
-      // ongoing run (the breaching call asked for tools) or an unvalidated
-      // answer still ends `quota`. Without wrap-up, any breach wins.
+      // Exception: when the breach was caused by the run's FINAL answer (the
+      // call that ended the loop: no tool call) and that answer passes the
+      // output contract, the answer wins ("a budget, not a tripwire"):
+      //   - the turn budget, for every run: reaching `maxTurns` on the answer
+      //     turn is not an overshoot (that turn was allowed);
+      //   - cost and tokens, only under `quota.wrapUp` once the warning fired:
+      //     an overshoot, recorded on `RunResult.wrapUp.overshoot`.
+      // The run is `success`, the abort that stopped a NEXT turn is not a loop
+      // error, and the `postSuccess` lifecycle is skipped (the budget is
+      // spent). An ongoing run (the breaching call asked for tools) or an
+      // unvalidated answer still ends `quota`; a wall-clock breach always wins.
       const breach = quotaBreach.value;
+      const forgivable =
+        breach?.dimension === "turns" ||
+        ((breach?.dimension === "cost" || breach?.dimension === "tokens") &&
+          wrapUpFired.value !== null);
       if (
         breach &&
-        wrapUpFired.value &&
-        breach.dimension !== "duration" &&
+        forgivable &&
         breachMessage.value !== null &&
         breachMessage.value === lastAssistantMsg.value &&
         finalAnswerValidates()
       ) {
         forgiven = true;
         if (breach.dimension !== "turns") overshoot = breach;
+      }
+      // The turn that reached `maxTurns` ended in a provider error: that error is
+      // the outcome (`ProviderError`), not the turn budget, which was not exceeded.
+      const lastStop = (lastAssistantMsg.value as { stopReason?: string } | null)?.stopReason;
+      if (
+        breach?.dimension === "turns" &&
+        breachMessage.value !== null &&
+        breachMessage.value === lastAssistantMsg.value &&
+        lastStop === "error"
+      ) {
+        forgiven = true;
       }
       if (breach && !forgiven) {
         status = "quota";
@@ -1353,7 +1373,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         ...(overshoot && status === "success"
           ? {
               overshoot: {
-                // Only cost/token breaches are ever forgiven (see the post-loop rule).
+                // Only cost and token breaches set `overshoot`; a forgiven turn cap does not.
                 dimension: overshoot.dimension as "cost" | "tokens",
                 limit: overshoot.limit,
                 observed: overshoot.observed,

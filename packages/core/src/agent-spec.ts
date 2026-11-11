@@ -143,7 +143,15 @@ export interface LifecycleConfig {
  * dimension unbounded.
  */
 export interface RunQuota {
-  /** Hard turn budget. The loop is aborted once this many turns complete. Unbounded when omitted. */
+  /**
+   * Hard turn budget. The loop is aborted once this many turns complete, so no
+   * further turn starts. A budget, not a tripwire: a final answer (no tool
+   * call) on the last allowed turn that passes the output schema ends the run
+   * `success`; a tool call on that turn, or an answer that fails the schema,
+   * ends it `quota`; a last turn that ended in a provider error ends `error`
+   * (`ProviderError`). When the answer used the last turn, the `postSuccess`
+   * lifecycle is skipped (the budget is spent). Unbounded when omitted.
+   */
   maxTurns?: number;
   /** Wall-clock budget (ms) for the whole run — `init` + loop + `postSuccess`. */
   maxDurationMs?: number;
