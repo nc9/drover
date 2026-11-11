@@ -50,6 +50,12 @@ export interface NonceStore {
 
 export interface UntrustedResultsOptions {
   /**
+   * Capacity of the default in-memory nonce store (ignored with `nonces`). When full, the
+   * least recently used nonce of a run that is NOT live goes first; a live run is never
+   * evicted, so the store can exceed this while more runs than this are live. Default 10_000.
+   */
+  memoryNonceLimit?: number;
+  /**
    * Tools whose results are the operator's own (not outside text). The ONLY list:
    * everything else is fenced. Default: none.
    */
@@ -81,9 +87,14 @@ export interface UntrustedResultsPlugin extends HarnessPlugin {
   fenceFor(runId: string): Fence;
   /** Whether a tool is on the allowlist. Give this to `truncatePlugin({ isTrusted })`. */
   isTrusted(toolId: string): boolean;
+  /**
+   * Diagnostics: how many tool calls of a run still hold remembered result strings (calls whose
+   * result has not been finalised yet). Stays at the number of calls in flight.
+   */
+  pendingCalls(runId: string): number;
 }
 
-const MAX_REMEMBERED_NONCES = 10_000;
+const DEFAULT_MEMORY_NONCE_LIMIT = 10_000;
 
 /** Tools whose output is derived from untrusted text or can quote it: never trustable. */
 export const NEVER_TRUSTED: ReadonlyArray<string> = [
@@ -94,9 +105,19 @@ export const NEVER_TRUSTED: ReadonlyArray<string> = [
   "skill_resource",
 ];
 
-/** In-memory nonce store. Least recently used goes first, so a live run keeps its nonce. */
-function memoryNonces(): NonceStore {
+/**
+ * In-memory nonce store. When over `limit`, the least recently used nonce of a run that is not
+ * live goes first. A live run's nonce is never evicted (that would fail the run mid-way), so
+ * the store only exceeds `limit` while more than `limit` runs are live at once.
+ */
+function memoryNonces(limit: number, isLive: (runId: string) => boolean): NonceStore {
   const map = new Map<string, string>();
+  const evict = (): void => {
+    for (const id of map.keys()) {
+      if (map.size <= limit) return;
+      if (!isLive(id)) map.delete(id);
+    }
+  };
   return {
     get(id) {
       const n = map.get(id);
@@ -109,7 +130,7 @@ function memoryNonces(): NonceStore {
     set(id, nonce) {
       map.delete(id);
       map.set(id, nonce);
-      if (map.size > MAX_REMEMBERED_NONCES) map.delete(map.keys().next().value as string);
+      if (map.size > limit) evict();
     },
   };
 }
@@ -132,18 +153,23 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
     }
   }
   const readers = new Set(opts.readers ?? ["show_tool_result"]);
-  const nonces = opts.nonces ?? memoryNonces();
+  // `live` is read lazily (at eviction time), after it is initialised below.
+  const nonces =
+    opts.nonces ??
+    memoryNonces(opts.memoryNonceLimit ?? DEFAULT_MEMORY_NONCE_LIMIT, (runId) => live.has(runId));
   const sectionOf = opts.section ?? ((n: string) => n);
   // Fences of LIVE runs (dropped at run end). The nonce store is always read, so a
   // live run refreshes its entry on every use, and a live run whose nonce went
   // missing is an error: minting a new one would leave the system prompt naming
   // the old nonce while results carry the new one.
   const live = new Map<string, Fence>();
-  // Exact strings this plugin let through for a run's tool results: every fence block it
-  // made, and the raw content of trusted results. `afterToolCall` keeps only these
-  // verbatim; everything else, including a block that merely looks like one of ours
-  // (the model knows the nonce from the system prompt), is fenced again. Dropped at run end.
-  const known = new Map<string, Set<string>>();
+  // Exact strings this plugin let through for a tool call's result, by run and tool-use id:
+  // every fence block it made, and the raw content of trusted results. `afterToolCall` keeps
+  // only the current call's strings verbatim and fences everything else, including a block
+  // that merely looks like one of ours (the model knows the nonce from the system prompt).
+  // An entry is dropped when its call's result is finalised (`afterToolCall`) and the rest of
+  // a run's entries at run end, so memory is bounded by the calls in flight.
+  const known = new Map<string, Map<string, Set<string>>>();
   const fenceFor = (runId: string): Fence => {
     const stored = nonces.get(runId);
     const f = live.get(runId);
@@ -153,37 +179,42 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
         `untrustedResultsPlugin: the fence nonce of live run ${runId} is ${stored === undefined ? "missing from" : "different in"} the nonce store; refusing to mint a new one mid-run.`,
       );
     }
-    let nonce = stored;
-    if (nonce === undefined) {
-      nonce = createNonce();
-      nonces.set(runId, nonce);
-    }
+    const nonce = stored ?? createNonce();
     const fresh = createFence({
       nonce,
       ...(opts.maxFieldChars !== undefined ? { maxFieldChars: opts.maxFieldChars } : {}),
     });
+    // Live first, then stored: the store's eviction must already see this run as live.
     live.set(runId, fresh);
+    if (stored === undefined) nonces.set(runId, nonce);
     return fresh;
   };
 
-  const remember = (runId: string, text: string): string => {
-    let set = known.get(runId);
-    if (!set) known.set(runId, (set = new Set()));
+  type CallRef = { runId: string; toolUseId: string };
+
+  const remember = (call: CallRef, text: string): string => {
+    let calls = known.get(call.runId);
+    if (!calls) known.set(call.runId, (calls = new Map()));
+    let set = calls.get(call.toolUseId);
+    if (!set) calls.set(call.toolUseId, (set = new Set()));
     if (text !== "") set.add(text);
     return text;
   };
 
-  /** Fence `text` for a tool result of `runId`, remembering the exact block. */
-  const fenceResult = (runId: string, section: string, text: string): string =>
-    remember(runId, fenceFor(runId).wrapText(section, text));
+  /** Fence `text` for a tool call's result, remembering the exact block. */
+  const fenceResult = (call: CallRef, section: string, text: string): string =>
+    remember(call, fenceFor(call.runId).wrapText(section, text));
 
   /**
    * Keep the exact strings this plugin produced for the run; fence every other non-blank
    * stretch (a forged block included: its tags are escaped and its nonce becomes [nonce]).
    */
-  const refence = (runId: string, text: string): string => {
+  const refence = (runId: string, toolUseId: string | undefined, text: string): string => {
     const f = fenceFor(runId);
-    const spans = [...(known.get(runId) ?? [])];
+    // Only this call's strings (no tool-use id: none, so everything is fenced: fail closed).
+    const calls = known.get(runId);
+    const spans = toolUseId !== undefined ? [...(calls?.get(toolUseId) ?? [])] : [];
+    if (toolUseId !== undefined) calls?.delete(toolUseId);
     const parts: string[] = [];
     let foreign = "";
     const flush = (): void => {
@@ -229,10 +260,10 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
               const raw =
                 d?.trusted === true && typeof d.toolId === "string" && isTrusted(d.toolId);
               return raw
-                ? { ...result, content: remember(ctx.runId, result.content) }
+                ? { ...result, content: remember(ctx, result.content) }
                 : {
                     ...result,
-                    content: fenceResult(ctx.runId, `${sectionOf(tool.id)}-slice`, result.content),
+                    content: fenceResult(ctx, `${sectionOf(tool.id)}-slice`, result.content),
                   };
             }),
             // A reader's failure can quote the handle or the data it looked for.
@@ -240,11 +271,7 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
               Cause.isInterruptedOnly(cause)
                 ? Effect.failCause(cause)
                 : Effect.succeed({
-                    content: fenceResult(
-                      ctx.runId,
-                      `${sectionOf(tool.id)}-slice`,
-                      errorText(cause),
-                    ),
+                    content: fenceResult(ctx, `${sectionOf(tool.id)}-slice`, errorText(cause)),
                     isError: true,
                   }),
             ),
@@ -262,7 +289,7 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
             Effect.suspend(() => tool.execute(input, ctx)),
             (r) => ({
               ...r,
-              content: remember(ctx.runId, r.content),
+              content: remember(ctx, r.content),
             }),
           ),
       };
@@ -277,16 +304,16 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
             wrapSuccess
               ? {
                   ...result,
-                  content: fenceResult(ctx.runId, sectionOf(tool.id), result.content),
+                  content: fenceResult(ctx, sectionOf(tool.id), result.content),
                 }
               : // self-fenced: the tool fenced its own output with this run's fence
-                { ...result, content: remember(ctx.runId, result.content) },
+                { ...result, content: remember(ctx, result.content) },
           ),
           Effect.catchAllCause((cause) =>
             Cause.isInterruptedOnly(cause)
               ? Effect.failCause(cause)
               : Effect.succeed({
-                  content: fenceResult(ctx.runId, sectionOf(tool.id), errorText(cause)),
+                  content: fenceResult(ctx, sectionOf(tool.id), errorText(cause)),
                   isError: true,
                 }),
           ),
@@ -299,14 +326,20 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
     wrapTool,
     fenceFor,
     isTrusted,
+    pendingCalls: (runId) => known.get(runId)?.size ?? 0,
     systemPromptAddendum: (ctx: RunContext) => fenceFor(ctx.runId).note(),
     wrapUntrusted: (section, text, ctx) => fenceFor(ctx.runId).wrapText(section, text),
     inheritToSubagents: true,
     // Runs after every other plugin's afterToolCall (the harness orders fence plugins
     // last). Only exact strings this plugin produced for the run pass verbatim; any other
     // text, whoever added it and whatever it looks like, is fenced (see `refence`).
-    afterToolCall: (_toolName, _input, result, ctx) =>
-      Effect.sync((): ToolResult => ({ ...result, content: refence(ctx.runId, result.content) })),
+    afterToolCall: (_toolName, _input, result, ctx, meta) =>
+      Effect.sync(
+        (): ToolResult => ({
+          ...result,
+          content: refence(ctx.runId, meta?.toolUseId, result.content),
+        }),
+      ),
     onRunEnd: (_result, ctx) =>
       Effect.sync(() => {
         live.delete(ctx.runId);

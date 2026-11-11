@@ -88,6 +88,8 @@ export interface HarnessPlugin {
     input: unknown,
     result: ToolResult,
     ctx: RunContext,
+    /** `toolUseId`: the id of this tool call (the one the tool's `execute` saw), when known. */
+    meta?: { toolUseId?: string },
   ) => Effect.Effect<ToolResult, HarnessError, never>;
 
   beforeCompaction?: (

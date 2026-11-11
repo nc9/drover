@@ -97,6 +97,15 @@ function exactToken(v: string, what: string): string {
   return v;
 }
 
+/**
+ * Total characters of all `enum` / `const` strings one tool's schema may carry. Each token is
+ * already short and word-like (at most {@link MAX_SCHEMA_TOKEN_CHARS}, few spaces), but a
+ * schema can hold many: a list of `ignore_previous_instructions`-style tokens is still text the
+ * model reads unfenced. Over this, the tool is refused. Real enums (units, modes, languages,
+ * region codes) stay far below it.
+ */
+export const MAX_SCHEMA_TOKEN_TOTAL_CHARS = 2048;
+
 /** At most this many whitespace characters in an exact token (enum / const string). */
 export const MAX_TOKEN_SPACES = 3;
 
@@ -248,6 +257,13 @@ export function sanitizeInputSchema(schema: unknown): SchemaSanitizeResult {
     if (typeof out !== "object" || out === null) {
       return { ok: false, reason: "top-level schema must be an object" };
     }
+    const tokenChars = enumConstChars(out, false);
+    if (tokenChars > MAX_SCHEMA_TOKEN_TOTAL_CHARS) {
+      return {
+        ok: false,
+        reason: `enum / const strings total ${tokenChars} chars, over the ${MAX_SCHEMA_TOKEN_TOTAL_CHARS}-char cap`,
+      };
+    }
     return { ok: true, schema: out as Record<string, unknown> };
   } catch (e) {
     if (e instanceof Refused) return { ok: false, reason: e.message };
@@ -260,3 +276,24 @@ export const MCP_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** Longest prefixed tool id (`<server>__<tool>`) the model sees: most providers cap names at 64. */
 export const MAX_PREFIXED_TOOL_NAME = 64;
+
+/**
+ * Characters of every string under an `enum` or `const` keyword, anywhere in the schema.
+ * Children of `properties` / `$defs` / `definitions` are keyed by NAME, so a property called
+ * `enum` is not mistaken for the keyword.
+ */
+function enumConstChars(node: unknown, inToken: boolean, namesHere = false): number {
+  if (typeof node === "string") return inToken ? node.length : 0;
+  if (Array.isArray(node)) {
+    return node.reduce((n: number, x) => n + enumConstChars(x, inToken), 0);
+  }
+  if (node === null || typeof node !== "object") return 0;
+  let n = 0;
+  for (const [k, v] of Object.entries(node)) {
+    if (namesHere) n += enumConstChars(v, inToken);
+    else {
+      n += enumConstChars(v, inToken || k === "enum" || k === "const", SCHEMA_MAPS.has(k));
+    }
+  }
+  return n;
+}

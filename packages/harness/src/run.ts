@@ -808,7 +808,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // afterToolCall: walk plugins in order; each may rewrite the tool result.
     const afterToolCall = plugins.some((p) => p.afterToolCall)
       ? async (aCtx: {
-          toolCall: { name: string };
+          toolCall: { name: string; id?: string };
           args: unknown;
           result: { content: Array<{ type: string; text?: string }>; details?: unknown };
           isError: boolean;
@@ -829,7 +829,15 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             if (!p.afterToolCall) continue;
             const before = current;
             const exit = await Effect.runPromiseExit(
-              Effect.suspend(() => p.afterToolCall!(aCtx.toolCall.name, aCtx.args, before, ctx)),
+              Effect.suspend(() =>
+                p.afterToolCall!(
+                  aCtx.toolCall.name,
+                  aCtx.args,
+                  before,
+                  ctx,
+                  aCtx.toolCall.id !== undefined ? { toolUseId: aCtx.toolCall.id } : {},
+                ),
+              ),
             );
             if (exit._tag === "Success") {
               current = exit.value;

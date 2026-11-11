@@ -158,3 +158,19 @@ describe("schema tokens stay tokens", () => {
     expect(ok({ type: "string", pattern: "^(a+)+$" })).toEqual({ type: "string" });
   });
 });
+
+describe("enum / const total budget (#45)", () => {
+  test("many word-like enum tokens together are refused; a normal enum and a property named enum pass", () => {
+    const tokens = Array.from({ length: 100 }, (_, i) => `ignore_previous_instructions_${i}`);
+    expect(refused({ type: "string", enum: tokens })).toContain("char cap");
+    expect(ok({ type: "string", enum: ["metric", "imperial"] })).toEqual({
+      type: "string",
+      enum: ["metric", "imperial"],
+    });
+    const named = ok({
+      type: "object",
+      properties: { enum: { type: "string", description: "x".repeat(400) } },
+    });
+    expect(Object.keys((named as { properties: object }).properties)).toEqual(["enum"]);
+  });
+});
