@@ -1,0 +1,53 @@
+---
+title: Untrusted data
+description: Fence text an outsider controls so it reaches the model as data, not instructions.
+---
+
+Any agent that reads outside text (web pages, emails, tickets, tool results that
+quote them) can be told what to do by that text. drover ships a **fence**: a
+tagged block with a per-run random nonce, plus cleaning that stops a value from
+closing or opening a tag. The model is told once, in the system prompt, that
+everything inside a fence is data whatever it claims.
+
+```ts
+import { createFence, defineAgent } from "@droveragent/core";
+import { untrustedResultsPlugin } from "@droveragent/plugins";
+
+const fence = createFence(); // one per run: the nonce is random
+
+const spec = defineAgent({
+  id: "page-reader",
+  systemPrompt: `You summarise pages.\n\n${fence.note()}`,
+  // ...
+  tools: ["fetch_page"],
+});
+
+runAgent(spec, input, {
+  plugins: [untrustedResultsPlugin({ fence, tools: ["fetch_page"] })],
+});
+```
+
+A tool that builds its own output can call `fence.wrap("page", value)` directly;
+`untrustedResultsPlugin` skips content that is already fenced.
+
+## What the fence does to text
+
+| Input | Result |
+|---|---|
+| `</untrusted-data-NONCE>` in the text | `<` and `>` escaped as `<` / `>`; the block cannot be closed |
+| the nonce itself in the text | replaced by `[nonce]` |
+| fullwidth brackets (`＜`) | NFKC turns them into ASCII first, then escaped |
+| guillemets, math and CJK brackets, ornaments | visible `[U+XXXX]` placeholder |
+| zero-width, bidi override, control characters | space (newline and tab kept) |
+| very long strings, huge arrays, deep objects | bounded (`maxFieldChars`, default 2000; 2000 items; 500 keys; depth 12) |
+
+`wrap(section, body)` takes a string or any JSON-able value; objects are cleaned
+key and value, then serialised. `wrapText` is the whole-text variant for hosts
+that assemble lines themselves.
+
+## What it does not do
+
+A fence lowers the odds that injected text steers the model. It does not make
+the text safe. Keep the tools of an agent that reads outside text unable to do
+harm (read-only, or a draft store a validator checks), set budgets, and treat
+everything the model proposes to write as untrusted too.

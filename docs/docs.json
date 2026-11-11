@@ -39,6 +39,7 @@
           "guides/pause-resume",
           "guides/compaction",
           "guides/provider-chain",
+          "guides/untrusted-data",
           "guides/runtime",
           "guides/sandboxes",
           "guides/workers",
