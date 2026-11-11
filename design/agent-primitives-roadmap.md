@@ -4,7 +4,7 @@ Status: proposal. Audience: Drover maintainers. Written 2026-11-11 against `main
 
 Goal: Drover should be a very capable agent primitive framework: small, typed pieces that compose, each with a clear contract, none of them an opinionated agent. This document assesses it primitive by primitive. "Exists" means found in the code at the path given. Items marked (read) were checked by reading code, not by running it.
 
-Open PRs referenced:
+Open PRs referenced (#7 was slimmed to an ordered list of pi-ai provider names plus data; #8 fences everything by default):
 
 | PR | What |
 |---|---|
@@ -17,6 +17,9 @@ Open PRs referenced:
 | #8 | untrusted-data fence (`createFence`, `untrustedResultsPlugin`) |
 | #9 | `toolCallCapPlugin` |
 | #10 | `quota.wrapUp`: graceful finish before a budget is spent |
+| #12 | structured provider errors: a per-attempt response tap restores status, body fields and `Retry-After` (depends on #7) |
+| #13 | trace format v1: versioned schema, tolerant reader, JSONL, summary, storage round trip |
+| #14 | host-level balance preflight on a new `beforeModelCall` hook |
 
 ## Summary
 
@@ -29,7 +32,7 @@ Drover is strongest where the loop is: declarative specs, plugins, durable pause
 - Exists: `packages/model` (alias resolution, `ModelSpec`, per-provider env keys, `preResolved` models), pi-ai underneath; `HarnessDeps.streamFn` and `onPayload` seams (`packages/harness/src/deps.ts`); `cacheRetention` on the model spec; circuit breaker plugin (`packages/plugins/src/circuit-breaker.ts`, tool-level).
 - Missing: fallback and retry policy (#7 adds fallback); rate-limit awareness beyond one `Retry-After` wait; structured provider errors (see below); a balance preflight; provider-level prompt-cache control beyond `none|short|long`.
 - Smallest next step: land #6 then #7. Then make errors structured (below).
-- Covered by: #6, #7 (fallback, classification, per-provider usage), #4 (billed cost, OpenRouter only).
+- Covered by: #6, #7 (fallback, classification, per-provider usage), #12 (structured errors), #4 (billed cost, OpenRouter only).
 - Root cause worth its own line: pi-ai flattens a failed call to the OpenAI SDK's text (`"403 <message>"`) and drops the response body and headers; `onResponse` is not called for non-2xx, so `Retry-After` and the body `code` are invisible. #7 therefore classifies status-first, from the SDK's leading status, and a region refusal arrives as `key_refused` over the built-in transport. Fix: pi-ai keeps `status`, `code`, `limit_source` and headers as fields on the error (upstream), or Drover adds a per-attempt response tap (the mechanism #4 already uses for billed cost) that records status, parsed error body fields and `Retry-After` into the attempt.
 - Security note, applies to every classifier: provider error text echoes request content, which can contain outside text. Never classify from message text; status first, structured fields only, state scoped to one run. #7 follows this.
 - Open question (needs Nik): a shared circuit breaker across runs (so a dead provider is skipped fleet-wide) is valuable, but only safe if driven by status-backed, structured classifications, never by text; until then cooldowns are per run and per provider.
@@ -133,7 +136,7 @@ Drover is strongest where the loop is: declarative specs, plugins, durable pause
 - Exists: `HarnessEvent` union (`packages/core/src/events.ts`), persisted by storage, `stepTracerPlugin`, `phaseRecorderPlugin`, eval-viewer app.
 - Missing: a version on the trace; a documented stable schema; persistence tests for new event kinds (`provider_failover`, `budget_warning` are not verified against the storage layer); reasoning tokens in `Usage`; OTel exporter slot (declared out of scope, kept as a clean slot).
 - Smallest next step: `traceVersion` on `run_start`, a JSON schema generated from the union, a storage round-trip test for every event kind.
-- Covered by: none. #7 and #10 add kinds, which makes this more urgent.
+- Covered by: #13 (versioned format, tolerant reader, storage round trip, summary). #7 and #10 add kinds; each needs one table row in `REQUIRED_FIELDS` and a sample.
 
 ### 16. Evals with record and replay
 
@@ -153,28 +156,28 @@ Drover is strongest where the loop is: declarative specs, plugins, durable pause
 
 - Exists: nothing.
 - Missing: a hook so a provider that exposes a balance (OpenRouter `/credits`) can be checked before a run starts, failing fast or choosing the provider order.
-- Smallest next step: optional `balance(): Promise<{remainingUsd}>` on `ProviderSpec`, consulted once per run by the chain; strictly advisory (a failed or slow lookup never blocks a run). Not built tonight: it needs a decision on whether it belongs in the chain or in the host.
-- Covered by: none.
+- Decided: host-level, not in the chain. #14 adds `beforeModelCall` (admission control) and `balancePreflightPlugin` with an OpenRouter source (documented shape, not verified live).
+- Covered by: #14.
 
 ## Ranked next ten changes
 
 1. Land #6 (provider errors fail the run), then #7 (provider chain). They are one story: #7's exhausted case only becomes a failed run through #6.
-2. Structured provider errors: keep status, code, `limit_source` and `Retry-After` as fields (pi-ai upstream, or a per-attempt response tap shared with #4). Removes the region-as-key-refused limitation and enables honest rate-limit waits.
-3. Trace format v1: version field, generated schema, storage round-trip test for every event kind (including `provider_failover` and `budget_warning`).
+2. Structured provider errors: draft in #12 (response tap). Decide whether to keep the tap or push the fix upstream into pi-ai; removes the region-as-key-refused limitation and enables honest rate-limit waits.
+3. Trace format v1: draft in #13; then add `provider_failover` and `budget_warning` rows.
 4. Land #2 (continue a finished run) with per-continuation budgets and a lease on resume.
 5. Land #8, #9, #10 (fence, call cap, graceful finish), then the harness-level `ToolResult.untrusted` flag so fencing does not depend on plugin order, and auto-inject `fence.note()`.
 6. Land #3 (record/replay), expose `streamFn` in the facade, publish the failure-injection fake provider.
 7. Land #5 and verify the Workers entry in CI; split the `node:fs` imports out of memory and skills.
 8. Parallel tool calls with a per-tool concurrency-safe flag.
 9. Structured-output repair (JSON repair before a retry turn) and token budget.
-10. Balance preflight hook and reasoning tokens in `Usage` (needs pi-ai).
+10. Balance preflight: draft in #14 (verify the OpenRouter source live); reasoning tokens in `Usage` (needs pi-ai).
 
 ## Open questions for Nik
 
 - A shared (cross-run) provider circuit breaker: only if driven by status-backed structured classifications. Until decided, state is per run.
 - Should the harness add `fence.note()` to the system prompt automatically when a fence is configured? Conservative default today: the host does it.
 - Facade now depends on `@droveragent/model` (#7) to re-export the chain; acceptable, or keep the chain import separate?
-- pi-ai: fork, upstream, or wrap, for structured errors and reasoning tokens.
+- pi-ai: fork, upstream, or wrap, for structured errors (#12 wraps) and reasoning tokens.
 - Publishing: none of the above has been published; versioning of the new event kinds waits on the trace-format decision.
 
 ## What was not verified
