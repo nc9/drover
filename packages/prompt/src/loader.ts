@@ -1,4 +1,6 @@
-import * as fs from "node:fs/promises";
+// node:fs is loaded on first use, not at import: a bundle that never reads files
+// (a Workers bundle of @droveragent/facade/core) has no static node:fs import.
+const loadFs = (): Promise<typeof import("node:fs/promises")> => import("node:fs/promises");
 
 /**
  * Read a prompt template from disk. The convention is a double extension
@@ -7,5 +9,5 @@ import * as fs from "node:fs/promises";
  * tags is a valid template too: it renders verbatim.
  */
 export async function loadPromptFile(path: string): Promise<string> {
-  return await fs.readFile(path, "utf8");
+  return await (await loadFs()).readFile(path, "utf8");
 }

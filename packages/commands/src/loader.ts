@@ -1,4 +1,6 @@
-import * as fs from "node:fs/promises";
+// node:fs is loaded on first use, not at import: a bundle that never reads files
+// (a Workers bundle of @droveragent/facade/core) has no static node:fs import.
+const loadFs = (): Promise<typeof import("node:fs/promises")> => import("node:fs/promises");
 import * as path from "node:path";
 import { parse as parseYaml } from "yaml";
 
@@ -201,12 +203,12 @@ export async function scanCommandDirs(
 
   for (const root of roots) {
     const abs = path.resolve(root);
-    const entries = await fs.readdir(abs, { withFileTypes: true }).catch(() => []);
+    const entries = await (await loadFs()).readdir(abs, { withFileTypes: true }).catch(() => []);
     for (const e of entries) {
       if (!e.isFile() || !e.name.toLowerCase().endsWith(".md")) continue;
       if (skipPrefixes.some((p) => e.name.startsWith(p))) continue;
       const filepath = path.join(abs, e.name);
-      const contents = await fs.readFile(filepath, "utf8");
+      const contents = await (await loadFs()).readFile(filepath, "utf8");
       try {
         const { spec, warnings } = parseCommand(contents, filepath, { mode });
         if (warnings.length > 0 && opts.onIssue) opts.onIssue(filepath, warnings);

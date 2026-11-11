@@ -190,3 +190,13 @@ When auditing a new tool:
    inject under capability-checked sandboxes.
 3. Does it read or write a user-supplied path? Use `readFile`/`writeFile`
    directly; they enforce the boundary.
+
+## Workers and other bundler targets: `@droveragent/facade/core`
+
+The default `@droveragent/facade` entry falls back to a just-bash sandbox, which imports a
+Node-only filesystem layer, so it does not bundle for a Worker. The `core` subpath has the same
+`runAgent` / `resumeAgent` with `sandbox` required: an adapter, or `"disabled"` for no
+filesystem and no shell (every sandbox operation fails with a `SandboxError`, `bash` is never
+composed). `"disabled"` is not `createNoneSandbox()` from `@droveragent/sandbox`, which is the
+unconfined host filesystem. Setup, storage, memory and bundle size: [Cloudflare
+Workers](/guides/workers).

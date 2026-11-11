@@ -41,6 +41,7 @@
           "guides/provider-chain",
           "guides/runtime",
           "guides/sandboxes",
+          "guides/workers",
           "guides/storage",
           "guides/memory",
           "guides/prompts",

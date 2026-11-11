@@ -1,4 +1,6 @@
-import * as fs from "node:fs/promises";
+// node:fs is loaded on first use, not at import: a bundle that never reads files
+// (a Workers bundle of @droveragent/facade/core) has no static node:fs import.
+const loadFs = (): Promise<typeof import("node:fs/promises")> => import("node:fs/promises");
 import * as path from "node:path";
 import { parse as parseYaml } from "yaml";
 
@@ -93,7 +95,11 @@ export interface ParseResult {
  * Parse a single SKILL.md. Returns the spec plus any non-fatal issues
  * (lenient mode) or throws `SkillLoadError` (strict mode, default).
  */
-export function parseSkill(contents: string, filepath: string, opts: ParseOptions = {}): ParseResult {
+export function parseSkill(
+  contents: string,
+  filepath: string,
+  opts: ParseOptions = {},
+): ParseResult {
   const mode = opts.mode ?? "strict";
   const issues: SkillIssue[] = [];
   const fail = (field: string, message: string): void => {
@@ -328,7 +334,7 @@ export async function scanSkillDirs(
     const abs = path.resolve(root);
     let exists = false;
     try {
-      const st = await fs.stat(abs);
+      const st = await (await loadFs()).stat(abs);
       exists = st.isDirectory();
     } catch {
       exists = false;
@@ -352,7 +358,7 @@ async function walk(
   if (depth > maxDepth) return;
   const candidate = path.join(dir, filename);
   try {
-    const contents = await fs.readFile(candidate, "utf8");
+    const contents = await (await loadFs()).readFile(candidate, "utf8");
     try {
       const { spec, warnings } = parseSkill(contents, candidate, { mode });
       if (warnings.length > 0 && onIssue) onIssue(candidate, warnings);
@@ -376,7 +382,7 @@ async function walk(
       if (err instanceof SkillLoadError) throw err;
     }
   }
-  const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+  const entries = await (await loadFs()).readdir(dir, { withFileTypes: true }).catch(() => []);
   for (const e of entries) {
     if (!e.isDirectory()) continue;
     if (skipPrefixes.some((p) => e.name.startsWith(p))) continue;
@@ -415,21 +421,18 @@ export async function listSkillResources(spec: SkillSpec): Promise<SkillResource
   const references = await safeList(path.join(spec.dir, "references"));
   const assets = await safeList(path.join(spec.dir, "assets"));
   const top = await safeList(spec.dir);
-  const known = new Set([
-    "SKILL.md",
-    "skill.md",
-    "scripts",
-    "references",
-    "assets",
-  ]);
+  const known = new Set(["SKILL.md", "skill.md", "scripts", "references", "assets"]);
   const other = top.filter((name) => !known.has(name));
   return { scripts, references, assets, other };
 }
 
 async function safeList(dir: string): Promise<string[]> {
   try {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    return entries.filter((e) => !e.name.startsWith(".")).map((e) => e.name).sort();
+    const entries = await (await loadFs()).readdir(dir, { withFileTypes: true });
+    return entries
+      .filter((e) => !e.name.startsWith("."))
+      .map((e) => e.name)
+      .sort();
   } catch {
     return [];
   }
@@ -439,10 +442,7 @@ async function safeList(dir: string): Promise<string[]> {
  * Read a single file under a skill's directory. Refuses absolute paths
  * and any `..` segments — resource access stays inside the skill root.
  */
-export async function readSkillResource(
-  spec: SkillSpec,
-  relativePath: string,
-): Promise<string> {
+export async function readSkillResource(spec: SkillSpec, relativePath: string): Promise<string> {
   if (path.isAbsolute(relativePath)) {
     throw new Error(`resource path must be relative (got '${relativePath}')`);
   }
@@ -454,5 +454,5 @@ export async function readSkillResource(
   if (!abs.startsWith(spec.dir + path.sep) && abs !== spec.dir) {
     throw new Error(`resource resolved outside skill root: ${abs}`);
   }
-  return await fs.readFile(abs, "utf8");
+  return await (await loadFs()).readFile(abs, "utf8");
 }
