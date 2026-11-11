@@ -155,7 +155,7 @@ describe("trace redaction: malformed known kinds and removed fields", () => {
   });
 
   test("an unknown kind passes through unredacted (documented)", () => {
-    const odd = readEvent({ kind: "budget_warning", runId: "r", ts: 1, note: "x" });
+    const odd = readEvent({ kind: "some_future_kind", runId: "r", ts: 1, note: "x" });
     expect(redactEvent(odd, () => "mask")).toBe(odd);
   });
 

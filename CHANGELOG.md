@@ -60,6 +60,24 @@ All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version t
   concurrent subagents that share a thread replay as `ReplayAmbiguousError`
   rather than with swapped answers.
 
+- `quota.wrapUp` (`{ at?, message? }`) and the `budget_warning` event: once a
+  turn, cost or wall-clock budget is `at` spent (default 0.8), every following
+  model call carries a notice telling the model to finish now without more
+  tools, so a run ends with an answer instead of `status: "quota"`.
+
+- `quota.wrapUp` (`{ at?, message? }`), the `budget_warning` event and
+  `RunResult.wrapUp` (#26): once a turn, token, cost or wall-clock budget is
+  `at` spent (default 0.8), every following model call carries an operator
+  notice telling the model to finish now without more tools; `RunResult.wrapUp`
+  says whether the run then wrapped up in time or was cut off. New hard budget
+  `quota.maxTokens`; `QuotaExceededError.dimension` gains `"tokens"`.
+  `HarnessDeps.now` is the clock for the wall-clock threshold. Once the warning fired, a validated final answer wins over a
+  budget breach caused by its own call (`success`; a cost or token excess is
+  recorded on `RunResult.wrapUp.overshoot`); without `wrapUp`, any breach ends
+  the run `quota` as before. **Breaking for exhaustive switches:** the new
+  `"tokens"` value of `QuotaExceededError.dimension` and the new
+  `budget_warning` kind of `HarnessEvent`.
+
 ## 0.2.0 — 2026-08-25
 
 `@droveragent/harness` + `@droveragent/facade` only; every other package is

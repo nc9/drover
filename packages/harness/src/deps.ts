@@ -14,6 +14,11 @@ import type { SimpleStreamOptions } from "@mariozechner/pi-ai";
  * `run.ts`. Re-exported from `run.ts` for back-compat.
  */
 export interface HarnessDeps {
+  /**
+   * Clock for the `quota.wrapUp` wall-clock threshold (default `Date.now`).
+   * A test seam: the hard `maxDurationMs` limit still runs on a real timer.
+   */
+  now?: () => number;
   sandbox: SandboxAdapter;
   /** Override the default alias map. */
   modelAliases?: ResolveOptions["aliases"];

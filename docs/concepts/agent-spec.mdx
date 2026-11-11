@@ -16,7 +16,7 @@ interface AgentSpec<ISchema = TSchema, OSchema = TSchema> {
   subagents?: SubagentConfig;
   outputRetries?: number;     // default 2
   plugins?: readonly HarnessPlugin[];
-  quota?: RunQuota;           // { maxTurns?, maxDurationMs?, maxCostUsd? }
+  quota?: RunQuota;           // { maxTurns?, maxDurationMs?, maxCostUsd?, maxTokens?, wrapUp? }
 }
 ```
 
@@ -28,7 +28,7 @@ shape — drover doesn't distinguish.
 
 ```ts
 type ModelSpec =
-  | string                          // "cheap" | "google/gemini-2.5-flash-lite" | "sonnet:high"
+  | string // "cheap" | "google/gemini-2.5-flash-lite" | "sonnet:high"
   | { name: string; reasoning?: ReasoningLevel; temperature?: number; maxTokens?: number };
 ```
 
@@ -44,9 +44,9 @@ in pi-ai's registry default to `"medium"` if you don't pick.
 
 ```ts
 interface SubagentConfig {
-  allowed: readonly string[];   // required
-  depth?: number;                // default 2
-  fanOut?: number;               // default 3
+  allowed: readonly string[]; // required
+  depth?: number; // default 2
+  fanOut?: number; // default 3
 }
 ```
 
@@ -59,7 +59,9 @@ exists for type inference: `AgentInput<S>` and `AgentOutput<S>` derive
 their static types from the spec's TypeBox schemas.
 
 ```ts
-const spec = defineAgent({ /* ... */ });
+const spec = defineAgent({
+  /* ... */
+});
 type In = AgentInput<typeof spec>;
 type Out = AgentOutput<typeof spec>;
 ```
@@ -76,3 +78,54 @@ its behaviour changes. Function-valued `systemPrompt` uses
 `Function.toString()` so source edits produce different hashes (but
 closure-over-variables drift is invisible — prefer string prompts on
 resumable agents).
+
+## Finishing inside a budget
+
+A hard budget (`maxTurns`, `maxTokens`, `maxCostUsd`, `maxDurationMs`) ends the run with
+`status: "quota"` and no answer. `maxTokens` counts every token the provider reports
+(input, output, cache read, cache write), summed over calls. Input is per call and each call
+resends the conversation so far, so input tokens grow with every turn: a 10-turn run whose
+history reaches 8 000 tokens spends far more than 8 000 input tokens. Add `quota.wrapUp` to let
+the model finish cleanly first:
+
+```ts
+quota: { maxTurns: 12, maxTokens: 200_000, maxCostUsd: 0.5, wrapUp: { at: 0.8 } }
+```
+
+Once any budget is `at` spent (default 0.8), every following model call carries a closing user
+message: the budget is nearly spent, do not call more tools, answer with what you have. For
+turns, the notice starts on the turn about to begin whose number (1-based) is
+`min(ceil(at × maxTurns), maxTurns - 1)`, and on turn 1 if that is below 1: so it arrives no later
+than the second-to-last allowed turn, leaving at least one turn to answer in. With `maxTurns: 1`
+the first and only call already carries it (and an answer on that turn still counts, see below). A `budget_warning` event (`dimension`, `limit`, `used`)
+is emitted once. `wrapUp.message` replaces the default text.
+
+- **Outcome.** `RunResult.wrapUp` (`dimension`, `limit`, `used`, `outcome?`, `overshoot?`) is
+  set whenever the warning fired: `outcome: "wrapped_up"` for `status: "success"`,
+  `"cut_off"` for `status: "quota"`, and no `outcome` for a paused, cancelled or errored run.
+- **Bounded.** The wrap-up turns run inside the same hard limits: a model that ignores the
+  notice, or keeps calling tools, is cut off as before (`cut_off`). Set `at` low enough that
+  one more call fits in the remainder.
+- **The answer wins over its own breach.** Once the warning fired, if the run's final answer
+  (the call that ends the run, with no tool call) passes the output contract, it wins over a
+  budget breach caused by that same call: the run is `success` with `outcome: "wrapped_up"`.
+  For `maxTokens` and `maxCostUsd` this is an overshoot and `wrapUp.overshoot` (`dimension`,
+  `limit`, `observed`) records the excess; reaching `maxTurns` on the answer turn is not an
+  overshoot (that turn was allowed). The `postSuccess` lifecycle is skipped in that case (the
+  budget is spent). An answer that fails the output schema, or a breaching call that asked for
+  tools, still ends `quota`. This forgiveness applies only when wrap-up fired: without
+  `quota.wrapUp` any breach ends the run `quota`, as before.
+- **Output schema.** The wrap-up answer is decoded and validated like any other; output
+  retries still apply and still count against the budgets.
+- **Operator text.** The notice is the spec's `wrapUp.message` or the built-in default, never
+  built from tool output. It is harness text added as a user turn and is not fenced as
+  untrusted data (the untrusted-data fence is separate work).
+- **Post-processing.** The notice is not added to the `postSuccess` lifecycle's calls.
+- **History.** The notice is appended per call, never written to the history or the
+  checkpoint, so a resumed run recomputes it (against the run's cumulative turns, tokens and
+  cost; wall clock is measured per invocation) and may warn again.
+- **Subagents** have their own spec and quota: a parent's notice is not passed to a child,
+  and a child's `wrapUp` applies to the child's run only.
+- **Continuations.** A per-continuation budget (resume with its own budget, a separate change)
+  does not trigger the notice yet; `wrapUp` follows the spec's cumulative `quota`.
+- **Testing.** `HarnessDeps.now` replaces the clock used for the wall-clock threshold.

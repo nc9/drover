@@ -25,6 +25,20 @@ export interface RunResult<TOutput = unknown> {
    * assistant messages name their provider (always, under a provider chain).
    */
   usageByProvider?: Record<string, Usage>;
+  /**
+   * Present when `quota.wrapUp` fired: which budget crossed its threshold, and
+   * how the run ended. `outcome` is `wrapped_up` for `status: "success"` and
+   * `cut_off` for `status: "quota"`; it is absent for a paused, cancelled or
+   * errored run. `overshoot` is set when the final, validated answer's own call
+   * crossed a cost or token budget: the answer wins and the run is `success`.
+   */
+  wrapUp?: {
+    dimension: "turns" | "duration" | "cost" | "tokens";
+    limit: number;
+    used: number;
+    outcome?: "wrapped_up" | "cut_off";
+    overshoot?: { dimension: "cost" | "tokens"; limit: number; observed: number };
+  };
   /** Tool ids invoked during the run, in order. Duplicates preserved. */
   toolCalls: ReadonlyArray<string>;
   /** Tagged error when `status === "error"`. */

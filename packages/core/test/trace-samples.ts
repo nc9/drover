@@ -16,6 +16,7 @@ export const SAMPLES: Record<Kind, HarnessEvent> = {
     status: 403,
     code: "unsupported_country_region_territory",
   },
+  budget_warning: { ...base, kind: "budget_warning", dimension: "turns", limit: 10, used: 8 },
   input_validated: { ...base, kind: "input_validated" },
   turn_start: { ...base, kind: "turn_start", turn: 1 },
   llm_call: { ...base, kind: "llm_call", turn: 1, modelName: "m", reasoning: "low" },

@@ -169,6 +169,18 @@ export type HarnessEvent =
       status: "success" | "error" | "cancelled";
       ts: number;
     }
+  /**
+   * A budget crossed its `quota.wrapUp.at` fraction: the model was told to
+   * finish. Emitted once per run (and again on a resumed run).
+   */
+  | {
+      kind: "budget_warning";
+      runId: string;
+      dimension: "turns" | "duration" | "cost" | "tokens";
+      limit: number;
+      used: number;
+      ts: number;
+    }
   | { kind: "output_validated"; runId: string; ts: number }
   | { kind: "output_retry"; runId: string; attempt: number; reason: string; ts: number }
   | {

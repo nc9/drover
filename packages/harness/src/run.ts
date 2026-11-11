@@ -109,7 +109,7 @@ const DEFAULT_OUTPUT_RETRIES = 2;
 
 /** Which run budget tripped, with its configured ceiling and the breaching value. */
 type QuotaBreach = {
-  dimension: "turns" | "duration" | "cost";
+  dimension: "turns" | "duration" | "cost" | "tokens";
   limit: number;
   observed: number;
 };
@@ -251,6 +251,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     const { spec, input, ctx, emit, deps, resumeFrom, pauseFlag, compactFlag, emitDeltas } = args;
     const isResume = resumeFrom !== undefined;
     const startedAt = Date.now();
+    // Clock for the wrap-up wall-clock threshold only (test seam); hard limits use real timers.
+    const clock = deps.now ?? Date.now;
+    const clockStartedAt = clock();
     const usage: Usage = { inputTokens: 0, outputTokens: 0 };
     const toolCalls: string[] = resumeFrom ? [...resumeFrom.toolCalls] : [];
 
@@ -578,6 +581,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // post-loop section to resolve the terminal status. Boxed so a closure
     // write survives TS control-flow narrowing at the post-loop read site.
     const quotaBreach: { value: QuotaBreach | null } = { value: null };
+    // The assistant message whose usage tripped a cost/token budget (see the
+    // "validated answer wins" rule in the post-loop section).
+    const breachMessage: { value: unknown } = { value: null };
 
     // Snapshot of pi's message list, updated each LLM call via transformContext.
     // Used to checkpoint state for resume. Seeded from the checkpoint on resume.
@@ -674,7 +680,12 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           // running total is updated. Aborts mid-turn if a tool batch is
           // still pending.
           if (quota.maxCostUsd !== undefined && (next.costUsd ?? 0) >= quota.maxCostUsd) {
+            if (!quotaBreach.value) breachMessage.value = e.message;
             tripQuota({ dimension: "cost", limit: quota.maxCostUsd, observed: next.costUsd ?? 0 });
+          }
+          if (quota.maxTokens !== undefined && totalTokens(next) >= quota.maxTokens) {
+            if (!quotaBreach.value) breachMessage.value = e.message;
+            tripQuota({ dimension: "tokens", limit: quota.maxTokens, observed: totalTokens(next) });
           }
         }
       }
@@ -689,6 +700,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         // just completed keeps its output: the cap is a budget, not a
         // tripwire on a turn that produced a valid answer.
         if (maxTurns !== undefined && turn >= maxTurns) {
+          if (!quotaBreach.value) breachMessage.value = lastAssistantMsg.value;
           tripQuota({ dimension: "turns", limit: maxTurns, observed: turn });
         }
       }
@@ -873,6 +885,74 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           }
         : undefined;
 
+    // Graceful finish: once a budget is `quota.wrapUp.at` spent, every later
+    // model call carries a closing notice. Appended per call (never written to
+    // pi's history or the checkpoint), so a resumed run recomputes it.
+    const wrapUp = quota.wrapUp;
+    let wrapUpActive = false;
+    // The budget that crossed its threshold, for `RunResult.wrapUp`.
+    // Boxed so the closure write survives TS narrowing at the read site.
+    const wrapUpFired: {
+      value: {
+        dimension: "turns" | "duration" | "cost" | "tokens";
+        limit: number;
+        used: number;
+      } | null;
+    } = { value: null };
+    const wrapUpTrigger = (): {
+      dimension: "turns" | "duration" | "cost" | "tokens";
+      limit: number;
+      used: number;
+    } | null => {
+      if (!wrapUp) return null;
+      const at = wrapUp.at !== undefined && wrapUp.at > 0 && wrapUp.at < 1 ? wrapUp.at : 0.8;
+      if (maxTurns !== undefined) {
+        const used = translator.currentTurn();
+        if (used >= Math.min(Math.ceil(at * maxTurns), maxTurns - 1)) {
+          return { dimension: "turns", limit: maxTurns, used };
+        }
+      }
+      if (quota.maxCostUsd !== undefined) {
+        const used = lastUsage.value.costUsd ?? 0;
+        if (used >= at * quota.maxCostUsd)
+          return { dimension: "cost", limit: quota.maxCostUsd, used };
+      }
+      if (quota.maxTokens !== undefined) {
+        const used = totalTokens(lastUsage.value);
+        if (used >= at * quota.maxTokens)
+          return { dimension: "tokens", limit: quota.maxTokens, used };
+      }
+      if (quota.maxDurationMs !== undefined) {
+        const used = clock() - clockStartedAt;
+        if (used >= at * quota.maxDurationMs) {
+          return { dimension: "duration", limit: quota.maxDurationMs, used };
+        }
+      }
+      return null;
+    };
+    const baseTransformContext = transformContext;
+    const transformWithWrapUp = wrapUp
+      ? async (messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> => {
+          const next = baseTransformContext
+            ? await baseTransformContext(messages, signal)
+            : messages;
+          let trigger: ReturnType<typeof wrapUpTrigger> = null;
+          if (!wrapUpActive) {
+            trigger = wrapUpTrigger();
+            if (trigger) {
+              wrapUpActive = true;
+              wrapUpFired.value = trigger;
+              safeEmit({ kind: "budget_warning", runId: ctx.runId, ...trigger, ts: Date.now() });
+            }
+          }
+          if (!wrapUpActive) return next;
+          const text =
+            wrapUp.message ??
+            "Budget notice: this run's budget is nearly spent. Finish now: do not call more tools; give your final answer with what you have.";
+          return [...next, { role: "user", content: text, timestamp: Date.now() } as AgentMessage];
+        }
+      : baseTransformContext;
+
     const loopConfig: AgentLoopConfig = {
       model: resolved.model as never,
       convertToLlm: (messages: AgentMessage[]): Message[] => messages as Message[],
@@ -886,7 +966,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       // routing). `AgentLoopConfig extends SimpleStreamOptions` and pi spreads
       // the whole config into the stream options, so this reaches the provider.
       ...(deps.onPayload ? { onPayload: deps.onPayload } : {}),
-      ...(transformContext ? { transformContext } : {}),
+      ...(transformWithWrapUp ? { transformContext: transformWithWrapUp } : {}),
       ...(beforeToolCall ? { beforeToolCall: beforeToolCall as never } : {}),
       ...(afterToolCall ? { afterToolCall: afterToolCall as never } : {}),
       getFollowUpMessages,
@@ -1006,6 +1086,19 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     let errorOut: { tag: string; message: string; status?: number } | undefined;
 
     const finalText = lastAssistant.text;
+    // A cost/token breach forgiven because the final answer validated (see below).
+    let overshoot: QuotaBreach | null = null;
+    // The breach was forgiven (see below): the run ends on its answer.
+    let forgiven = false;
+    /** The last assistant message is a final answer (no tool call) that passes the output contract. */
+    const finalAnswerValidates = (): boolean => {
+      const content = (
+        lastAssistantMsg.value as { content?: ReadonlyArray<{ type?: string }> } | null
+      )?.content;
+      if (!Array.isArray(content) || content.some((b) => b.type === "toolCall")) return false;
+      if (!finalText || finalText.trim().length === 0) return false;
+      return isOpenSchema(spec.outputSchema) || tryDecode(spec.outputSchema, finalText).ok;
+    };
     const finalFailure = providerFailure(
       lastAssistantMsg.value,
       includeProviderErrorText,
@@ -1022,14 +1115,35 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       // if the breaching turn happened to produce valid output (a blown
       // budget must not be reported as success). Then loop errors, then the
       // output check.
+      //
+      // One exception, only under `quota.wrapUp` (once the warning fired): when
+      // the breach was caused by the run's FINAL answer (the call that ended
+      // the loop: no tool call) and that answer validates, the answer wins
+      // ("a budget, not a tripwire"). The run is `success` and the `postSuccess`
+      // lifecycle is skipped (the budget is spent). A cost/token breach is an
+      // overshoot, recorded on `RunResult.wrapUp.overshoot`; reaching the turn
+      // cap on the answer turn is not an overshoot (that turn was allowed). An
+      // ongoing run (the breaching call asked for tools) or an unvalidated
+      // answer still ends `quota`. Without wrap-up, any breach wins.
       const breach = quotaBreach.value;
-      if (breach) {
+      if (
+        breach &&
+        wrapUpFired.value &&
+        breach.dimension !== "duration" &&
+        breachMessage.value !== null &&
+        breachMessage.value === lastAssistantMsg.value &&
+        finalAnswerValidates()
+      ) {
+        forgiven = true;
+        if (breach.dimension !== "turns") overshoot = breach;
+      }
+      if (breach && !forgiven) {
         status = "quota";
         errorOut = {
           tag: "QuotaExceededError",
           message: `${breach.dimension} budget exceeded (limit ${breach.limit}, observed ${breach.observed})`,
         };
-      } else if (loopError) {
+      } else if (loopError && !forgiven) {
         status = "error";
         errorOut = { tag: "LoopError", message: (loopError as Error).message };
       } else if (finalFailure) {
@@ -1064,6 +1178,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // are post-processing (lint, commit, …).
     if (
       status === "success" &&
+      !forgiven &&
       spec.lifecycle?.postSuccess &&
       spec.lifecycle.postSuccess.length > 0 &&
       finalMessages.length > 0
@@ -1107,8 +1222,13 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         // continuation so a plain post-processing reply — a lint/commit
         // summary — can't fail the original schema and trigger correction
         // prompts inside the post-processing phase.
+        // Also drop the wrap-up notice: post-processing is not the answer, and
+        // the notice must neither fire in it nor leak into it. Compaction and
+        // checkpointing (the base transform) still apply.
+        const { transformContext: _wrapped, ...loopWithoutWrapUp } = loopConfig;
         const postLoopConfig: AgentLoopConfig = {
-          ...loopConfig,
+          ...loopWithoutWrapUp,
+          ...(transformContext ? { transformContext } : {}),
           getFollowUpMessages: async (): Promise<UserMessage[]> => [],
         };
         yield* Effect.promise(async (): Promise<void> => {
@@ -1221,6 +1341,27 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     if (errorOut) result.error = errorOut;
     if (Object.keys(usageByProvider).length > 0)
       result.usageByProvider = Object.fromEntries(Object.entries(usageByProvider));
+    if (wrapUpFired.value) {
+      // `outcome` only for the two endings it describes; a paused, cancelled
+      // or errored run carries the warning without one.
+      const outcome =
+        status === "success" ? "wrapped_up" : status === "quota" ? "cut_off" : undefined;
+      result.wrapUp = {
+        ...wrapUpFired.value,
+        ...(outcome ? { outcome } : {}),
+        // An overshoot is only "forgiven" on a success; on any other ending it means nothing.
+        ...(overshoot && status === "success"
+          ? {
+              overshoot: {
+                // Only cost/token breaches are ever forgiven (see the post-loop rule).
+                dimension: overshoot.dimension as "cost" | "tokens",
+                limit: overshoot.limit,
+                observed: overshoot.observed,
+              },
+            }
+          : {}),
+      };
+    }
 
     // Run-level lifecycle: fire `onRunEnd` once, after the loop +
     // `postSuccess` and terminal resolution. Observation only — failures and
@@ -1455,4 +1596,9 @@ export function hashSpec(spec: AgentSpec): string {
     h = (h * 31 + s.charCodeAt(i)) | 0;
   }
   return (h >>> 0).toString(16);
+}
+
+/** Every token the provider reported: input + output + cache read + cache write. */
+function totalTokens(u: Usage): number {
+  return u.inputTokens + u.outputTokens + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0);
 }
