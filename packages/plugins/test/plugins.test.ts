@@ -11,6 +11,7 @@ import {
   loopDetectPlugin,
   outputValidatePlugin,
   stepTracerPlugin,
+  toolCallCapPlugin,
   truncatePlugin,
   writePolicyPlugin,
 } from "../src/index.ts";
@@ -443,5 +444,150 @@ describe("dedupPlugin", () => {
     expect(d.size("r5")).toBe(1);
     await Effect.runPromise(d.plugin.onRunEnd!({} as never, { ...fakeCtx, runId: "r5" }));
     expect(d.size("r5")).toBe(0);
+  });
+});
+
+describe("toolCallCapPlugin", () => {
+  const call = (p: ReturnType<typeof toolCallCapPlugin>, name: string, ctx = fakeCtx) =>
+    Effect.runPromise(p.beforeToolCall!(name, {}, ctx));
+
+  test("allows up to the cap, then refuses with a reason the model can act on", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 2 });
+    expect((await call(p, "a")).kind).toBe("allow");
+    expect((await call(p, "b")).kind).toBe("allow");
+    const d = await call(p, "a");
+    expect(d.kind).toBe("deny");
+    expect(d.kind === "deny" && d.reason).toContain("Do not call more tools");
+  });
+
+  test("refused calls do not count: the same answer every time", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 1 });
+    await call(p, "a");
+    const first = await call(p, "a");
+    const second = await call(p, "a");
+    expect(first).toEqual(second);
+  });
+
+  test("per-tool caps leave other tools alone", async () => {
+    const p = toolCallCapPlugin({ perTool: { fetch: 1 } });
+    expect((await call(p, "fetch")).kind).toBe("allow");
+    const d = await call(p, "fetch");
+    expect(d.kind === "deny" && d.reason).toContain("fetch");
+    expect((await call(p, "read")).kind).toBe("allow");
+  });
+
+  test("counts are per run, and cleared at run end", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 1 });
+    const other: RunContext = { ...fakeCtx, runId: "other" };
+    expect((await call(p, "a")).kind).toBe("allow");
+    expect((await call(p, "a", other)).kind).toBe("allow");
+    expect((await call(p, "a")).kind).toBe("deny");
+    await Effect.runPromise(p.onRunEnd!({} as never, fakeCtx));
+    expect((await call(p, "a")).kind).toBe("allow");
+  });
+
+  test("tool names are data: a model calling `constructor` or `__proto__` hits no cap", async () => {
+    const p = toolCallCapPlugin({ perTool: { fetch: 1 } });
+    for (const name of ["constructor", "__proto__", "toString"]) {
+      expect((await call(p, name)).kind).toBe("allow");
+      expect((await call(p, name)).kind).toBe("allow");
+    }
+  });
+
+  test("a custom message replaces the default", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 0, message: ({ limit }) => `no more (${limit})` });
+    const d = await call(p, "a");
+    expect(d.kind === "deny" && d.reason).toBe("no more (0)");
+  });
+  const after = (p: ReturnType<typeof toolCallCapPlugin>, name: string, content = "ok") =>
+    Effect.runPromise(p.afterToolCall!(name, {}, { content }, fakeCtx));
+
+  test("the refusal names the cap, the count used and what to do, never the input", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 1 });
+    await Effect.runPromise(p.beforeToolCall!("fetch", { url: "SECRET-ARG" }, fakeCtx));
+    const d = await Effect.runPromise(p.beforeToolCall!("fetch", { url: "SECRET-ARG" }, fakeCtx));
+    expect(d.kind).toBe("deny");
+    const reason = d.kind === "deny" ? d.reason : "";
+    expect(reason).toContain("1 of 1 tool calls used");
+    expect(reason).toContain("give your final answer");
+    expect(reason).not.toContain("SECRET-ARG");
+  });
+
+  test("parallel calls in one turn cannot overshoot the cap", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 5, perTool: { fetch: 3 } });
+    const decisions = await Promise.all(
+      Array.from({ length: 20 }, (_, i) => call(p, i % 2 === 0 ? "fetch" : "read")),
+    );
+    expect(decisions.filter((d) => d.kind === "allow").length).toBe(5);
+    expect(p.usage(fakeCtx.runId)?.total).toBe(5);
+    expect(p.usage(fakeCtx.runId)?.byTool.fetch).toBe(3);
+  });
+
+  test("near the cap the model is told once, on the result of the call that reaches it", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 5 });
+    const notes: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      await call(p, "a");
+      notes.push((await after(p, "a")).content);
+    }
+    const warned = notes.filter((c) => c.includes("tool call budget"));
+    expect(warned).toHaveLength(1);
+    expect(notes[3]).toContain("4 of 5 tool calls used in this run; 1 left.");
+    expect(notes[0]).toBe("ok");
+  });
+
+  test("per-tool caps warn once too; warnAt false turns warnings off", async () => {
+    const p = toolCallCapPlugin({ perTool: { fetch: 5 } });
+    const out: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      await call(p, "fetch");
+      out.push((await after(p, "fetch")).content);
+    }
+    expect(out.filter((c) => c.includes("fetch calls used")).length).toBe(1);
+    const quiet = toolCallCapPlugin({ maxCalls: 5, warnAt: false });
+    for (let i = 0; i < 5; i++) {
+      await call(quiet, "a");
+      expect((await after(quiet, "a")).content).toBe("ok");
+    }
+  });
+
+  test("usage is null-prototype and undefined after the run ends", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 10 });
+    await call(p, "__proto__");
+    const u = p.usage(fakeCtx.runId)!;
+    expect(Object.getPrototypeOf(u.byTool)).toBeNull();
+    expect(u.byTool["__proto__"]).toBe(1);
+    await Effect.runPromise(p.onRunEnd!({} as never, fakeCtx));
+    expect(p.usage(fakeCtx.runId)).toBeUndefined();
+  });
+  test("pause keeps the counts, so a resumed run is still capped; other run ends clear them", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 2 });
+    await call(p, "a");
+    await call(p, "a");
+    await Effect.runPromise(p.onRunEnd!({ status: "paused" } as never, fakeCtx));
+    expect(p.usage(fakeCtx.runId)?.total).toBe(2);
+    // resume: same run id
+    expect((await call(p, "a")).kind).toBe("deny");
+    await Effect.runPromise(p.onRunEnd!({ status: "success" } as never, fakeCtx));
+    expect(p.usage(fakeCtx.runId)).toBeUndefined();
+  });
+
+  test("parallel execution: all beforeToolCalls first, then afterToolCalls; the note still comes once", async () => {
+    const p = toolCallCapPlugin({ maxCalls: 5 });
+    const decisions = await Promise.all(Array.from({ length: 6 }, () => call(p, "a")));
+    expect(decisions.filter((d) => d.kind === "allow").length).toBe(5);
+    const notes: string[] = [];
+    for (let i = 0; i < 5; i++) notes.push((await after(p, "a")).content);
+    expect(notes.filter((c) => c.includes("tool call budget"))).toHaveLength(1);
+    expect(notes[0]).toContain("5 of 5 tool calls used in this run; 0 left.");
+  });
+
+  test("non-finite or negative caps (and a bad warnAt) are rejected at construction", () => {
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => toolCallCapPlugin({ maxCalls: bad })).toThrow("maxCalls");
+      expect(() => toolCallCapPlugin({ perTool: { fetch: bad } })).toThrow("perTool.fetch");
+    }
+    expect(() => toolCallCapPlugin({ maxCalls: 3, warnAt: 1.5 })).toThrow("warnAt");
+    expect(() => toolCallCapPlugin({ maxCalls: 0, perTool: { fetch: 0 } })).not.toThrow();
   });
 });
