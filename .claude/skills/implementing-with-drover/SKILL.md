@@ -21,7 +21,7 @@ import { Type } from "@sinclair/typebox";
 
 const spec = defineAgent({
   id: "my-agent",
-  systemPrompt: renderedPromptString,   // string, not a fn — see below
+  systemPrompt: renderedPromptString, // string, not a fn — see below
   inputSchema: Type.String(),
   outputSchema: Type.Any(),
   model: "my-symbolic-model",
@@ -31,18 +31,20 @@ const spec = defineAgent({
 });
 
 const handle = runAgent(spec, userMessage, {
-  models: preResolvedModels,   // Map<specName, {model, apiKey}>
-  sandbox: mySandbox,          // ALWAYS set — see confinement
+  models: preResolvedModels, // Map<specName, {model, apiKey}>
+  sandbox: mySandbox, // ALWAYS set — see confinement
   storage: myStorage,
-  env: {},                     // ALWAYS set — see confinement
+  env: {}, // ALWAYS set — see confinement
   cwd: "/workspace",
   emitDeltas: true,
   meta: { orgId, userId, conversationId },
   signal,
 });
 
-for await (const event of handle.events) { /* translate */ }
-const result = await handle.result;   // never rejects
+for await (const event of handle.events) {
+  /* translate */
+}
+const result = await handle.result; // never rejects
 ```
 
 `handle.result` folds drover-typed errors into `RunResult.error` with
@@ -107,6 +109,11 @@ Contract details that bite:
 
 ### Writing a new adapter
 
+Run the shared conformance suite against it:
+`sandboxConformanceCases({ expectShell })` from `@droveragent/sandbox` (see
+`docs/guides/sandboxes.mdx`). It checks exit codes, env, cwd, timeout/abort
+(`killed: true`), file round trips and typed read errors with no network.
+
 Follow `packages/sandbox-vercel` (Firecracker VM) and
 `packages/sandbox-cloudflare` (container behind a Durable Object).
 
@@ -120,7 +127,7 @@ Follow `packages/sandbox-vercel` (Firecracker VM) and
 2. **Lazy, memoised acquisition.** Acquire on first op. Concurrent first ops
    share one in-flight acquire; a failure resets the memo so the next op can
    retry. Acquisition counts against the exec deadline — a cold container can
-   take minutes and must not hang a tool call. An expiry *there* is a
+   take minutes and must not hang a tool call. An expiry _there_ is a
    `SandboxError`, not a `killed` result: no process existed yet.
 3. **Cap output.** Default 16 KiB tail per stream with a `[truncated: …]`
    note, so a runaway `cat` cannot blow the transcript.
@@ -156,7 +163,7 @@ Porting notes from the D1 adapter:
   is `IF NOT EXISTS` / `INSERT OR IGNORE`.
 - `close()` is a no-op for runtime-owned bindings.
 - Test SQLite-backed adapters against `bun:sqlite` behind the same structural
-  interface. Far less friction than booting miniflare, and it *is* SQLite.
+  interface. Far less friction than booting miniflare, and it _is_ SQLite.
 
 ## Plugins
 
@@ -168,13 +175,13 @@ merged (and both feed the spec hash).
 Auto-injected tools are gated on spec-opt-in AND the matching dep being
 wired — see `harness/src/capability-gates.ts`:
 
-| Mechanism | Spec field | Required dep |
-|---|---|---|
-| `task` (subagents) | `subagents` | `agentRegistry` |
-| `skill_load` / `skill_resource` | `skills` | `skills` |
-| `remember` / `recall` | `memory.enabled` | `memory` |
-| MCP tools | `mcpServers` | `mcpRuntime` |
-| `bash` | `tools: ["bash"]` | `sandbox.capabilities.shell` |
+| Mechanism                       | Spec field        | Required dep                 |
+| ------------------------------- | ----------------- | ---------------------------- |
+| `task` (subagents)              | `subagents`       | `agentRegistry`              |
+| `skill_load` / `skill_resource` | `skills`          | `skills`                     |
+| `remember` / `recall`           | `memory.enabled`  | `memory`                     |
+| MCP tools                       | `mcpServers`      | `mcpRuntime`                 |
+| `bash`                          | `tools: ["bash"]` | `sandbox.capabilities.shell` |
 
 ## Consumer patterns
 
@@ -199,7 +206,7 @@ block. This is what prevents hallucinated numbers and keeps a large scan from
 costing millions of tokens.
 
 - Per request, never module scope. Stamp it with the tenant id.
-- Bound new registrations per run, and make the throw a *corrective* message
+- Bound new registrations per run, and make the throw a _corrective_ message
   ("render what you have as a partial result") — the model recovers from that.
 - Hydrated refs from earlier turns keep their original ids (transcripts quote
   them) and must not count against the turn's bound.
@@ -221,7 +228,7 @@ the egress boundary instead:
   `setOutboundByHost`. The handler runs in the Worker where bindings live.
   Restrict it to the methods you need, and issue a read-only credential.
 - Deny-all is the baseline. On Cloudflare, `enableInternet = false` on the
-  `Sandbox` DO subclass is the *real* switch; host allowlists layer on top,
+  `Sandbox` DO subclass is the _real_ switch; host allowlists layer on top,
   and an adapter cannot read that flag over RPC — so declare it and say so.
 
 ### Pre-resolved model injection
@@ -232,14 +239,26 @@ host: your model id is probably newer than pi-ai's table, and a Worker has no
 `process.env`. So construct the `Model` object yourself and inject it:
 
 ```ts
-const models = new Map([[
-  "my-symbolic-model",
-  { model: { id, name: id, api: "openai-completions", provider: "openrouter",
-             baseUrl: "https://openrouter.ai/api/v1", reasoning: true,
-             input: ["text"], cost: {input:1,output:1,cacheRead:1,cacheWrite:1},
-             contextWindow: 200_000, maxTokens: 32_768 },
-    apiKey },
-]]);
+const models = new Map([
+  [
+    "my-symbolic-model",
+    {
+      model: {
+        id,
+        name: id,
+        api: "openai-completions",
+        provider: "openrouter",
+        baseUrl: "https://openrouter.ai/api/v1",
+        reasoning: true,
+        input: ["text"],
+        cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 },
+        contextWindow: 200_000,
+        maxTokens: 32_768,
+      },
+      apiKey,
+    },
+  ],
+]);
 ```
 
 `RunOptions.models` is checked **before** alias/slug/builtin lookup, which
@@ -263,7 +282,7 @@ cached prefix. Everything after the first volatile segment is uncacheable.
 - **No `{% if %}`.** A control tag is volatile to the analyzer and caps the
   prefix at its position even when the condition is deployment-stable. Select
   variants in TypeScript with prebuilt template strings instead.
-- Pre-serialise optional sections *with their own trailing separator* (or
+- Pre-serialise optional sections _with their own trailing separator_ (or
   `""`), so an empty value leaves no gap and needs no tag.
 - In a Worker there is no filesystem: the template must be a bundled TS
   constant, not a `path`.
@@ -285,7 +304,7 @@ Emit `meta` first and `done` last. A useful wire union:
   `assistant_text`. Track which turns streamed deltas and suppress the echo
   for those, or the client renders every message twice.
 - Buffer deltas per turn. A run that aborts or hits quota mid-message never
-  sends `assistant_text`, and the persisted row must not be *less* than what
+  sends `assistant_text`, and the persisted row must not be _less_ than what
   the client already saw.
 - Insert a `\n\n` break when a new turn's text follows tool calls.
 - **Hold `error` back** until `handle.result` settles, then decide. Report
@@ -306,8 +325,9 @@ wedge persistence or the `done` frame.
 ## Repo conventions
 
 - `bun`, TypeScript, kebab-case filenames, PascalCase types, camelCase fns.
-- `cd packages/<pkg> && bunx tsgo --noEmit`. **Never** `bun run --filter '*'
-  typecheck` from the root — it fans out N concurrent tsgo runs and pegs CPU.
+- `cd packages/<pkg> && bunx tsgo --noEmit`. **Never**
+  `bun run --filter '*' typecheck` from the root — it fans out N concurrent
+  tsgo runs and pegs CPU.
 - `oxfmt` / `oxlint`. Tests: `bun test` per package.
 - Package tsconfigs `include: ["src/**/*"]`, so tests are not typechecked by
   default. `exactOptionalPropertyTypes` is on — a mock's captured

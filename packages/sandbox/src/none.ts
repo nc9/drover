@@ -30,6 +30,80 @@ export interface NoneSandboxOptions {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+// POSIX only: each exec gets its own process group so a timeout/abort can
+// kill the whole tree. Windows has no process groups (and `detached` opens a
+// new console there), so it keeps killing the direct child only.
+const USE_PROCESS_GROUPS = process.platform !== "win32";
+
+// Process groups of execs still running. A detached group does not share the
+// host's process group, so neither a terminal Ctrl-C nor the host's own exit
+// reaches it: without cleanup it would outlive the host. Two hooks cover that:
+// - an `exit` listener (installed once) for a normal exit or process.exit;
+// - SIGINT / SIGTERM / SIGHUP listeners, installed ONLY while an exec is
+//   running and removed when the last one finishes, so the host's signal
+//   handling is untouched the rest of the time.
+const liveGroups = new Set<number>();
+let exitHookInstalled = false;
+
+const TERMINATING_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+type TerminatingSignal = (typeof TERMINATING_SIGNALS)[number];
+
+const killGroup = (pgid: number): boolean => {
+  try {
+    process.kill(-pgid, "SIGKILL");
+    return true;
+  } catch {
+    // ESRCH: the group already exited.
+    return false;
+  }
+};
+
+const killLiveGroups = (): void => {
+  for (const g of liveGroups) killGroup(g);
+  liveGroups.clear();
+};
+
+const signalHandlers = new Map<TerminatingSignal, () => void>();
+
+const removeSignalHandlers = (): void => {
+  for (const [sig, handler] of signalHandlers) process.removeListener(sig, handler);
+  signalHandlers.clear();
+};
+
+const onTerminatingSignal = (sig: TerminatingSignal): void => {
+  killLiveGroups();
+  // Listeners other than ours: if the host handles this signal, its handler
+  // decides what happens (and a process.exit there still runs the exit hook).
+  const others = process.listenerCount(sig) - 1;
+  removeSignalHandlers();
+  // Otherwise ours was the only listener, and its presence suppressed the
+  // default action: re-raise so the host dies with the usual status (128+n).
+  if (others === 0) process.kill(process.pid, sig);
+};
+
+const installSignalHandlers = (): void => {
+  if (signalHandlers.size > 0) return;
+  for (const sig of TERMINATING_SIGNALS) {
+    const handler = (): void => onTerminatingSignal(sig);
+    signalHandlers.set(sig, handler);
+    process.on(sig, handler);
+  }
+};
+
+const trackGroup = (pgid: number): void => {
+  if (!exitHookInstalled) {
+    exitHookInstalled = true;
+    process.once("exit", killLiveGroups);
+  }
+  liveGroups.add(pgid);
+  installSignalHandlers();
+};
+
+const untrackGroup = (pgid: number): void => {
+  liveGroups.delete(pgid);
+  if (liveGroups.size === 0) removeSignalHandlers();
+};
+
 function ensureInsideRoots(
   abs: string,
   roots: ReadonlyArray<string>,
@@ -127,20 +201,30 @@ export function createNoneSandbox(opts: NoneSandboxOptions = {}): SandboxAdapter
           env: runOpts?.env ? { ...process.env, ...runOpts.env } : process.env,
           stdout: "pipe",
           stderr: "pipe",
+          // Own process group, so a timeout/abort can kill the whole tree.
+          // Killing only the direct child (`sh -c 'sleep 5'`) leaves the
+          // grandchild holding the stdout pipe open and the call hangs.
+          detached: USE_PROCESS_GROUPS,
         });
+        if (USE_PROCESS_GROUPS) trackGroup(proc.pid);
+
+        const killTree = (): void => {
+          if (!USE_PROCESS_GROUPS || !killGroup(proc.pid)) proc.kill();
+        };
 
         const timeoutMs = runOpts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         let killed = false;
         const timer = setTimeout(() => {
           killed = true;
-          proc.kill();
+          killTree();
         }, timeoutMs);
 
         const onAbort = (): void => {
           killed = true;
-          proc.kill();
+          killTree();
         };
-        runOpts?.signal?.addEventListener("abort", onAbort, { once: true });
+        if (runOpts?.signal?.aborted) onAbort();
+        else runOpts?.signal?.addEventListener("abort", onAbort, { once: true });
 
         try {
           const [stdout, stderr, exitCode] = await Promise.all([
@@ -152,6 +236,10 @@ export function createNoneSandbox(opts: NoneSandboxOptions = {}): SandboxAdapter
         } finally {
           clearTimeout(timer);
           runOpts?.signal?.removeEventListener("abort", onAbort);
+          // Background jobs the command left behind (`server &`) keep
+          // running after the exec returns, as before; only an exec that is
+          // still running when the host exits or is signalled is killed.
+          if (USE_PROCESS_GROUPS) untrackGroup(proc.pid);
         }
       },
       catch: (err): SandboxError =>

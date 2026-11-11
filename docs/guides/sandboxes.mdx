@@ -140,6 +140,44 @@ Adapter shapes drover doesn't ship; common production picks:
 Advertise `capabilities.shell: true` only when the spawned process genuinely
 cannot escape.
 
+## Writing an adapter: the conformance suite
+
+`@droveragent/sandbox` exports a conformance suite that pins the
+`SandboxAdapter` contract: exit codes, stdout and stderr, per-exec `env`,
+`cwd`, `timeoutMs` and `signal` (an expiry resolves with `killed: true`, it
+does not fail), write-then-read round trips, a missing file surfacing as a
+typed `SandboxError` with `op: "read"`, `resolvePath` purity, `readdir`
+(when provided), and the declared `capabilities.shell` value. It needs no
+network and no credentials: you supply the adapter, backed by whatever local
+fake or real filesystem you have.
+
+```ts
+import { describe, test } from "bun:test";
+import { sandboxConformanceCases } from "@droveragent/sandbox";
+
+describe("my adapter conformance", () => {
+  for (const c of sandboxConformanceCases({ expectShell: true })) {
+    test(c.name, async () => {
+      await c.run({ adapter: createMySandbox(), workdir: "/work" });
+    });
+  }
+});
+```
+
+`workdir` is an absolute, canonical, writable directory inside the sandbox.
+Pass an optional `cleanup` to tear down per-case state. The suite exercises
+`run` through `/bin/sh -c`, so the adapter must be able to run simple shell
+scripts (`echo`, `pwd`, `sleep`, `cat`) even when it advertises
+`shell: false`: the capability only gates the `bash` tool.
+
+Prefer `runSandboxConformance(factory, { expectShell })` when you want a
+plain result list (`{ name, ok, error? }`) instead of registering tests.
+
+Passing the suite proves the adapter honours the `SandboxAdapter` contract, not
+that it isolates anything: isolation is a property of the backend (VM,
+container, virtual filesystem) and is not tested here. The `run` cases need a
+POSIX `/bin/sh` and the `resolvePath` case expects POSIX paths.
+
 ## Path / sandbox boundary checklist
 
 When auditing a new tool:
