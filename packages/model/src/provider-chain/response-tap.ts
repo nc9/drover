@@ -15,6 +15,12 @@
  * Relies on the OpenAI SDK resolving `globalThis.fetch` when its client is created
  * (true for the openai version pi-ai uses). A host that injects its own fetch into
  * the client is not covered; the chain then falls back to the SDK's leading status.
+ *
+ * The tag is only sent while `globalThis.fetch` is still this tap: if anything
+ * replaces the global afterwards (another wrapper, a test double, a second
+ * installed copy of `@droveragent/model` whose own tap now sits on top), this tap
+ * turns itself off for new attempts rather than send a tag nothing will strip.
+ * Classification then falls back to the SDK's leading status.
  */
 import { structuredFromBody, type RawFailure } from "./classify.ts";
 
@@ -50,24 +56,48 @@ const records = new Map<string, AttemptResponse>();
 const live = new Set<string>();
 let installed = false;
 const MAX_HEADER_CHARS = 128;
+/**
+ * A kept header value must be plain: digits, letters and `._:,=/ -`. Anything
+ * else (markup, quotes, control characters, a provider echoing request text) is
+ * dropped, never truncated into something that looks safe.
+ */
+const SAFE_HEADER_VALUE = /^[A-Za-z0-9._:,=/ -]+$/;
+/** The installed wrapper, to check that it is still the global. */
+let tappedFetch: typeof fetch | null = null;
 
 const newTag = (): string => crypto.randomUUID();
 
 async function readBounded(res: { body: ReadableStream<Uint8Array> | null }): Promise<unknown> {
-  const body = res.body;
-  if (!body) return undefined;
+  if (!res.body) return undefined;
+  try {
+    return JSON.parse(await readBoundedText(res.body));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * At most `MAX_BODY_BYTES` of a body, as text, within `BODY_TIMEOUT_MS`; the rest is
+ * cancelled. @internal (exported for tests).
+ */
+export async function readBoundedText(body: ReadableStream<Uint8Array>): Promise<string> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let text = "";
+  // The cap counts BYTES, and a single large chunk is sliced: a provider that sends
+  // a 5 MB body in one chunk costs 16 KB here, not 5 MB.
+  let bytes = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<"timeout">((r) => {
     timer = setTimeout(() => r("timeout"), BODY_TIMEOUT_MS);
   });
   try {
-    while (text.length < MAX_BODY_BYTES) {
+    while (bytes < MAX_BODY_BYTES) {
       const step = await Promise.race([reader.read(), deadline]);
       if (step === "timeout" || step.done) break;
-      text += decoder.decode(step.value, { stream: true });
+      const chunk = step.value.subarray(0, MAX_BODY_BYTES - bytes);
+      bytes += chunk.byteLength;
+      text += decoder.decode(chunk, { stream: true });
     }
   } catch {
     /* a broken body is no body */
@@ -75,11 +105,7 @@ async function readBounded(res: { body: ReadableStream<Uint8Array> | null }): Pr
     clearTimeout(timer);
     void reader.cancel().catch(() => {});
   }
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
+  return text;
 }
 
 /** Patch `globalThis.fetch` once. False when the global cannot be patched (frozen, or a runtime that forbids it): the tap is then off and no tag header is sent. */
@@ -106,7 +132,9 @@ function install(): boolean {
     const kept: Record<string, string> = {};
     for (const name of KEPT_HEADERS) {
       const v = res.headers.get(name);
-      if (v !== null) kept[name] = v.slice(0, MAX_HEADER_CHARS);
+      if (v === null) continue;
+      const value = v.trim().slice(0, MAX_HEADER_CHARS);
+      if (SAFE_HEADER_VALUE.test(value)) kept[name] = value;
     }
     const record: AttemptResponse = { status: res.status, headers: kept };
     // Read a bounded COPY: the SDK still gets the original body.
@@ -123,6 +151,7 @@ function install(): boolean {
     }
     globalThis.fetch = tapped as typeof fetch;
     if (globalThis.fetch !== tapped) return false;
+    tappedFetch = tapped as typeof fetch;
   } catch {
     return false;
   }
@@ -138,7 +167,9 @@ export interface AttemptTap {
 }
 
 export function startAttemptTap(): AttemptTap {
-  if (!install()) return { header: {}, take: () => undefined, dispose: () => {} };
+  // Off when the global cannot be patched, or when it is no longer this tap.
+  if (!install() || globalThis.fetch !== tappedFetch)
+    return { header: {}, take: () => undefined, dispose: () => {} };
   const tag = newTag();
   live.add(tag);
   return {
@@ -178,3 +209,6 @@ export function rawFromResponse(res: AttemptResponse, message: string): RawFailu
   if (wait !== undefined) raw.retryAfterMs = wait;
   return raw;
 }
+
+/** Test seam: whether the next attempt would be tapped (installed and still the global). */
+export const attemptTapActive = (): boolean => installed && globalThis.fetch === tappedFetch;
