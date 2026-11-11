@@ -14,9 +14,10 @@
  * to call a tool instead of writing the summary.
  */
 import { COMPACTION_SUMMARY_MARKER } from "@droveragent/core";
-import { providerError } from "../provider-failure.ts";
 import { completeSimple } from "@mariozechner/pi-ai";
 import type { KnownApi, Message, Model, SimpleStreamOptions } from "@mariozechner/pi-ai";
+
+import { providerError } from "../provider-failure.ts";
 
 /** Produce summary text for the head messages. Injected into the orchestrator. */
 export type SummarizeFn = (
@@ -101,7 +102,11 @@ export function makeSummarizer(
     // provider's text can quote the transcript being summarised.
     const failed = providerError(reply, false);
     if (failed) throw new Error(`summary call failed: ${failed.message}`);
-    return blockText(reply.content);
+    // An empty reply ("length" with the budget spent on thinking, or an empty
+    // "stop") would also commit "(no summary available)" and lose the head.
+    const text = blockText(reply.content);
+    if (text.trim() === "") throw new Error("summary call returned no text");
+    return text;
   };
 }
 

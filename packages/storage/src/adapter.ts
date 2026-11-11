@@ -13,7 +13,8 @@ export interface RunRow {
   input: unknown;
   /** JSON-encoded TypeBox-validated output. Undefined until success. */
   output?: unknown;
-  error?: { tag: string; message: string };
+  /** `status`: HTTP status of a `ProviderError`, when the provider reported one. */
+  error?: { tag: string; message: string; status?: number };
   startedAt: number;
   endedAt?: number;
   tokensIn: number;
@@ -95,14 +96,10 @@ export interface StorageAdapter {
   appendEvent(event: EventRow): Effect.Effect<void, StorageError, never>;
   saveCheckpoint(checkpoint: CheckpointRow): Effect.Effect<void, StorageError, never>;
   loadRun(id: string): Effect.Effect<RunRow | null, StorageError, never>;
-  loadLatestCheckpoint(
-    runId: string,
-  ): Effect.Effect<CheckpointRow | null, StorageError, never>;
+  loadLatestCheckpoint(runId: string): Effect.Effect<CheckpointRow | null, StorageError, never>;
   listEvents(runId: string): Effect.Effect<ReadonlyArray<EventRow>, StorageError, never>;
   listRuns(filter?: RunListFilter): Effect.Effect<ReadonlyArray<RunRow>, StorageError, never>;
-  createPendingConfirmation(
-    row: PendingConfirmationRow,
-  ): Effect.Effect<void, StorageError, never>;
+  createPendingConfirmation(row: PendingConfirmationRow): Effect.Effect<void, StorageError, never>;
   resolvePendingConfirmation(
     runId: string,
     toolUseId: string,

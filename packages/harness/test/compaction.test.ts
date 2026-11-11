@@ -465,6 +465,61 @@ describe("maybeCompact", () => {
     }
   });
 
+  test("an empty summary reply (length, thinking only) keeps the history: CompactionError", async () => {
+    const sse = (delta: unknown, finish: string | null): string =>
+      `data: ${JSON.stringify({
+        id: "1",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "sum/model",
+        choices: [{ index: 0, delta, finish_reason: finish }],
+      })}\n\n`;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(
+          sse({ role: "assistant", reasoning_content: "thinking until the cap" }, null) +
+            sse({}, "length") +
+            "data: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    });
+    try {
+      const model = {
+        id: "sum/model",
+        name: "sum",
+        api: "openai-completions",
+        provider: "openrouter",
+        baseUrl: `http://127.0.0.1:${server.port}/v1`,
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 8_192,
+      } as unknown as Parameters<typeof makeSummarizer>[0];
+      const { events, emit } = collector();
+      const msgs = convo();
+      const out = await maybeCompact({
+        messages: msgs,
+        policy: { strategy: ["summarize"], preserve: PRESERVE, summaryPrompt: "go" },
+        contextWindow: 1000,
+        currentTurn: 1,
+        state: initCompactionState(),
+        runId: "r",
+        emit,
+        manual: {},
+        summarize: makeSummarizer(model, "sk-fake"),
+      });
+      expect(out).toBe(msgs);
+      expect(compactionEvents(events).length).toBe(0);
+      const errs = events.filter((e) => e.kind === "error");
+      expect(errs).toHaveLength(1);
+      expect((errs[0] as { message: string }).message).toContain("summary call returned no text");
+    } finally {
+      server.stop(true);
+    }
+  });
+
   test("never throws: a summariser failure returns original + emits CompactionError", async () => {
     const { events, emit } = collector();
     const policy: CompactionPolicy = {

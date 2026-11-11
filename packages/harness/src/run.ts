@@ -1109,10 +1109,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           // The closing turn is a model call too: a provider error there (402
           // mid post-processing) fails the run. Only `stopReason: "error"`:
           // an empty closing reply is not a failure, the output is captured.
-          const postMsg = lastAssistantMsg.value;
+          const closingMsg = lastAssistantMsg.value;
           const postError =
-            postMsg?.stopReason === "error"
-              ? providerError(postMsg, includeProviderErrorText)
+            closingMsg?.stopReason === "error"
+              ? providerError(closingMsg, includeProviderErrorText)
               : null;
           if (postError) {
             status = "error";

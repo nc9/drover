@@ -2,12 +2,7 @@ import { StorageError } from "@droveragent/core";
 import { Effect } from "effect";
 import { createClient, type Client, type Config } from "@libsql/client";
 
-import type {
-  CheckpointRow,
-  EventRow,
-  RunRow,
-  StorageAdapter,
-} from "./adapter.ts";
+import type { CheckpointRow, EventRow, RunRow, StorageAdapter } from "./adapter.ts";
 import { MIGRATIONS } from "./migrations.ts";
 
 export interface LibsqlStorageOptions {
@@ -275,7 +270,7 @@ function rowToRun(row: Record<string, unknown>): RunRow {
   if (row.error != null) {
     const parsed = parseJson(row.error);
     if (parsed && typeof parsed === "object") {
-      out.error = parsed as { tag: string; message: string };
+      out.error = parsed as { tag: string; message: string; status?: number };
     }
   }
   if (row.ended_at != null) out.endedAt = toNumber(row.ended_at);
@@ -326,4 +321,3 @@ function toNumber(v: unknown): number {
   if (typeof v === "string") return Number(v);
   return 0;
 }
-
