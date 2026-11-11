@@ -83,29 +83,41 @@ resumable agents).
 
 A hard budget (`maxTurns`, `maxTokens`, `maxCostUsd`, `maxDurationMs`) ends the run with
 `status: "quota"` and no answer. `maxTokens` counts every token the provider reports
-(input, output, cache read, cache write). Add `quota.wrapUp` to let the model finish cleanly
-first:
+(input, output, cache read, cache write), summed over calls. Input is per call and each call
+resends the conversation so far, so input tokens grow with every turn: a 10-turn run whose
+history reaches 8 000 tokens spends far more than 8 000 input tokens. Add `quota.wrapUp` to let
+the model finish cleanly first:
 
 ```ts
 quota: { maxTurns: 12, maxTokens: 200_000, maxCostUsd: 0.5, wrapUp: { at: 0.8 } }
 ```
 
-Once any budget is `at` spent (default 0.8; for turns, at most the last allowed turn), every
-following model call carries a closing user message: the budget is nearly spent, do not call
-more tools, answer with what you have. A `budget_warning` event (`dimension`, `limit`, `used`)
+Once any budget is `at` spent (default 0.8), every following model call carries a closing user
+message: the budget is nearly spent, do not call more tools, answer with what you have. For
+turns the threshold is `ceil(at × maxTurns)` completed turns, but never later than `maxTurns - 1`,
+so the notice arrives at the last allowed turn at the latest; with `maxTurns: 1` that is turn 0,
+so the first (and only) call already carries it. A `budget_warning` event (`dimension`, `limit`, `used`)
 is emitted once. `wrapUp.message` replaces the default text.
 
-- **Outcome.** `RunResult.wrapUp` (`dimension`, `limit`, `used`, `outcome`) is set whenever
-  the warning fired: `outcome: "wrapped_up"` when the run then ended without hitting a hard
-  limit, `"cut_off"` when it ended `status: "quota"` anyway.
+- **Outcome.** `RunResult.wrapUp` (`dimension`, `limit`, `used`, `outcome?`, `overshoot?`) is
+  set whenever the warning fired: `outcome: "wrapped_up"` for `status: "success"`,
+  `"cut_off"` for `status: "quota"`, and no `outcome` for a paused, cancelled or errored run.
 - **Bounded.** The wrap-up turns run inside the same hard limits: a model that ignores the
-  notice, or a final call that overshoots the cost or token budget, is cut off as before. Set
-  `at` low enough that one more call fits in the remainder.
+  notice, or keeps calling tools, is cut off as before (`cut_off`). Set `at` low enough that
+  one more call fits in the remainder.
+- **The answer wins over its own overshoot.** If the final answer's own call crosses
+  `maxTokens` or `maxCostUsd` (the call that ends the run, with no tool call) and the answer
+  passes the output contract, the run is `success` with `outcome: "wrapped_up"` and
+  `wrapUp.overshoot` (`dimension`, `limit`, `observed`) records the excess. This is the turn
+  budget's rule: a budget, not a tripwire on a turn that produced a valid answer. The
+  `postSuccess` lifecycle is skipped in that case (the budget is spent). An answer that fails
+  the output schema, or a breaching call that asked for tools, still ends `quota`.
 - **Output schema.** The wrap-up answer is decoded and validated like any other; output
   retries still apply and still count against the budgets.
 - **Operator text.** The notice is the spec's `wrapUp.message` or the built-in default, never
   built from tool output. It is harness text added as a user turn and is not fenced as
   untrusted data (the untrusted-data fence is separate work).
+- **Post-processing.** The notice is not added to the `postSuccess` lifecycle's calls.
 - **History.** The notice is appended per call, never written to the history or the
   checkpoint, so a resumed run recomputes it (against the run's cumulative turns, tokens and
   cost; wall clock is measured per invocation) and may warn again.

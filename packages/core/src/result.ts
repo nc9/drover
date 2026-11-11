@@ -27,14 +27,21 @@ export interface RunResult<TOutput = unknown> {
   usageByProvider?: Record<string, Usage>;
   /**
    * Present when `quota.wrapUp` fired: which budget crossed its threshold, and
-   * whether the run then finished in time (`wrapped_up`, any non-`quota`
-   * status) or hit a hard limit anyway (`cut_off`, `status: "quota"`).
+   * how the run ended. `outcome` is `wrapped_up` for `status: "success"` and
+   * `cut_off` for `status: "quota"`; it is absent for a paused, cancelled or
+   * errored run. `overshoot` is set when the final, validated answer's own call
+   * crossed a cost or token budget: the answer wins and the run is `success`.
    */
   wrapUp?: {
     dimension: "turns" | "duration" | "cost" | "tokens";
     limit: number;
     used: number;
-    outcome: "wrapped_up" | "cut_off";
+    outcome?: "wrapped_up" | "cut_off";
+    overshoot?: {
+      dimension: "cost" | "tokens" | "turns" | "duration";
+      limit: number;
+      observed: number;
+    };
   };
   /** Tool ids invoked during the run, in order. Duplicates preserved. */
   toolCalls: ReadonlyArray<string>;

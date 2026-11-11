@@ -24,8 +24,9 @@ const fakeModel = {
   maxTokens: 8_192,
 } as unknown as PreResolvedModel["model"];
 
-const mkSpec = (quota: RunQuota, strict = false) =>
+const mkSpec = (quota: RunQuota, strict = false, postSuccess = false) =>
   defineAgent({
+    ...(postSuccess ? { lifecycle: { postSuccess: [{ kind: "prompt", text: "POST-STEP" }] } } : {}),
     id: "wrap-up-probe",
     systemPrompt: "probe",
     inputSchema: Type.Object({ q: Type.String() }),
@@ -41,19 +42,24 @@ interface ModelOpts {
   ignore?: boolean;
   /** The final answer text (default "final answer"). */
   answer?: string;
-  /** Called on every model call (e.g. to advance a fake clock). */
-  onCall?: () => void;
+  /** Called on every model call (e.g. to advance a fake clock); gets whether the notice is present. */
+  onCall?: (noticed: boolean) => void;
+  /** Usage of the answering call (default 1 in / 1 out, `costPerCall`). */
+  answerUsage?: { input: number; output: number; cost?: number };
 }
 
 function greedyModel(costPerCall = 0, opts: ModelOpts = {}) {
   const seen: string[][] = [];
   const streamFn: StreamFn = (_m, context, options) => {
-    opts.onCall?.();
     const texts = context.messages.map((m) =>
       typeof m.content === "string" ? m.content : JSON.stringify(m.content),
     );
     seen.push(texts);
-    const warned = !opts.ignore && texts.some((t) => t.includes("Budget notice"));
+    const noticed = texts.some((t) => t.includes("Budget notice"));
+    opts.onCall?.(noticed);
+    // A postSuccess step ("POST-STEP") is answered directly, notice or not.
+    const post = texts.some((t) => t.includes("POST-STEP"));
+    const warned = post || (!opts.ignore && noticed);
     const base: AssistantMessage = {
       role: "assistant",
       content: [],
@@ -71,8 +77,21 @@ function greedyModel(costPerCall = 0, opts: ModelOpts = {}) {
       stopReason: warned ? "stop" : "toolUse",
       timestamp: Date.now(),
     };
+    const answerUsage = opts.answerUsage
+      ? {
+          ...base.usage,
+          input: opts.answerUsage.input,
+          output: opts.answerUsage.output,
+          totalTokens: opts.answerUsage.input + opts.answerUsage.output,
+          cost: { ...base.usage.cost, total: opts.answerUsage.cost ?? costPerCall },
+        }
+      : base.usage;
     const final: AssistantMessage = warned
-      ? { ...base, content: [{ type: "text", text: opts.answer ?? "final answer" }] }
+      ? {
+          ...base,
+          usage: post ? base.usage : answerUsage,
+          content: [{ type: "text", text: post ? "post done" : (opts.answer ?? "final answer") }],
+        }
       : {
           ...base,
           content: [
@@ -107,9 +126,27 @@ const ctx = (): RunContext => ({
 async function run(
   quota: RunQuota,
   costPerCall = 0,
-  opts: ModelOpts & { strict?: boolean; now?: () => number } = {},
+  opts: ModelOpts & {
+    strict?: boolean;
+    now?: () => number;
+    postSuccess?: boolean;
+    /** Pause the run (as `handle.pause()` does) on the first call that carries the notice. */
+    pauseOnNotice?: boolean;
+  } = {},
 ) {
-  const { streamFn, seen } = greedyModel(costPerCall, opts);
+  const controller = new AbortController();
+  const pauseFlag = { requested: false };
+  const onCall = opts.onCall;
+  const { streamFn, seen } = greedyModel(costPerCall, {
+    ...opts,
+    onCall: (noticed) => {
+      onCall?.(noticed);
+      if (opts.pauseOnNotice && noticed && !pauseFlag.requested) {
+        pauseFlag.requested = true;
+        controller.abort();
+      }
+    },
+  });
   const deps: HarnessDeps = {
     sandbox: createNoneSandbox(),
     preResolvedModels: new Map([[MODEL_NAME, { model: fakeModel, apiKey: "k" }]]),
@@ -119,9 +156,10 @@ async function run(
   const events: HarnessEvent[] = [];
   const result = await Effect.runPromise(
     runAgentEffect({
-      spec: mkSpec(quota, opts.strict === true),
+      spec: mkSpec(quota, opts.strict === true, opts.postSuccess === true),
       input: { q: "x" },
-      ctx: ctx(),
+      ctx: { ...ctx(), signal: controller.signal },
+      pauseFlag,
       emit: (e) => events.push(e),
       deps,
     }),
@@ -198,7 +236,12 @@ describe("quota.wrapUp", () => {
     const { result, events, seen } = await run(
       { maxDurationMs: 3_600_000, wrapUp: { at: 0.25 } },
       0,
-      { now: () => t, onCall: () => (t += 300_000) },
+      {
+        now: () => t,
+        onCall: () => {
+          t += 300_000;
+        },
+      },
     );
     expect(result.status).toBe("success");
     expect(events.find((e) => e.kind === "budget_warning")).toMatchObject({
@@ -234,5 +277,58 @@ describe("quota.wrapUp", () => {
     const notices = seen.flat().filter((t) => t.startsWith("Budget notice"));
     expect(notices.length).toBeGreaterThan(0);
     expect(new Set(notices)).toEqual(new Set([message]));
+  });
+
+  test("postSuccess after a wrap-up gets no notice (the base transform only)", async () => {
+    const { result, seen } = await run({ maxTurns: 4, wrapUp: {} }, 0, { postSuccess: true });
+    expect(result.status).toBe("success");
+    expect(result.finalText).toBe("final answer");
+    expect(result.wrapUp?.outcome).toBe("wrapped_up");
+    const postCalls = seen.filter((t) => t.some((m) => m.includes("POST-STEP")));
+    expect(postCalls.length).toBeGreaterThan(0);
+    for (const call of postCalls) expect(call.some((m) => m.includes("Budget notice"))).toBe(false);
+  });
+
+  test("a pause after the warning: status paused, wrapUp reported without an outcome", async () => {
+    const { result, events } = await run({ maxTurns: 6, wrapUp: {} }, 0, { pauseOnNotice: true });
+    expect(events.some((e) => e.kind === "budget_warning")).toBe(true);
+    expect(result.status).toBe("paused");
+    expect(result.wrapUp).toBeDefined();
+    expect(result.wrapUp?.dimension).toBe("turns");
+    expect(result.wrapUp && "outcome" in result.wrapUp).toBe(false);
+  });
+
+  test("a validated final answer wins over the token breach of its own call (overshoot recorded)", async () => {
+    // Calls report 2 tokens each; the notice comes at 6 of 10; the answer itself costs 20.
+    const { result } = await run({ maxTokens: 10, wrapUp: { at: 0.5 } }, 0, {
+      answerUsage: { input: 10, output: 10 },
+    });
+    expect(result.status).toBe("success");
+    expect(result.finalText).toBe("final answer");
+    expect(result.error).toBeUndefined();
+    expect(result.wrapUp).toEqual({
+      dimension: "tokens",
+      limit: 10,
+      used: 6,
+      outcome: "wrapped_up",
+      overshoot: { dimension: "tokens", limit: 10, observed: 26 },
+    });
+  });
+
+  test("the same for cost; an answer that fails the output schema still ends quota", async () => {
+    const cost = await run({ maxCostUsd: 1, wrapUp: { at: 0.5 } }, 0.3, {
+      answerUsage: { input: 1, output: 1, cost: 0.6 },
+    });
+    expect(cost.result.status).toBe("success");
+    expect(cost.result.wrapUp?.overshoot).toMatchObject({ dimension: "cost", limit: 1 });
+
+    const invalid = await run({ maxTokens: 10, wrapUp: { at: 0.5 } }, 0, {
+      strict: true,
+      answer: "not json",
+      answerUsage: { input: 10, output: 10 },
+    });
+    expect(invalid.result.status).toBe("quota");
+    expect(invalid.result.wrapUp?.outcome).toBe("cut_off");
+    expect(invalid.result.wrapUp?.overshoot).toBeUndefined();
   });
 });

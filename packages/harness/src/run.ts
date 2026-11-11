@@ -581,6 +581,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // post-loop section to resolve the terminal status. Boxed so a closure
     // write survives TS control-flow narrowing at the post-loop read site.
     const quotaBreach: { value: QuotaBreach | null } = { value: null };
+    // The assistant message whose usage tripped a cost/token budget (see the
+    // "validated answer wins" rule in the post-loop section).
+    const breachMessage: { value: unknown } = { value: null };
 
     // Snapshot of pi's message list, updated each LLM call via transformContext.
     // Used to checkpoint state for resume. Seeded from the checkpoint on resume.
@@ -677,9 +680,11 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           // running total is updated. Aborts mid-turn if a tool batch is
           // still pending.
           if (quota.maxCostUsd !== undefined && (next.costUsd ?? 0) >= quota.maxCostUsd) {
+            if (!quotaBreach.value) breachMessage.value = e.message;
             tripQuota({ dimension: "cost", limit: quota.maxCostUsd, observed: next.costUsd ?? 0 });
           }
           if (quota.maxTokens !== undefined && totalTokens(next) >= quota.maxTokens) {
+            if (!quotaBreach.value) breachMessage.value = e.message;
             tripQuota({ dimension: "tokens", limit: quota.maxTokens, observed: totalTokens(next) });
           }
         }
@@ -1080,6 +1085,17 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     let errorOut: { tag: string; message: string; status?: number } | undefined;
 
     const finalText = lastAssistant.text;
+    // A cost/token breach forgiven because the final answer validated (see below).
+    let overshoot: QuotaBreach | null = null;
+    /** The last assistant message is a final answer (no tool call) that passes the output contract. */
+    const finalAnswerValidates = (): boolean => {
+      const content = (
+        lastAssistantMsg.value as { content?: ReadonlyArray<{ type?: string }> } | null
+      )?.content;
+      if (!Array.isArray(content) || content.some((b) => b.type === "toolCall")) return false;
+      if (!finalText || finalText.trim().length === 0) return false;
+      return isOpenSchema(spec.outputSchema) || tryDecode(spec.outputSchema, finalText).ok;
+    };
     const finalFailure = providerFailure(
       lastAssistantMsg.value,
       includeProviderErrorText,
@@ -1096,14 +1112,33 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       // if the breaching turn happened to produce valid output (a blown
       // budget must not be reported as success). Then loop errors, then the
       // output check.
+      //
+      // One exception, under `quota.wrapUp`: when the cost/token breach was
+      // caused by the run's FINAL answer (the call that ended the loop: no
+      // tool call) and that answer validates, the answer wins, as with the
+      // turn budget ("a budget, not a tripwire"). The run is `success`, the
+      // overshoot is recorded on `RunResult.wrapUp.overshoot`, and the
+      // `postSuccess` lifecycle is skipped (the budget is spent). An ongoing
+      // run (the breaching call asked for tools) or an unvalidated answer
+      // still ends `quota`.
       const breach = quotaBreach.value;
-      if (breach) {
+      if (
+        breach &&
+        wrapUpFired.value &&
+        (breach.dimension === "cost" || breach.dimension === "tokens") &&
+        breachMessage.value !== null &&
+        breachMessage.value === lastAssistantMsg.value &&
+        finalAnswerValidates()
+      ) {
+        overshoot = breach;
+      }
+      if (breach && !overshoot) {
         status = "quota";
         errorOut = {
           tag: "QuotaExceededError",
           message: `${breach.dimension} budget exceeded (limit ${breach.limit}, observed ${breach.observed})`,
         };
-      } else if (loopError) {
+      } else if (loopError && !overshoot) {
         status = "error";
         errorOut = { tag: "LoopError", message: (loopError as Error).message };
       } else if (finalFailure) {
@@ -1138,6 +1173,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // are post-processing (lint, commit, …).
     if (
       status === "success" &&
+      !overshoot &&
       spec.lifecycle?.postSuccess &&
       spec.lifecycle.postSuccess.length > 0 &&
       finalMessages.length > 0
@@ -1181,8 +1217,13 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         // continuation so a plain post-processing reply — a lint/commit
         // summary — can't fail the original schema and trigger correction
         // prompts inside the post-processing phase.
+        // Also drop the wrap-up notice: post-processing is not the answer, and
+        // the notice must neither fire in it nor leak into it. Compaction and
+        // checkpointing (the base transform) still apply.
+        const { transformContext: _wrapped, ...loopWithoutWrapUp } = loopConfig;
         const postLoopConfig: AgentLoopConfig = {
-          ...loopConfig,
+          ...loopWithoutWrapUp,
+          ...(transformContext ? { transformContext } : {}),
           getFollowUpMessages: async (): Promise<UserMessage[]> => [],
         };
         yield* Effect.promise(async (): Promise<void> => {
@@ -1295,11 +1336,26 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     if (errorOut) result.error = errorOut;
     if (Object.keys(usageByProvider).length > 0)
       result.usageByProvider = Object.fromEntries(Object.entries(usageByProvider));
-    if (wrapUpFired.value)
+    if (wrapUpFired.value) {
+      // `outcome` only for the two endings it describes; a paused, cancelled
+      // or errored run carries the warning without one.
+      const outcome =
+        status === "success" ? "wrapped_up" : status === "quota" ? "cut_off" : undefined;
       result.wrapUp = {
         ...wrapUpFired.value,
-        outcome: status === "quota" ? "cut_off" : "wrapped_up",
+        ...(outcome ? { outcome } : {}),
+        // An overshoot is only "forgiven" on a success; on any other ending it means nothing.
+        ...(overshoot && status === "success"
+          ? {
+              overshoot: {
+                dimension: overshoot.dimension,
+                limit: overshoot.limit,
+                observed: overshoot.observed,
+              },
+            }
+          : {}),
       };
+    }
 
     // Run-level lifecycle: fire `onRunEnd` once, after the loop +
     // `postSuccess` and terminal resolution. Observation only — failures and
