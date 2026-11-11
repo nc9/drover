@@ -33,22 +33,22 @@ Pre-alpha. Public surface stabilising; do not depend on it yet.
 
 ## Packages
 
-| Package | Purpose |
-|---|---|
-| `drover/core` | `AgentSpec`, `HarnessEvent`, `RunContext`, tagged errors |
-| `drover/harness` | `pi-agent-core` integration, run loop, compaction |
-| `drover/facade` | `Promise` + `AsyncIterable` wrapper around the Effect surface |
-| `drover/plugins` | Built-in `HarnessPlugin` bundles (loop-detect, confirm-gate, step-tracer, …) |
-| `drover/tools` | Built-in `ToolDef` library (bash, read, write, edit, grep, …) |
-| `drover/skills` | `SKILL.md` loader + `skill_load` tool |
-| `drover/commands` | Markdown command loader + registry — host-pushed prompt macros |
-| `drover/mcp` | MCP runtime, per-agent allowlist, transport adapters |
-| `drover/model` | pi-ai wrapper, alias resolver, routing interface, circuit breaker |
-| `drover/sandbox` | `SandboxAdapter` interface; in-process `none` impl |
-| `drover/sandbox-just-bash` | just-bash virtual sandbox (default) — isolated, docker-style mounts |
-| `drover/storage` | `StorageAdapter` interface; default libsql impl |
-| `drover/runtime` | (opt-in) worker pool, lease queue, run API, crash recovery |
-| `drover/eval` | `ScenarioRunner`, `Scorer`, `Reporter` |
+| Package                    | Purpose                                                                      |
+| -------------------------- | ---------------------------------------------------------------------------- |
+| `drover/core`              | `AgentSpec`, `HarnessEvent`, `RunContext`, tagged errors                     |
+| `drover/harness`           | `pi-agent-core` integration, run loop, compaction                            |
+| `drover/facade`            | `Promise` + `AsyncIterable` wrapper around the Effect surface                |
+| `drover/plugins`           | Built-in `HarnessPlugin` bundles (loop-detect, confirm-gate, step-tracer, …) |
+| `drover/tools`             | Built-in `ToolDef` library (bash, read, write, edit, grep, …)                |
+| `drover/skills`            | `SKILL.md` loader + `skill_load` tool                                        |
+| `drover/commands`          | Markdown command loader + registry — host-pushed prompt macros               |
+| `drover/mcp`               | MCP runtime, per-agent allowlist, transport adapters                         |
+| `drover/model`             | pi-ai wrapper, alias resolver, routing interface, circuit breaker            |
+| `drover/sandbox`           | `SandboxAdapter` interface; in-process `none` impl                           |
+| `drover/sandbox-just-bash` | just-bash virtual sandbox (default) — isolated, docker-style mounts          |
+| `drover/storage`           | `StorageAdapter` interface; default libsql impl                              |
+| `drover/runtime`           | (opt-in) worker pool, lease queue, run API, crash recovery                   |
+| `drover/eval`              | `ScenarioRunner`, `Scorer`, `Reporter`                                       |
 
 ## v0 surface
 
@@ -64,3 +64,23 @@ Out of scope for v0: heavier OS-level sandbox adapters (SBPL / docker /
 daytona — projects keep their own), OTel/Langfuse exporters (clean
 plugin slot), HTTP wrapper around RunApi, distributed multi-machine
 runtime.
+
+## Development
+
+CI (`.github/workflows/ci.yml`) runs `scripts/ci.ts`, one gate per step. Run the
+same gates locally, in this order (build before typecheck and test: packages
+resolve each other through `dist/`):
+
+```sh
+bun install --frozen-lockfile
+bun scripts/ci.ts lint        # oxlint packages scripts
+bun scripts/ci.ts format      # oxfmt --check on files changed since origin/main (committed)
+bun scripts/ci.ts build       # tsc build of every package, dependency order
+bun scripts/ci.ts typecheck   # tsgo --noEmit per workspace, sequential
+bun scripts/ci.ts pack        # pack each package, fail on stale bun.lock workspace versions
+bun scripts/ci.ts test        # bun test per package (--only a,b / --skip a,b)
+bun scripts/ci.ts all         # every gate above
+```
+
+The package build order lives in `scripts/workspace.ts`; a new package must be
+added there (CI fails until it is).
