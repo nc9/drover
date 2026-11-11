@@ -91,3 +91,4 @@ export {
   type ProviderChain,
   type ProviderChainOptions,
 } from "@droveragent/model";
+export { createDisabledSandbox, type CoreSandbox } from "./core.ts";

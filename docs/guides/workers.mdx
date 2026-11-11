@@ -83,7 +83,9 @@ export default {
 ```
 
 Storage: `createD1Storage` (`@droveragent/storage-d1`) or `createMemoryStorage()` from
-`@droveragent/storage`. The default libsql adapter needs a native module and is not for Workers.
+`@droveragent/storage/memory` (import the subpath: the package root also exports the libsql
+adapter, which pulls in `@libsql/client`). The default libsql adapter needs a native module and
+is not for Workers.
 
 ## Memory, skills, commands and instruction files
 
