@@ -1,0 +1,70 @@
+---
+title: Trace format v1
+description: The versioned shape of a run trace, for viewers and for comparing runs across harness versions.
+---
+
+A **trace** is a header plus the run's `HarnessEvent`s in order. Stored in a
+`StorageAdapter` the events are rows (`appendEvent` / `listEvents`); exported, a trace is
+JSON Lines.
+
+```
+{"kind":"trace_header","traceVersion":1,"runId":"run_1","agentId":"triage","specHash":"a1b2","harnessVersion":"0.2.0","startedAt":1700000000000}
+{"kind":"run_start","runId":"run_1","ts":1700000000001,"agentId":"triage","specHash":"a1b2"}
+{"kind":"turn_start","runId":"run_1","ts":1700000000002,"turn":1}
+...
+{"kind":"run_end","runId":"run_1","ts":1700000009000,"status":"success"}
+```
+
+```ts
+import { traceToJsonl, parseTraceJsonl, readEvent, summarizeTrace, TRACE_VERSION } from "@droveragent/core";
+
+const rows = await Effect.runPromise(storage.listEvents(runId));
+const events = rows.map((r) => readEvent(r.payload));          // typed, or { unknown: true, ... }
+const text = traceToJsonl({ header: { traceVersion: TRACE_VERSION, runId }, events });
+const trace = parseTraceJsonl(text);                           // tolerant; trace.warnings says what it skipped
+const summary = summarizeTrace(trace.events);                  // numbers to list and to diff between versions
+```
+
+## Stability rules
+
+- Adding an event kind or a field does **not** change `traceVersion`. A reader MUST ignore
+  unknown fields and MUST tolerate unknown kinds: `readEvent` returns them as
+  `{ unknown: true, kind, reason: "unknown_kind", raw }`, and storage never drops them.
+- Removing or renaming a kind or field, or changing a field's type or meaning, bumps `traceVersion`.
+- A trace written by a newer version is still read; the reader adds a warning.
+- `REQUIRED_FIELDS` is exhaustive over `HarnessEvent["kind"]` at compile time, so a new kind cannot be
+  added without declaring what makes it well-formed. A known kind missing a required field is
+  returned as `{ unknown: true, reason: "malformed: <field>" }`, not dropped.
+
+## Events
+
+Every event has `kind`, `runId` (string), `ts` (epoch ms). Required fields beyond those:
+
+| Kind | Required fields | Notes |
+|---|---|---|
+| `run_start` | `agentId`, `specHash` | |
+| `input_validated` | | |
+| `prompt_rendered` | `cacheablePrefixChars`, `totalChars`, `reordered`, `warnings` | |
+| `turn_start` | `turn` | |
+| `llm_call` | `turn`, `modelName` | `reasoning` optional |
+| `assistant_text`, `thinking` | `turn`, `text` | durable record of a message |
+| `assistant_delta`, `thinking_delta` | `turn`, `text` | ephemeral, opt-in (`emitDeltas`), not persisted |
+| `tool_call_start` | `turn`, `toolUseId`, `toolName` | `input` |
+| `tool_call_end` | `turn`, `toolUseId`, `toolName`, `result`, `durationMs` | `result.isError` marks a tool error; timing is `durationMs` |
+| `usage` | `turn`, `usage` | per model call: tokens, `costUsd`; `provider` and `model` when the message names them |
+| `compaction` | `turn`, `trigger`, `strategy`, `beforeTokens`, `afterTokens`, `collapsedRange`, `summarized` | |
+| `subagent_start` / `subagent_end` | `childRunId`, `agentId` / `status` | child events are in the child's own trace |
+| `output_validated`, `output_retry` | `attempt`, `reason` (retry) | |
+| `memory_written`, `memory_recalled` | `entry` / `scopes`, `hits` | |
+| `error` | `tag`, `message` | |
+| `run_end` | `status` | `success`, `quota`, `cancelled`, `error`, `paused`: the final status |
+
+Kinds added by other changes (provider failover, budget warnings) appear as unknown kinds in this reader until
+they are added to the table; `summarizeTrace` counts them in `unknownKinds`, so nothing is lost and a viewer can
+still show that they happened.
+
+## Comparing runs across harness versions
+
+`summarizeTrace(events)` returns status, turns, tool calls (count, errors, total ms, by tool), tokens and cost
+(total and by serving provider), compactions, subagents, errors, and the count of events it could not type. Write
+`harnessVersion` in the header and diff two summaries to see what a harness change did to the same scenario.

@@ -11,11 +11,7 @@
     "groups": [
       {
         "group": "Get Started",
-        "pages": [
-          "introduction",
-          "guides/quickstart",
-          "guides/concepts"
-        ]
+        "pages": ["introduction", "guides/quickstart", "guides/concepts"]
       },
       {
         "group": "How-to",
@@ -73,6 +69,7 @@
         "group": "API Reference",
         "pages": [
           "reference/core",
+          "reference/trace-format",
           "reference/facade",
           "reference/harness",
           "reference/model",
@@ -90,9 +87,7 @@
     ]
   },
   "navbar": {
-    "links": [
-      { "label": "GitHub", "href": "https://github.com/nc9/drover" }
-    ]
+    "links": [{ "label": "GitHub", "href": "https://github.com/nc9/drover" }]
   },
   "footer": {
     "socials": {
