@@ -132,6 +132,9 @@
         "@sinclair/typebox": "^0.34.0",
         "effect": "^3.10.0",
       },
+      "devDependencies": {
+        "@droveragent/plugins": "workspace:*",
+      },
     },
     "packages/mcp": {
       "name": "@droveragent/mcp",

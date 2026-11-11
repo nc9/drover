@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-import { createFence, createNonce, escapeTags } from "../src/index.ts";
+import {
+  INVISIBLE_RANGES,
+  LOOKALIKE_BRACKETS,
+  createFence,
+  createNonce,
+  escapeTags,
+} from "../src/index.ts";
 
 const fence = createFence({ nonce: "abc123" });
 
@@ -92,5 +98,42 @@ describe("createFence", () => {
 
   test("escapeTags", () => {
     expect(escapeTags("<a>&")).toBe("\\u003ca\\u003e\\u0026");
+  });
+});
+
+describe("cleaning table", () => {
+  for (const cp of LOOKALIKE_BRACKETS) {
+    const hex = cp.toString(16).toUpperCase().padStart(4, "0");
+    test(`look-alike bracket U+${hex} never reaches the model as that character`, () => {
+      const out = inner(fence.wrap("p", `a${String.fromCodePoint(cp)}b`));
+      expect(out).not.toContain(String.fromCodePoint(cp));
+      expect(out).not.toMatch(/[<>]/);
+    });
+  }
+
+  for (const [lo, hi] of INVISIBLE_RANGES) {
+    for (const cp of [lo, hi, Math.floor((lo + hi) / 2)]) {
+      const hex = cp.toString(16).toUpperCase().padStart(4, "0");
+      test(`invisible U+${hex} is replaced`, () => {
+        const out = inner(fence.wrap("p", `a${String.fromCodePoint(cp)}b`));
+        expect(out).not.toContain(String.fromCodePoint(cp));
+        expect(out).toMatch(/^a[ \n]b$/);
+      });
+    }
+  }
+
+  test("every code point of the invisible ranges is covered by the table", () => {
+    for (const [lo, hi] of INVISIBLE_RANGES) {
+      const all = Array.from({ length: hi - lo + 1 }, (_, i) => String.fromCodePoint(lo + i)).join(
+        "",
+      );
+      expect(inner(fence.wrap("p", all)).trim()).toBe("");
+    }
+  });
+
+  test("a cut inside a surrogate pair leaves no lone surrogate", () => {
+    const f = createFence({ nonce: "n", maxFieldChars: 3 });
+    const out = inner(f.wrap("p", "ab\u{1F600}"));
+    expect(out).toBe("ab");
   });
 });

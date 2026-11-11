@@ -85,6 +85,7 @@ export async function createMarkdownMemory(opts: MarkdownMemoryOptions): Promise
     if (entry.runId) frontmatter.runId = entry.runId;
     if (entry.tags && entry.tags.length > 0) frontmatter.tags = [...entry.tags];
     if (entry.updatedAt) frontmatter.updatedAt = entry.updatedAt;
+    if (entry.trusted === true) frontmatter.trusted = true;
     const yaml = stringifyYaml(frontmatter).trimEnd();
     const content = `---\n${yaml}\n---\n\n${entry.body.trim()}\n`;
     await (await loadFs()).writeFile(file, content, "utf8");
@@ -116,6 +117,7 @@ export async function createMarkdownMemory(opts: MarkdownMemoryOptions): Promise
             summary: draft.summary,
             body: draft.body,
             ...(draft.tags && draft.tags.length > 0 ? { tags: [...draft.tags] } : {}),
+            ...(draft.trusted === true ? { trusted: true } : {}),
             createdAt: existing?.createdAt ?? now,
             ...(existing ? { updatedAt: now } : {}),
           };
@@ -336,6 +338,7 @@ async function loadFile(
     summary,
     body,
     ...(tags ? { tags } : {}),
+    ...(fm.trusted === true ? { trusted: true } : {}),
     createdAt,
     ...(updatedAt !== undefined ? { updatedAt } : {}),
   };

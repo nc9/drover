@@ -30,6 +30,12 @@ export interface MemoryEntry {
   createdAt: number;
   /** Epoch millis. Refreshed on every `put` with an existing id. */
   updatedAt?: number;
+  /**
+   * True only when the entry came from the operator's own prompt or code (e.g.
+   * instruction files). Absent means untrusted: model-written memory is derived
+   * from whatever the model read, so it inherits the least trusted input.
+   */
+  trusted?: boolean;
 }
 
 /** Caller-supplied draft for `put`. */
@@ -43,6 +49,8 @@ export interface MemoryDraft {
   summary: string;
   body: string;
   tags?: ReadonlyArray<string>;
+  /** See {@link MemoryEntry.trusted}. Default untrusted. */
+  trusted?: boolean;
 }
 
 export interface SearchOpts {
@@ -85,7 +93,9 @@ export interface MemoryAdapter {
   /** Ranked search (BM25 when `query` set, recency otherwise). */
   search(opts: SearchOpts): Effect.Effect<ReadonlyArray<MemoryHit>, MemoryError, never>;
   /** Unranked list with the same filters as `search` minus `query`. */
-  list(filter: Omit<SearchOpts, "query">): Effect.Effect<ReadonlyArray<MemoryEntry>, MemoryError, never>;
+  list(
+    filter: Omit<SearchOpts, "query">,
+  ): Effect.Effect<ReadonlyArray<MemoryEntry>, MemoryError, never>;
   /** Returns `false` if the id wasn't present. */
   forget(id: string): Effect.Effect<boolean, MemoryError, never>;
   /** Flush pending writes / release resources. Idempotent. */

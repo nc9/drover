@@ -1,62 +1,73 @@
 ---
 title: Untrusted data
-description: Fence text an outsider controls so it reaches the model as data, not instructions.
+description: Fence everything that did not come from the operator, so outside text reaches the model as data, not instructions.
 ---
 
-Any agent that reads outside text (web pages, emails, tickets, tool results that
-quote them) can be told what to do by that text. drover ships a **fence**: a
-tagged block with a per-run random nonce, plus cleaning that stops a value from
-closing or opening a tag. The model is told once, in the system prompt, that
+**Invariant: anything that did not come from the operator's own prompt or code is
+untrusted until positively marked trusted, and derived text inherits the least
+trusted input.** Drover's fence plugin is built on that, and fails closed: every
+bookkeeping miss over-fences, none can under-fence.
+
+An agent that reads outside text (web pages, emails, tickets, shell output, MCP
+results, other agents' answers) can be told what to do by that text. The **fence**
+is a tagged block with a per-run random nonce, plus cleaning that stops a value
+from closing or opening a tag. The model is told in the system prompt that
 everything inside a fence is data whatever it claims.
 
 ```ts
-import { createFence, defineAgent } from "@droveragent/core";
+import { defineAgent } from "@droveragent/core";
 import { truncatePlugin, untrustedResultsPlugin } from "@droveragent/plugins";
 
-const fence = createFence(); // one per run: the nonce is random
-const truncate = truncatePlugin({ trustedTools: ["read"] }); // everything else: untrusted
+// One allowlist, owned by the fence plugin: tools whose output is the operator's own.
+const fence = untrustedResultsPlugin({ trusted: ["clock"] });
+const truncate = truncatePlugin({ isTrusted: fence.isTrusted }); // reads the same list
 
 const spec = defineAgent({
   id: "page-reader",
-  systemPrompt: `You summarise pages.\n\n${fence.note()}`,
+  systemPrompt: "You summarise pages.", // no fence note to remember: the plugin adds it
+  tools: ["fetch_page", "bash"],
+  plugins: [truncate.plugin, fence], // fence after truncate
   // ...
-  tools: ["fetch_page"],
-});
-
-runAgent(spec, input, {
-  plugins: [
-    truncate.plugin,
-    untrustedResultsPlugin({ fence, tools: ["fetch_page"], store: truncate.store }), // after truncate
-  ],
 });
 ```
 
-A tool that builds its own output can call `fence.wrap("page", value)` and be
-listed in `selfFenced`, so it is not wrapped twice.
+## What is fenced
 
-## Fail closed: untrusted unless positively marked trusted
+- **Every tool result**, success, error and defect alike (an upstream error can
+  echo a page title), except tools on the `trusted` allowlist. Unlisted tools,
+  MCP tools, `bash`, `recall` and `task` are all fenced by default. The plugin
+  never inspects output to decide: a result containing a fence-shaped string is
+  wrapped like any other. `selfFenced` names tools that wrap their own output
+  (`fence.fenceFor(runId)`); their errors are still wrapped.
+- **Stored copies.** The truncate plugin stores oversized results with their
+  provenance (`trusted`, producing tool, run), keyed by (run, tool-use id) with a
+  suffixed handle when a backend repeats an id (`call_0`, `call_0~2`).
+  `show_tool_result` returns that provenance in the same result as the content,
+  and the plugin returns the slice raw only if it says trusted **and** the
+  producing tool is on the fence plugin's allowlist. A missing flag, another run's
+  entry or a legacy entry reads as untrusted. Two lists that disagree resolve to
+  untrusted.
+- **The compaction summary.** It is derived from untrusted text and re-enters the
+  conversation as a user message, so it is fenced; the summariser also gets the
+  fence note in its system prompt.
+- **Memory.** Entries carry a `trusted` flag, absent by default (model-written
+  memory inherits what the model read). The untrusted entries of the memory index
+  in the system prompt are fenced; `recall` is a tool, so it is fenced too. Set
+  `trusted: true` only on entries the operator wrote.
+- **Subagents.** The plugin is inherited by every subagent run (`inheritToSubagents`)
+  with that run's own nonce, and a `task` result is fenced in the parent.
 
-The invariant: **anything a tool returns is untrusted unless it is positively
-marked trusted; the mark is stored with the data it describes.** Every
-bookkeeping miss (no entry, no flag, another run, a restart) over-fences; none
-can under-fence.
+Plugin order does not decide safety; list the fence after truncate so the
+truncated head and its marker are fenced too.
 
-- Results of the listed tools are always wrapped, errors and defects included
-  (an upstream error can echo a page title). The plugin never looks at what the
-  output looks like: a result that contains something fence-shaped is wrapped like
-  any other. The only way out of wrapping is the explicit `selfFenced` list, and
-  those tools still count as untrusted for the rule below.
-- A reader tool (a stored copy by id: `show_tool_result` by default, `readers` to
-  add others) is fenced unless **the stored entry itself says `trusted: true`**.
-  The truncate plugin writes that flag at the moment it stores the content
-  (`truncatePlugin({ trustedTools: ["read", "grep"] })`, default none), keyed by
-  (run id, tool-use id). The plugin keeps no side maps of ids. A missing entry, a
-  legacy entry stored without the flag, another run's entry, a failed call (nothing
-  stored) or no `store` option all read as untrusted. A store carried into a
-  resumed run brings each entry's flag with it.
-- Put `untrustedResultsPlugin` **after** `truncatePlugin` so the truncated head
-  and its marker are fenced too. A tool of your own that returns a derived copy of
-  an untrusted result must be added to `readers`.
+## Nonces and resume
+
+Each run, and each subagent run, has its own nonce, kept in a `NonceStore`
+(`untrustedResultsPlugin({ nonces })`; default: in memory). A resumed run in the
+same process keeps its nonce, so history fenced before the pause still matches the
+note. Across processes, pass a store backed by your own storage. A host that does
+not do that gets a new nonce on resume: blocks from before the pause are then
+still escaped and bounded, but the model is told a different nonce.
 
 ## What the fence does to text
 
@@ -65,17 +76,17 @@ can under-fence.
 | `</untrusted-data-NONCE>` in the text | `<` and `>` escaped as `<` / `>`; the block cannot be closed |
 | the nonce itself in the text | replaced by `[nonce]` |
 | fullwidth brackets (`＜`) | NFKC turns them into ASCII first, then escaped |
-| guillemets, math and CJK brackets, ornaments | visible `[U+XXXX]` placeholder |
+| guillemets, math and CJK brackets, `˂˃`, `⟪⟫`, `⦉⦊`, ornaments (`LOOKALIKE_BRACKETS`) | visible `[U+XXXX]` placeholder |
 | zero-width, bidi override, control characters | space (newline and tab kept) |
-| very long strings, huge arrays, deep objects | bounded (`maxFieldChars`, default 2000; 2000 items; 500 keys; depth 12) |
+| variation selectors, U+2028, U+2029 (`INVISIBLE_RANGES`) | space (U+2028/2029: newline) |
+| very long strings, huge arrays, deep objects | bounded (`maxFieldChars`, default 2000; 2000 items; 500 keys; depth 12; no lone surrogate left by a cut) |
 
-`wrap(section, body)` takes a string or any JSON-able value; objects are cleaned
-key and value, then serialised. `wrapText` is the whole-text variant for hosts
-that assemble lines themselves.
+The two tables are exported and tested one code point at a time. `wrap(section, body)`
+takes a string or any JSON-able value; `wrapText` is the whole-text variant.
 
 ## What it does not do
 
-A fence lowers the odds that injected text steers the model. It does not make
-the text safe. Keep the tools of an agent that reads outside text unable to do
-harm (read-only, or a draft store a validator checks), set budgets, and treat
-everything the model proposes to write as untrusted too.
+A fence lowers the odds that injected text steers the model. It does not make the
+text safe. Keep the tools of an agent that reads outside text unable to do harm
+(read-only, or a draft store a validator checks), set budgets, and treat everything
+the model proposes to write as untrusted too.

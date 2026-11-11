@@ -51,5 +51,8 @@
     "@mariozechner/pi-ai": "^0.73.1",
     "@sinclair/typebox": "^0.34.0",
     "effect": "^3.10.0"
+  },
+  "devDependencies": {
+    "@droveragent/plugins": "workspace:*"
   }
 }

@@ -1,121 +1,192 @@
-import type { AnyToolDef, Fence, HarnessPlugin } from "@droveragent/core";
-
-import type { TruncateStore } from "./truncate.ts";
+/**
+ * INVARIANT: anything that did not come from the operator's own prompt or code is
+ * untrusted until positively marked trusted; derived text inherits the least
+ * trusted input. Fail closed: every bookkeeping miss over-fences, none under-fences.
+ *
+ * What that means here:
+ * - EVERY tool result is fenced (success, error and defect alike), unless the tool
+ *   is on the one `trusted` allowlist this plugin owns. Output is never inspected
+ *   to decide: a result that contains a fence-shaped string is wrapped like any
+ *   other. The only other opt-out is the explicit `selfFenced` list (and even
+ *   there errors are wrapped).
+ * - A reader tool (a stored copy by handle: the truncate plugin's
+ *   `show_tool_result`) returns provenance in its own result `data` (`trusted`,
+ *   `toolId`), from the same read as the content. It is returned raw only when
+ *   that says trusted AND the producing tool is on this plugin's allowlist
+ *   (a tool on "both sides" of two lists would be untrusted). Anything else,
+ *   including a missing flag, is fenced.
+ * - Derived text is fenced too: the plugin implements `wrapUntrusted`, which the
+ *   harness uses for the compaction summary and the untrusted entries of the
+ *   memory index; and `systemPromptAddendum`, which carries the fence note, so the
+ *   host cannot forget it.
+ * - Each run (and each subagent run, via `inheritToSubagents`) has its own nonce.
+ *   The nonce is kept in `nonces` (default: in memory), so a resumed run in the
+ *   same process keeps it; across processes, pass a store backed by your storage.
+ *
+ * Plugin order does not decide safety (reads are fenced from the result's own
+ * provenance), only how tidy a fenced truncated head looks: list this plugin after
+ * `truncatePlugin`.
+ */
+import {
+  createFence,
+  createNonce,
+  type AnyToolDef,
+  type Fence,
+  type FenceOptions,
+  type HarnessPlugin,
+  type RunContext,
+  type ToolResult,
+} from "@droveragent/core";
 import { Cause, Effect } from "effect";
 
+/** Where per-run nonces live so a resumed run keeps its nonce. */
+export interface NonceStore {
+  get(runId: string): string | undefined;
+  set(runId: string, nonce: string): void;
+}
+
 export interface UntrustedResultsOptions {
-  /** The run's fence (`createFence()`); put `fence.note()` in the system prompt. */
-  fence: Fence;
   /**
-   * Which tools return outside text: a list of tool names, or a predicate.
-   * Everything else passes through untouched.
+   * Tools whose results are the operator's own (not outside text). The ONLY list:
+   * everything else is fenced. Default: none.
    */
-  tools: ReadonlyArray<string> | ((toolName: string) => boolean);
+  trusted?: ReadonlyArray<string>;
   /**
-   * Tools that already fence their own output (they call `fence.wrap`). Their
-   * results are not wrapped again. This is an explicit list, never inferred
-   * from what the output looks like: output is the untrusted part.
+   * Tools that already fence their own output with this plugin's fence for the
+   * run (`plugin.fenceFor(ctx.runId)`). Success results are not wrapped again;
+   * errors still are. Explicit, never inferred from the output.
    */
   selfFenced?: ReadonlyArray<string>;
   /**
-   * Tools that read back a stored or derived copy of an earlier result by its
-   * tool-use id (the truncate plugin's `show_tool_result`). Reads of a result
-   * that came from an untrusted tool come back fenced, whatever slice is asked
-   * for. Fenced unless the id is marked trusted. Default
-   * `{ show_tool_result: "toolUseId" }`: tool name -> input field holding the id.
+   * Reader tools: a stored copy of an earlier result by handle. Their result
+   * `data.trusted` decides. Default `["show_tool_result"]`.
    */
-  readers?: Readonly<Record<string, string>>;
-  /**
-   * The store the reader tools read from (`truncatePlugin().store`). Provenance is
-   * read from the entry it returns. Without it every reader read is fenced.
-   */
-  store?: TruncateStore;
+  readers?: ReadonlyArray<string>;
+  /** Per-string bound for the fences. */
+  maxFieldChars?: FenceOptions["maxFieldChars"];
+  /** Nonce persistence. Default: in memory, per plugin instance. */
+  nonces?: NonceStore;
   /** Section label for a tool's block. Default: the tool name. */
   section?: (toolName: string) => string;
 }
 
-/**
- * INVARIANT: anything a tool returns is untrusted unless positively marked
- * trusted, and the mark is stored with the data it describes. Fail closed.
- *
- * - Results of matching tools are ALWAYS wrapped, with no look at the content,
- *   errors and defects included (an upstream error can echo a page title). The
- *   only exception to wrapping is the explicit `selfFenced` list.
- * - A reader tool (a stored copy by id: the truncate plugin's `show_tool_result`)
- *   is fenced UNLESS the store entry it just read says `trusted: true`. That flag
- *   is written by the truncate plugin at the moment the content is stored
- *   (`trustedTools`, default none), keyed by (run id, tool-use id). A missing
- *   entry, a legacy entry without the flag, another run's entry, a failed call
- *   that stored nothing, or no store at all reads as untrusted.
- * - No side maps: this plugin keeps no record of ids. Provenance lives in the
- *   store entry and travels with the data (a store carried across runs or into a
- *   resumed run brings its flags along).
- *
- * Wrapping happens in `wrapTool`; list this plugin AFTER `truncatePlugin`
- * (outermost) so the truncated head and its marker are fenced too.
- */
-export function untrustedResultsPlugin(opts: UntrustedResultsOptions): HarnessPlugin {
-  const matches =
-    typeof opts.tools === "function"
-      ? opts.tools
-      : (
-          (names: ReadonlySet<string>) => (n: string) =>
-            names.has(n)
-        )(new Set(opts.tools));
+export interface UntrustedResultsPlugin extends HarnessPlugin {
+  /** The fence of a run: stable for the run, its own nonce for every run. */
+  fenceFor(runId: string): Fence;
+  /** Whether a tool is on the allowlist. Give this to `truncatePlugin({ isTrusted })`. */
+  isTrusted(toolId: string): boolean;
+}
+
+const MAX_REMEMBERED_NONCES = 10_000;
+
+function memoryNonces(): NonceStore {
+  const map = new Map<string, string>();
+  return {
+    get: (id) => map.get(id),
+    set(id, nonce) {
+      map.set(id, nonce);
+      if (map.size > MAX_REMEMBERED_NONCES) map.delete(map.keys().next().value as string);
+    },
+  };
+}
+
+export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): UntrustedResultsPlugin {
+  const trusted = new Set(opts.trusted ?? []);
   const selfFenced = new Set(opts.selfFenced ?? []);
-  const readers = opts.readers ?? { show_tool_result: "toolUseId" };
+  const readers = new Set(opts.readers ?? ["show_tool_result"]);
+  const nonces = opts.nonces ?? memoryNonces();
   const sectionOf = opts.section ?? ((n: string) => n);
+  const fences = new Map<string, Fence>();
+
+  const fenceFor = (runId: string): Fence => {
+    let f = fences.get(runId);
+    if (!f) {
+      let nonce = nonces.get(runId);
+      if (nonce === undefined) {
+        nonce = createNonce();
+        nonces.set(runId, nonce);
+      }
+      f = createFence({
+        nonce,
+        ...(opts.maxFieldChars !== undefined ? { maxFieldChars: opts.maxFieldChars } : {}),
+      });
+      fences.set(runId, f);
+      if (fences.size > MAX_REMEMBERED_NONCES) fences.delete(fences.keys().next().value as string);
+    }
+    return f;
+  };
+  const isTrusted = (toolId: string): boolean => trusted.has(toolId) && !readers.has(toolId);
 
   const wrapTool = (tool: AnyToolDef): AnyToolDef => {
-    if (matches(tool.id)) {
-      const wrap = !selfFenced.has(tool.id);
-      const fenceText = (text: string): string =>
-        wrap ? opts.fence.wrapText(sectionOf(tool.id), text) : text;
+    if (readers.has(tool.id)) {
       return {
         ...tool,
         execute: (input, ctx) =>
           tool.execute(input, ctx).pipe(
-            Effect.map((result) => ({ ...result, content: fenceText(result.content) })),
+            Effect.map((result): ToolResult => {
+              const d = result.data as { trusted?: unknown; toolId?: unknown } | undefined;
+              const raw =
+                d?.trusted === true && typeof d.toolId === "string" && isTrusted(d.toolId);
+              return raw
+                ? result
+                : {
+                    ...result,
+                    content: fenceFor(ctx.runId).wrapText(
+                      `${sectionOf(tool.id)}-slice`,
+                      result.content,
+                    ),
+                  };
+            }),
+            // A reader's failure can quote the handle or the data it looked for.
             Effect.catchAllCause((cause) =>
               Cause.isInterruptedOnly(cause)
                 ? Effect.failCause(cause)
                 : Effect.succeed({
-                    content: opts.fence.wrapText(sectionOf(tool.id), errorText(cause)),
+                    content: fenceFor(ctx.runId).wrapText(
+                      `${sectionOf(tool.id)}-slice`,
+                      errorText(cause),
+                    ),
                     isError: true,
                   }),
             ),
           ),
       };
     }
-    const idField = readers[tool.id];
-    if (idField !== undefined) {
-      const slice = (text: string): string =>
-        opts.fence.wrapText(`${sectionOf(tool.id)}-slice`, text);
-      return {
-        ...tool,
-        execute: (input, ctx) => {
-          const id = (input as Record<string, unknown> | null)?.[idField];
-          // The entry's own flag decides; anything else is untrusted.
-          const trusted =
-            typeof id === "string" && opts.store?.get(id, ctx.runId)?.trusted === true;
-          return tool.execute(input, ctx).pipe(
-            Effect.map((result) =>
-              trusted ? result : { ...result, content: slice(result.content) },
-            ),
-            // A reader's failure can quote the id or the data it looked for.
-            Effect.catchAllCause((cause) =>
-              Cause.isInterruptedOnly(cause)
-                ? Effect.failCause(cause)
-                : Effect.succeed({ content: slice(errorText(cause)), isError: true }),
-            ),
-          );
-        },
-      };
-    }
-    return tool;
+    if (isTrusted(tool.id)) return tool; // errors of a trusted tool are the operator's own
+    const wrapSuccess = !selfFenced.has(tool.id);
+    return {
+      ...tool,
+      execute: (input, ctx) =>
+        tool.execute(input, ctx).pipe(
+          Effect.map((result) =>
+            wrapSuccess
+              ? {
+                  ...result,
+                  content: fenceFor(ctx.runId).wrapText(sectionOf(tool.id), result.content),
+                }
+              : result,
+          ),
+          Effect.catchAllCause((cause) =>
+            Cause.isInterruptedOnly(cause)
+              ? Effect.failCause(cause)
+              : Effect.succeed({
+                  content: fenceFor(ctx.runId).wrapText(sectionOf(tool.id), errorText(cause)),
+                  isError: true,
+                }),
+          ),
+        ),
+    };
   };
 
-  return { id: "untrusted-results", wrapTool };
+  return {
+    id: "untrusted-results",
+    wrapTool,
+    fenceFor,
+    isTrusted,
+    systemPromptAddendum: (ctx: RunContext) => fenceFor(ctx.runId).note(),
+    wrapUntrusted: (section, text, ctx) => fenceFor(ctx.runId).wrapText(section, text),
+    inheritToSubagents: true,
+  };
 }
 
 function errorText(cause: Cause.Cause<unknown>): string {

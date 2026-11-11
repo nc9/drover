@@ -32,7 +32,13 @@ export interface PromptScope {
   /** Skill registry + the agent's allowlist. */
   skills?: { registry: SkillRegistry; allowed: readonly string[] };
   /** Memory adapter + the agent id memory is scoped to. */
-  memory?: { adapter: MemoryAdapter; agentId: string; maxEntries?: number };
+  memory?: {
+    adapter: MemoryAdapter;
+    agentId: string;
+    maxEntries?: number;
+    /** Fence untrusted memory entries in the index (supplied by a fence plugin). */
+    fence?: (section: string, text: string) => string;
+  };
   /**
    * Spawnable subagents — populated only when the spec declares
    * `subagents` and an agent registry is wired. Drives the `{% subagents %}`

@@ -17,6 +17,7 @@ import {
   type Usage,
 } from "@droveragent/core";
 import { resolveModel } from "@droveragent/model";
+import { fenceSummarizer, systemAddenda, untrustedFencer } from "./plugin-hooks.ts";
 import {
   forgetTool,
   loadInstructionFiles,
@@ -129,8 +130,11 @@ export function buildPromptScope(args: {
   modelId: string;
   toolIds: ReadonlyArray<string>;
   instructionFiles: ReadonlyArray<InstructionFile>;
+  /** Plugins of the run: a `wrapUntrusted` one fences untrusted memory-index entries. */
+  plugins?: ReadonlyArray<import("@droveragent/core").HarnessPlugin>;
 }): PromptScope {
   const { spec, ctx, deps, modelId, toolIds, instructionFiles } = args;
+  const memoryFence = untrustedFencer(args.plugins ?? [], ctx);
   return {
     agent: { id: spec.id },
     run: { runId: ctx.runId, cwd: ctx.cwd },
@@ -147,6 +151,7 @@ export function buildPromptScope(args: {
             adapter: deps.memory!,
             agentId: spec.id,
             maxEntries: spec.memory!.maxIndexEntries ?? 30,
+            ...(memoryFence ? { fence: memoryFence } : {}),
           },
         }
       : {}),
@@ -427,6 +432,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         modelId: resolved.model.id,
         toolIds: tools.map((t) => t.id),
         instructionFiles: instructionFilesList,
+        plugins,
       });
       const rendered = yield* Effect.promise(() =>
         promptEngine.render(tplSource, promptScope, {
@@ -462,6 +468,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         modelId: resolved.model.id,
         toolIds: tools.map((t) => t.id),
         instructionFiles: instructionFilesList,
+        plugins,
       });
       // `includeIndex: false` suppresses only the auto-injected memory
       // index, not the memory tools — drop the scope field so the
@@ -480,6 +487,13 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       });
     }
 
+    // Plugins may append to the system prompt (a fence plugin carries its fence
+    // note here, so the host cannot forget it).
+    {
+      const addenda = systemAddenda(plugins, ctx);
+      if (addenda.length > 0) systemPrompt = `${systemPrompt}\n\n${addenda.join("\n\n")}`;
+    }
+
     // Scope for deterministic lifecycle steps (commands render against it).
     const lifecycleScope = buildPromptScope({
       spec,
@@ -488,6 +502,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       modelId: resolved.model.id,
       toolIds: tools.map((t) => t.id),
       instructionFiles: instructionFilesList,
+      plugins,
     });
 
     // Deterministic `init` lifecycle — resolve steps to text blocks that
@@ -839,14 +854,17 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       }
       // The summariser gets `deps.onPayload` too — a host that pins routing for
       // the run means the run, not just the main loop.
-      compactionSummarizer = makeSummarizer(
+      const baseSummarizer = makeSummarizer(
         summaryModel,
         summaryApiKey,
         undefined,
         deps.onPayload,
         // Only a chain reroutes the summariser; a bare `streamFn` never did.
         deps.providers ? runStreamFn : undefined,
+        // The fence plugin's note, so the summariser knows what a fence is.
+        systemAddenda(plugins, ctx).join("\n\n") || undefined,
       );
+      compactionSummarizer = fenceSummarizer(baseSummarizer, plugins, ctx);
     }
 
     // transformContext: pi calls this before each LLM call with the live
@@ -1408,6 +1426,7 @@ function composeTools(
       ...(subagents.fanOut !== undefined ? { fanOut: subagents.fanOut } : {}),
       deps,
       parentEmit,
+      parentPlugins: plugins,
     };
     out.push(taskTool(subagentOpts));
   }

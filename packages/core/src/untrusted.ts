@@ -28,7 +28,38 @@
 export const DEFAULT_FIELD_MAX = 2000;
 
 const CONTROL = /[\p{Cc}\p{Cf}]/gu;
-const LOOKALIKE = /[‹›〈〉⟨⟩〈〉《》﹤﹥＜＞ᐸᐳ❬-❱⧼⧽〖〗«»]/g;
+
+/**
+ * Look-alike angle brackets a model may read as tags. NFKC already collapses the
+ * compatibility forms (fullwidth, small forms) to ASCII, which are then escaped
+ * like any `<`; these survive NFKC, so each is replaced by a visible `[U+XXXX]`.
+ * One table, one test per code point.
+ */
+export const LOOKALIKE_BRACKETS: readonly number[] = [
+  0x00ab, 0x00bb, 0x02c2, 0x02c3, 0x1433, 0x1438, 0x2039, 0x203a, 0x2329, 0x232a, 0x2770, 0x2771,
+  0x276c, 0x276d, 0x276e, 0x276f, 0x27e8, 0x27e9, 0x27ea, 0x27eb, 0x2989, 0x298a, 0x29fc, 0x29fd,
+  0x3008, 0x3009, 0x300a, 0x300b, 0x3016, 0x3017, 0xfe64, 0xfe65, 0xff1c, 0xff1e,
+];
+
+/**
+ * Invisible characters that carry hidden payloads or break lines and that the
+ * Cc/Cf classes miss: variation selectors (Mn) and the Unicode line and
+ * paragraph separators (Zl, Zp). Each becomes a space (U+2028/2029: a newline).
+ */
+export const INVISIBLE_RANGES: ReadonlyArray<readonly [number, number]> = [
+  [0xfe00, 0xfe0f],
+  [0xe0100, 0xe01ef],
+  [0x2028, 0x2029],
+];
+
+const LOOKALIKE = new RegExp(
+  `[${LOOKALIKE_BRACKETS.map((c) => `\\u${c.toString(16).padStart(4, "0")}`).join("")}]`,
+  "g",
+);
+const INVISIBLE = new RegExp(
+  INVISIBLE_RANGES.map(([a, b]) => `[\\u{${a.toString(16)}}-\\u{${b.toString(16)}}]`).join("|"),
+  "gu",
+);
 
 const MAX_DEPTH = 12;
 const MAX_ARRAY = 2000;
@@ -82,12 +113,16 @@ export function createFence(opts: FenceOptions = {}): Fence {
     let t = v.normalize("NFKC");
     t = t
       .replace(CONTROL, (c) => (c === "\n" || c === "\t" ? c : " "))
+      .replace(INVISIBLE, (c) => (c === "\u2028" || c === "\u2029" ? "\n" : " "))
       .replace(
         LOOKALIKE,
         (c) => `[U+${c.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")}]`,
       );
     if (nonce) t = t.split(nonce).join("[nonce]");
-    return t.slice(0, max);
+    t = t.slice(0, max);
+    // A cut inside a surrogate pair leaves a lone high surrogate: drop it.
+    if (t.length > 0 && /[\ud800-\udbff]/.test(t[t.length - 1]!)) t = t.slice(0, -1);
+    return t;
   };
 
   const clamp = (v: unknown, depth = 0): unknown => {
