@@ -50,7 +50,7 @@ Every event has `kind`, `runId` (string), `ts` (epoch ms). Required fields beyon
 | `assistant_text`, `thinking` | `turn`, `text` | durable record of a message |
 | `assistant_delta`, `thinking_delta` | `turn`, `text` | ephemeral, opt-in (`emitDeltas`), not persisted |
 | `tool_call_start` | `turn`, `toolUseId`, `toolName` | `input` |
-| `tool_call_end` | `turn`, `toolUseId`, `toolName`, `result`, `durationMs` | `result.isError` marks a tool error; timing is `durationMs` |
+| `tool_call_end` | `turn`, `toolUseId`, `toolName`, `result`, `durationMs` | `result.isError` marks a tool error; timing is `durationMs`; `trust` optional (`untrusted`) |
 | `usage` | `turn`, `usage` | per model call: tokens, `costUsd`; `provider` and `model` when the message names them |
 | `compaction` | `turn`, `trigger`, `strategy`, `beforeTokens`, `afterTokens`, `collapsedRange`, `summarized` | |
 | `subagent_start` / `subagent_end` | `childRunId`, `agentId` / `status` | child events are in the child's own trace |
@@ -62,6 +62,58 @@ Every event has `kind`, `runId` (string), `ts` (epoch ms). Required fields beyon
 Kinds added by other changes (provider failover, budget warnings) appear as unknown kinds in this reader until
 they are added to the table; `summarizeTrace` counts them in `unknownKinds`, so nothing is lost and a viewer can
 still show that they happened.
+
+## Untrusted fields
+
+A trace holds text that came from outside the harness: model output, tool arguments and results, error
+messages, memory content. These fields are marked in `UNTRUSTED_FIELDS`:
+
+| Kind | Untrusted fields |
+|---|---|
+| `assistant_text`, `thinking`, `assistant_delta`, `thinking_delta` | `text` |
+| `tool_call_start` | `input` |
+| `tool_call_end` | `result` (also carries `trust`, below) |
+| `output_retry` | `reason` |
+| `memory_written` / `memory_recalled` | `entry` / `hits` |
+| `error` | `message` |
+| `prompt_rendered` | `warnings` |
+
+> **Warning.** Treat these as data, never as instructions or markup. A viewer MUST HTML-escape them before
+> rendering and MUST NOT replay them into a model prompt. Tool results are stored raw (fencing, where a tool
+> applies it, is part of the stored content). `tool_call_end.trust` is `"untrusted"` on every result the harness
+> writes; an absent value (older traces) means untrusted. `summarizeTrace` never reads any of these fields.
+
+`traceToJsonl` escapes `<`, `>`, `&`, U+2028 and U+2029 as `\uXXXX`, so a line is safe to embed in HTML or a
+script block; it is still plain JSON. That does not replace escaping when you render a field.
+
+### Redaction on export
+
+```ts
+const text = traceToJsonl(trace, {
+  redact: ({ kind, field }) => (kind === "tool_call_end" ? "mask" : undefined), // "remove" | "mask" | undefined
+});
+```
+
+The hook is called once per marked field. `mask` writes `"[redacted]"`, `remove` drops the field. Events of
+kinds this reader does not know are written as stored: redact those yourself.
+
+## Complete example
+
+One run: a tool call, usage, and the final status. Lines are shown as exported (`<`, `>`, `&` would appear as `\u003c` etc.).
+
+```
+{"kind":"trace_header","traceVersion":1,"runId":"run_1","agentId":"triage","specHash":"a1b2","harnessVersion":"0.2.0","startedAt":1700000000000}
+{"kind":"run_start","runId":"run_1","ts":1700000000001,"agentId":"triage","specHash":"a1b2"}
+{"kind":"input_validated","runId":"run_1","ts":1700000000002}
+{"kind":"prompt_rendered","runId":"run_1","ts":1700000000003,"cacheablePrefixChars":120,"totalChars":200,"reordered":false,"warnings":[]}
+{"kind":"turn_start","runId":"run_1","ts":1700000000004,"turn":1}
+{"kind":"llm_call","runId":"run_1","ts":1700000000005,"turn":1,"modelName":"m"}
+{"kind":"tool_call_start","runId":"run_1","ts":1700000000100,"turn":1,"toolUseId":"t1","toolName":"read","input":{"path":"/x"}}
+{"kind":"tool_call_end","runId":"run_1","ts":1700000000112,"turn":1,"toolUseId":"t1","toolName":"read","result":{"content":"ok"},"durationMs":12,"trust":"untrusted"}
+{"kind":"usage","runId":"run_1","ts":1700000000200,"turn":1,"usage":{"inputTokens":10,"outputTokens":5,"costUsd":0.01}}
+{"kind":"assistant_text","runId":"run_1","ts":1700000000201,"turn":1,"text":"done"}
+{"kind":"run_end","runId":"run_1","ts":1700000009000,"status":"success"}
+```
 
 ## Comparing runs across harness versions
 

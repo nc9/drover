@@ -67,6 +67,58 @@ export const REQUIRED_FIELDS: Readonly<Record<Kind, Readonly<Record<string, Fiel
 
 export const KNOWN_EVENT_KINDS: ReadonlyArray<Kind> = Object.keys(REQUIRED_FIELDS) as Kind[];
 
+/**
+ * Fields that can hold text from outside the harness: model output, tool output or arguments,
+ * error text, memory content. A consumer MUST treat them as untrusted data: HTML-escape before
+ * rendering, and never feed them back to a model as instructions. `summarizeTrace` never reads
+ * them. Paths are dotted; `*` stands for any array index or object key.
+ */
+export const UNTRUSTED_FIELDS: Readonly<Partial<Record<Kind, ReadonlyArray<string>>>> = {
+  assistant_text: ["text"],
+  thinking: ["text"],
+  assistant_delta: ["text"],
+  thinking_delta: ["text"],
+  tool_call_start: ["input"],
+  tool_call_end: ["result"],
+  output_retry: ["reason"],
+  memory_written: ["entry"],
+  memory_recalled: ["hits"],
+  error: ["message"],
+  prompt_rendered: ["warnings"],
+};
+
+/** What a redaction hook does to a marked field. */
+export type Redaction = "remove" | "mask";
+
+/**
+ * Hook for {@link redactEvent} / {@link traceToJsonl}: called once per marked field; return
+ * `"remove"` to drop it, `"mask"` to replace it with {@link REDACTED}, or `undefined` to keep it.
+ */
+export type RedactHook = (info: {
+  kind: string;
+  field: string;
+  value: unknown;
+}) => Redaction | undefined;
+
+export const REDACTED = "[redacted]";
+
+/** Apply a redaction hook to the marked fields of one event. Returns a copy; the input is untouched. */
+export function redactEvent(e: TraceEvent, hook: RedactHook): TraceEvent {
+  if ("unknown" in e) return e;
+  const fields = Object.hasOwn(UNTRUSTED_FIELDS, e.kind)
+    ? UNTRUSTED_FIELDS[e.kind as Kind]
+    : undefined;
+  if (!fields) return e;
+  const out = { ...e } as Record<string, unknown>;
+  for (const f of fields) {
+    if (!Object.hasOwn(out, f)) continue;
+    const action = hook({ kind: e.kind, field: f, value: out[f] });
+    if (action === "remove") delete out[f];
+    else if (action === "mask") out[f] = REDACTED;
+  }
+  return out as unknown as TraceEvent;
+}
+
 /** A kind this reader does not know, or a known kind missing a required field: kept, never dropped. */
 export interface UnknownTraceEvent {
   unknown: true;
@@ -100,7 +152,8 @@ export function readEvent(value: unknown): TraceEvent {
   const spec = Object.hasOwn(REQUIRED_FIELDS, kind) ? REQUIRED_FIELDS[kind as Kind] : undefined;
   if (!spec) return { unknown: true, kind, reason: "unknown_kind", raw };
   for (const [field, type] of Object.entries({ ...COMMON, ...spec })) {
-    if (typeOf(raw[field]) !== type)
+    // A masked field (see `redactEvent`) satisfies any type: a redacted trace still reads as typed events.
+    if (raw[field] !== REDACTED && typeOf(raw[field]) !== type)
       return { unknown: true, kind, reason: `malformed: ${field}`, raw };
   }
   return raw as unknown as HarnessEvent;
@@ -122,10 +175,30 @@ export interface Trace {
   events: ReadonlyArray<TraceEvent>;
 }
 
-/** Serialise: line 1 is `{"kind":"trace_header",...}`, then one event per line. */
-export function traceToJsonl(trace: Trace): string {
-  const lines = [JSON.stringify({ kind: "trace_header", ...trace.header })];
-  for (const e of trace.events) lines.push(JSON.stringify("unknown" in e && e.unknown ? e.raw : e));
+/**
+ * JSON.stringify, then escape characters that break when a line is embedded in HTML or a script
+ * (`<`, `>`, `&`) or read by JavaScript line parsers (U+2028, U+2029). The result is still valid
+ * JSON that parses to the same value.
+ */
+export function safeStringify(v: unknown): string {
+  return JSON.stringify(v).replace(
+    /[<>&\u2028\u2029]/g,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
+/**
+ * Serialise: line 1 is `{"kind":"trace_header",...}`, then one event per line. Lines are escaped
+ * with {@link safeStringify}. Pass `redact` to remove or mask the {@link UNTRUSTED_FIELDS} on export.
+ * Unknown events are written as stored (their fields are not known to be marked), so redact them
+ * yourself if the trace may hold kinds this version does not know.
+ */
+export function traceToJsonl(trace: Trace, options?: { redact?: RedactHook }): string {
+  const lines = [safeStringify({ kind: "trace_header", ...trace.header })];
+  for (const e of trace.events) {
+    const out = options?.redact ? redactEvent(e, options.redact) : e;
+    lines.push(safeStringify("unknown" in out && out.unknown ? out.raw : out));
+  }
   return `${lines.join("\n")}\n`;
 }
 

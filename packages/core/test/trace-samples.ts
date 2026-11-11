@@ -29,6 +29,7 @@ export const SAMPLES: Record<Kind, HarnessEvent> = {
     toolName: "read",
     result: { content: "ok" },
     durationMs: 12,
+    trust: "untrusted",
   },
   usage: {
     ...base,

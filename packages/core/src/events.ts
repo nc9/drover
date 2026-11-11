@@ -77,6 +77,12 @@ export type HarnessEvent =
       toolName: string;
       result: ToolResult;
       durationMs: number;
+      /**
+       * Trust hint for `result`: tool output is data from outside the harness. The harness stamps
+       * `untrusted`; a consumer must not treat it as instructions or markup. Absent in older traces
+       * (treat as untrusted).
+       */
+      trust?: "trusted" | "untrusted";
       ts: number;
     }
   | { kind: "usage"; runId: string; turn: number; usage: Usage; ts: number }
