@@ -5,15 +5,16 @@
 //   bun scripts/ci.ts build                     tsc build of every package, dependency order
 //   bun scripts/ci.ts typecheck                 tsgo --noEmit per workspace (needs build)
 //   bun scripts/ci.ts pack [--out <dir>]        pack every package, verify workspace dep versions
-//   bun scripts/ci.ts test [--only a,b] [--skip a,b]   bun test per package (needs build)
+//   bun scripts/ci.ts test [--only a,b] [--skip a,b]   bun test per package + scripts/test (needs build)
 //   bun scripts/ci.ts all                       every gate above, in that order
 //
 // Gates run sequentially and stop at the first failing gate; within a gate
 // every package runs and the failures are listed at the end.
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { extname, join, resolve } from "node:path";
+import { basename, extname, join, resolve } from "node:path";
 import {
+  PACK_INDEX,
   PACKAGE_ORDER,
   REPO_ROOT,
   orderProblems,
@@ -22,6 +23,7 @@ import {
   staleWorkspaceDeps,
   workspaceVersions,
   type Manifest,
+  type PackEntry,
 } from "./workspace.ts";
 
 type Result = { ok: boolean; stdout: string; stderr: string };
@@ -34,8 +36,8 @@ const exec = (cmd: readonly string[], cwd = REPO_ROOT, capture = false): Result 
   });
   return {
     ok: p.exitCode === 0,
-    stdout: capture ? p.stdout.toString() : "",
-    stderr: capture ? p.stderr.toString() : "",
+    stdout: capture ? (p.stdout?.toString() ?? "") : "",
+    stderr: capture ? (p.stderr?.toString() ?? "") : "",
   };
 };
 
@@ -132,16 +134,17 @@ const build = (): void => {
 const hasScript = (dir: string, script: string): boolean =>
   existsSync(join(dir, "package.json")) && readManifest(dir).scripts?.[script] !== undefined;
 
-// packages/*, evals and apps/* — every workspace with a typecheck script.
+// packages/*, evals, apps/* (each with a typecheck script) and the repo scripts.
 const typecheckDirs = (): string[] => [
   ...PACKAGE_ORDER.map((p) => `packages/${p}`),
   "evals",
+  "scripts",
   ...readdirSync(join(REPO_ROOT, "apps")).map((a) => `apps/${a}`),
 ];
 
 const typecheck = (): void => {
   const failures = typecheckDirs()
-    .filter((d) => hasScript(join(REPO_ROOT, d), "typecheck"))
+    .filter((d) => d === "scripts" || hasScript(join(REPO_ROOT, d), "typecheck"))
     .filter((d) => {
       console.log(`── typecheck ${d}`);
       return !exec(["bunx", "tsgo", "--noEmit"], join(REPO_ROOT, d)).ok;
@@ -158,7 +161,8 @@ const pack = (args: readonly string[]): void => {
   const out = keep ? resolve(keep) : mkdtempSync(join(tmpdir(), "drover-pack-"));
   mkdirSync(out, { recursive: true });
   const versions = workspaceVersions();
-  const failures = PACKAGE_ORDER.filter((pkg) => {
+  // One entry per package: the verified tarball, or undefined on failure.
+  const results = PACKAGE_ORDER.map((pkg): [string, PackEntry | undefined] => {
     const packed = exec(
       ["bun", "pm", "pack", "--quiet", "--destination", out],
       packageDir(pkg),
@@ -167,22 +171,29 @@ const pack = (args: readonly string[]): void => {
     const tarball = packed.stdout.trim().split("\n").at(-1)?.trim() ?? "";
     if (!packed.ok || tarball === "") {
       console.error(`✗ pack failed: ${pkg}\n${packed.stdout}${packed.stderr}`);
-      return true;
+      return [pkg, undefined];
     }
     const tgz = tarball.startsWith("/") ? tarball : join(out, tarball);
     const raw = exec(["tar", "-xzOf", tgz, "package/package.json"], REPO_ROOT, true);
     if (!raw.ok) {
       console.error(`✗ could not read package.json from ${tgz}: ${raw.stderr}`);
-      return true;
+      return [pkg, undefined];
     }
-    const stale = staleWorkspaceDeps(JSON.parse(raw.stdout) as Manifest, versions);
+    const manifest = JSON.parse(raw.stdout) as Manifest;
+    const stale = staleWorkspaceDeps(manifest, versions);
     if (stale.length > 0) {
       console.error(`✗ stale workspace deps in packed ${pkg}: ${stale.join(", ")}`);
-      return true;
+      return [pkg, undefined];
     }
     console.log(`✓ packed ${pkg} -> ${tgz}`);
-    return false;
+    return [pkg, { pkg, name: manifest.name, version: manifest.version, tarball: basename(tgz) }];
   });
+  const failures = results.filter(([, e]) => e === undefined).map(([pkg]) => pkg);
+  // --out keeps the tarballs plus index.json (publish order) for scripts/release.ts.
+  if (keep && failures.length === 0) {
+    const entries = results.flatMap(([, e]) => (e ? [e] : []));
+    writeFileSync(join(out, PACK_INDEX), `${JSON.stringify(entries, null, 2)}\n`);
+  }
   if (!keep) rmSync(out, { recursive: true, force: true });
   if (failures.length > 0) {
     console.error(
@@ -195,17 +206,24 @@ const pack = (args: readonly string[]): void => {
   report("pack", failures);
 };
 
+const testDir = (t: string): string =>
+  t === "scripts" ? join(REPO_ROOT, "scripts") : packageDir(t);
+
 const test = (args: readonly string[]): void => {
   const only = listFlag(args, "--only");
   const skip = listFlag(args, "--skip");
-  const unknown = [...only, ...skip].filter((p) => !PACKAGE_ORDER.includes(p));
+  // "scripts" = the repo tooling tests in scripts/test (release helpers).
+  const targets = [...PACKAGE_ORDER, "scripts"];
+  const unknown = [...only, ...skip].filter((p) => !targets.includes(p));
   if (unknown.length > 0) fail(`test: unknown package(s): ${unknown.join(", ")}`);
-  const failures = PACKAGE_ORDER.filter((p) => only.length === 0 || only.includes(p))
+  const failures = targets
+    .filter((p) => only.length === 0 || only.includes(p))
     .filter((p) => !skip.includes(p))
-    .filter((p) => hasScript(packageDir(p), "test"))
+    .filter((p) => p === "scripts" || hasScript(packageDir(p), "test"))
     .filter((p) => {
       console.log(`── test ${p}`);
-      return !exec(["bun", "test"], packageDir(p)).ok;
+      const cmd = p === "scripts" ? ["bun", "test", "./test/"] : ["bun", "test"];
+      return !exec(cmd, testDir(p)).ok;
     });
   report("test", failures);
 };
