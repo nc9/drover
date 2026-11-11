@@ -48,9 +48,13 @@ The repo is not fully oxfmt-formatted yet, so CI checks only the files a PR chan
 
 Use `type(scope): message #issue`, for example `fix(harness): retry output decode once #123`.
 
-- Types: `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `build`, `chore`.
+- Types: `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `build`, `style`, `chore`, `revert`, `hotfix`.
 - Scope is required and is usually the package name.
 - One branch per issue, branched from `main`.
+
+### Sign-off (DCO)
+
+Every commit must carry a `Signed-off-by` line. Add it with `git commit -s` (or `git commit --amend -s` to fix the last commit, `git rebase --signoff main` for a branch). Signing off certifies the [Developer Certificate of Origin](https://developercertificate.org/): that you wrote the change, or otherwise have the right to submit it, under this project's MIT licence. Use your real name and an email you can be reached at.
 
 ## Conventions
 
@@ -95,11 +99,11 @@ bun scripts/ci.ts pack --out ~/src/drover-tarballs
 ```json
 {
   "dependencies": {
-    "droveragent": "file:../drover-tarballs/droveragent-0.1.0.tgz"
+    "droveragent": "file:../drover-tarballs/droveragent-<version>.tgz"
   },
   "overrides": {
-    "@droveragent/core": "file:../drover-tarballs/droveragent-core-0.1.0.tgz",
-    "@droveragent/facade": "file:../drover-tarballs/droveragent-facade-0.1.0.tgz"
+    "@droveragent/core": "file:../drover-tarballs/droveragent-core-<version>.tgz",
+    "@droveragent/facade": "file:../drover-tarballs/droveragent-facade-<version>.tgz"
   }
 }
 ```
@@ -124,7 +128,7 @@ bun -e 'console.log(Bun.resolveSync("droveragent", process.cwd()))'
 grep '"@droveragent/core": \["' bun.lock                      # tarball route: @droveragent/core@../drover-tarballs/...
 ```
 
-Run the check after every `bun install` in the consumer. Drover packages do not yet expose a build identifier that tells a local build from a published one with the same version yet; until one exists the resolved path is the check.
+Run the check after every `bun install` in the consumer. Drover packages do not yet expose a build identifier that tells a local build from a published one with the same version; until one exists the resolved path is the check.
 
 ### 4. Go back to the published release
 

@@ -14,6 +14,7 @@
 - [ ] `oxlint` and `oxfmt --check` on changed files
 - [ ] `bun test` on explicit files for each touched package
 - [ ] Docs and package README updated for user-facing changes
+- [ ] Every commit is signed off (`git commit -s`, DCO; see CONTRIBUTING.md)
 
 ## Changelog
 

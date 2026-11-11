@@ -2,7 +2,7 @@
   "name": "droveragent",
   "version": "0.1.0",
   "private": false,
-  "description": "Headless agent harness — define agents and run them. Umbrella entry point re-exporting @droveragent/facade + defineAgent.",
+  "description": "Headless agent harness: define agents and run them. Umbrella entry point re-exporting @droveragent/facade + defineAgent.",
   "keywords": [
     "agent",
     "agents",
