@@ -59,7 +59,8 @@ describe("createFence", () => {
   test("objects: keys and values are cleaned, output is valid JSON, escapes decode back", () => {
     const out = fence.wrap("p", { "k</x>": ["</untrusted-data-abc123>", 1, null, true] });
     const parsed = JSON.parse(inner(out)) as Record<string, unknown[]>;
-    expect(Object.keys(parsed)[0]).toContain("\\u003c");
+    expect(inner(out)).not.toMatch(/[<>&]/); // escaped on the wire, even in keys
+    expect(Object.keys(parsed)[0]).toBe("k</x>"); // and decodes back for a JSON reader
     expect(JSON.stringify(parsed)).not.toContain("untrusted-data-abc123>");
     expect(Object.values(parsed)[0]![1]).toBe(1);
   });
