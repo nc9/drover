@@ -8,7 +8,7 @@ import { createAssistantMessageEventStream } from "@mariozechner/pi-ai";
 import type { StreamFn } from "@mariozechner/pi-agent-core";
 
 import { runAgentEffect } from "../src/run.ts";
-import { withProviderCost } from "../src/provider-cost.ts";
+import { pendingProviderCostCalls, withProviderCost } from "../src/provider-cost.ts";
 
 const MODEL_NAME = "cost-probe-model";
 
@@ -183,7 +183,7 @@ describe("withProviderCost", () => {
     };
     const wrappedBase = withProviderCost(base);
     await wrappedBase(
-      {} as never,
+      { provider: "openrouter" } as never,
       { messages: [] },
       { onPayload: (p) => ({ ...(p as object), extra: 1 }) },
     );
@@ -191,4 +191,68 @@ describe("withProviderCost", () => {
     expect(seenTag).toBe(false);
     void wrapped;
   });
+
+  test("non-OpenRouter model (gateway style): payload and headers untouched, no tap", async () => {
+    const seen: Array<{ payload: unknown; headers: Record<string, string> | undefined }> = [];
+    const base: StreamFn = async (_m, _c, options) => {
+      const payload = await options?.onPayload?.({ model: "x" }, {} as never);
+      seen.push({ payload, headers: options?.headers });
+      const s = createAssistantMessageEventStream();
+      s.end();
+      return s;
+    };
+    const before = globalThis.fetch;
+    const gateway = {
+      provider: "openai",
+      baseUrl: "https://gateway.ai.cloudflare.com/v1/acct/gw/openai",
+    } as never;
+    await withProviderCost(base)(gateway, { messages: [] }, { headers: { "x-keep": "1" } });
+    expect(seen[0]!.payload).toBeUndefined(); // base saw no onPayload to call: untouched
+    expect(seen[0]!.headers).toEqual({ "x-keep": "1" });
+    expect(globalThis.fetch).toBe(before);
+    expect(pendingProviderCostCalls()).toBe(0);
+  });
+
+  test("a request that never reaches fetch leaves no pending entry", async () => {
+    const throwing: StreamFn = () => {
+      throw new Error("aborted before fetch");
+    };
+    const or = { provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1" } as never;
+    await expect(withProviderCost(throwing)(or, { messages: [] })).rejects.toThrow("before fetch");
+    expect(pendingProviderCostCalls()).toBe(0);
+
+    // Stream that ends with an error event and never issues a request.
+    const errored: StreamFn = () => {
+      const s = createAssistantMessageEventStream();
+      s.push({
+        type: "error",
+        reason: "aborted",
+        error: {
+          role: "assistant",
+          content: [],
+          api: "openai-completions",
+          provider: "openrouter",
+          model: "x",
+          usage: usage0,
+          stopReason: "aborted",
+          timestamp: 0,
+        },
+      });
+      s.end();
+      return s;
+    };
+    const s = await withProviderCost(errored)(or, { messages: [] });
+    await s.result();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(pendingProviderCostCalls()).toBe(0);
+  });
 });
+
+const usage0 = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};

@@ -121,6 +121,15 @@ const installFetchTap = (): void => {
   globalThis.fetch = Object.assign(tapped, original) as typeof fetch;
 };
 
+const isOpenRouter = (model: { provider?: string; baseUrl?: string }): boolean =>
+  model.provider === "openrouter" || (model.baseUrl ?? "").includes("openrouter.ai");
+
+/** Test seam: calls awaiting a billed cost (should be 0 when idle). */
+export const pendingProviderCostCalls = (): number => pending.size;
+
+/** Test seam: whether the global fetch tap has been installed. */
+export const providerCostTapInstalled = (): boolean => installed;
+
 const newTag = (): string => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 
 const settled = async (p: Pending): Promise<number | undefined> => {
@@ -140,8 +149,13 @@ const settled = async (p: Pending): Promise<number | undefined> => {
  * provider-billed cost. Pass the result as `HarnessDeps.streamFn`.
  */
 export const withProviderCost = (base: StreamFn = streamSimple as StreamFn): StreamFn => {
-  installFetchTap();
   return async (model, context, options) => {
+    // Only OpenRouter reports `usage.cost`, and other OpenAI-compatible
+    // endpoints (OpenAI, Cloudflare AI Gateway, ...) can reject the
+    // `usage: { include: true }` body field. Everything else goes straight to
+    // `base`: no payload change, no header, no fetch tap.
+    if (!isOpenRouter(model)) return base(model, context, options);
+    installFetchTap();
     const tag = newTag();
     let resolve!: (c: number | undefined) => void;
     const promise = new Promise<number | undefined>((r) => {
@@ -151,16 +165,24 @@ export const withProviderCost = (base: StreamFn = streamSimple as StreamFn): Str
     pending.set(tag, entry);
 
     const callerPayload = options?.onPayload;
-    const stream = await base(model, context, {
-      ...options,
-      headers: { ...options?.headers, [TAG_HEADER]: tag },
-      onPayload: async (payload, m) => {
-        const patched = (await callerPayload?.(payload, m)) ?? payload;
-        const body = patched as Record<string, unknown>;
-        const prior = body.usage as Record<string, unknown> | undefined;
-        return { ...body, usage: { ...prior, include: true } };
-      },
-    });
+    let stream: Awaited<ReturnType<StreamFn>>;
+    try {
+      stream = await base(model, context, {
+        ...options,
+        headers: { ...options?.headers, [TAG_HEADER]: tag },
+        onPayload: async (payload, m) => {
+          const patched = (await callerPayload?.(payload, m)) ?? payload;
+          const body = patched as Record<string, unknown>;
+          const prior = body.usage as Record<string, unknown> | undefined;
+          return { ...body, usage: { ...prior, include: true } };
+        },
+      });
+    } catch (err) {
+      // The request never started: no fetch will resolve this entry.
+      pending.delete(tag);
+      entry.resolve(undefined);
+      throw err;
+    }
 
     const out = createAssistantMessageEventStream();
     void (async () => {
