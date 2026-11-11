@@ -529,6 +529,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       emitDeltas ? { emitDeltas } : undefined,
     );
     const lastAssistant: { text: string | null } = { text: null };
+    // The final assistant message as pi reported it. A provider failure is an
+    // assistant message with `stopReason: "error"` (pi does not throw), or an
+    // empty completion; either must fail the run, never read as success.
+    const lastAssistantMsg: { value: ProviderMessage | null } = { value: null };
     const lastUsage: { value: Usage } = {
       value: resumeFrom ? { ...resumeFrom.usage } : { inputTokens: 0, outputTokens: 0 },
     };
@@ -572,6 +576,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       // Track last assistant text live for output validation.
       if (e.type === "message_end") {
         const msg = e.message;
+        if (msg && msg.role === "assistant") lastAssistantMsg.value = msg as ProviderMessage;
         if (msg && msg.role === "assistant" && Array.isArray(msg.content)) {
           lastAssistant.text = null;
           for (let i = msg.content.length - 1; i >= 0; i--) {
@@ -961,6 +966,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       } else if (loopError) {
         status = "error";
         errorOut = { tag: "LoopError", message: (loopError as Error).message };
+      } else if (providerFailure(lastAssistantMsg.value)) {
+        status = "error";
+        errorOut = { tag: "ProviderError", message: providerFailure(lastAssistantMsg.value)! };
       } else if (isOpenSchema(spec.outputSchema)) {
         // No structured-output contract — the run succeeds on a clean natural
         // end. `finalText` may be empty (the agent's last act was a tool call
@@ -1090,6 +1098,15 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
 
     const durationMs = Date.now() - startedAt;
     const endedAt = Date.now();
+    if (errorOut?.tag === "ProviderError") {
+      safeEmit({
+        kind: "error",
+        runId: ctx.runId,
+        tag: errorOut.tag,
+        message: errorOut.message,
+        ts: endedAt,
+      });
+    }
     safeEmit({ kind: "run_end", runId: ctx.runId, status, ts: endedAt });
 
     // Final persistence pass — write terminal status + output/error + cumulative
@@ -1354,4 +1371,31 @@ export function hashSpec(spec: AgentSpec): string {
     h = (h * 31 + s.charCodeAt(i)) | 0;
   }
   return (h >>> 0).toString(16);
+}
+
+/** The slice of pi's assistant message the provider-failure check reads. */
+type ProviderMessage = {
+  stopReason?: string;
+  errorMessage?: string;
+  content?: ReadonlyArray<{ type?: string; text?: string }>;
+};
+
+/**
+ * Why the final assistant message is a provider failure, or null if it is not.
+ * `stopReason: "error"` carries pi's message (e.g. "402 This request requires
+ * more credits"); a message with no content at all (no text, thinking or tool
+ * call) is an empty completion. `aborted` is a cancel, handled elsewhere.
+ * No assistant message at all means the stream produced nothing.
+ */
+function providerFailure(msg: ProviderMessage | null): string | null {
+  if (!msg) return "provider returned no assistant message";
+  if (msg.stopReason === "error") {
+    return msg.errorMessage && msg.errorMessage.trim() !== ""
+      ? msg.errorMessage
+      : "provider error (no message)";
+  }
+  if (msg.stopReason === "aborted") return null;
+  const blocks = Array.isArray(msg.content) ? msg.content : [];
+  const empty = blocks.every((b) => b.type === "text" && (b.text ?? "").trim() === "");
+  return empty ? "provider returned an empty completion (no content)" : null;
 }

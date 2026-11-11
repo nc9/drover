@@ -2,6 +2,19 @@
 
 All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version together.
 
+## Unreleased
+
+### Fixed
+
+- A provider failure is never a success. pi reports HTTP errors (402 out of
+  credits, 401, 5xx, ...) as an assistant message with `stopReason: "error"`
+  rather than throwing, and a dead stream can end as an empty completion; both
+  used to return `status: "success"` with empty `finalText`, zero tokens and no
+  error event. The run now ends `status: "error"` with
+  `error.tag === "ProviderError"` (message carries the provider's text, status
+  code included), an `error` event is emitted before `run_end`, and no output
+  decode is attempted.
+
 ## 0.2.0 — 2026-08-25
 
 `@droveragent/harness` + `@droveragent/facade` only; every other package is
