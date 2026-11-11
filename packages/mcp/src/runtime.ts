@@ -160,17 +160,45 @@ export function sanitizeToolDescription(text: string): string {
   return escapeTags(descriptionCleaner.clean(text, MAX_MCP_DESCRIPTION_CHARS));
 }
 
+/** Deepest JSON Schema nesting kept from a server; anything deeper becomes `{}` (accept any). */
+const MAX_SCHEMA_DEPTH = 32;
+
+/**
+ * A server-supplied input schema also reaches the model's tool list unfenced: every
+ * `description` and `title` in it (at any depth) gets the same cleaning and bound as the
+ * tool description. Property names, `enum`, `const`, `default` and `examples` are kept
+ * as sent, because arguments must match them exactly. A schema nested deeper than
+ * {@link MAX_SCHEMA_DEPTH} is cut to `{}` there rather than passed through unread.
+ */
+export function sanitizeInputSchema(schema: unknown, depth = 0): unknown {
+  if (Array.isArray(schema)) {
+    return depth >= MAX_SCHEMA_DEPTH ? [] : schema.map((v) => sanitizeInputSchema(v, depth + 1));
+  }
+  if (schema === null || typeof schema !== "object") return schema;
+  if (depth >= MAX_SCHEMA_DEPTH) return {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(schema)) {
+    const value =
+      (k === "description" || k === "title") && typeof v === "string"
+        ? sanitizeToolDescription(v)
+        : sanitizeInputSchema(v, depth + 1);
+    // defineProperty: a server key named `__proto__` stays a plain key.
+    Object.defineProperty(out, k, { value, enumerable: true, writable: true, configurable: true });
+  }
+  return out;
+}
+
 function mcpToolToDroverTool(
   serverId: string,
   client: Client,
   tool: McpToolDescriptor,
 ): AnyToolDef {
-  // The MCP tool's JSON Schema is preserved verbatim via Type.Unsafe so the
-  // LLM sees the right arg shape; server-side enforcement is the source of
-  // truth for validation.
+  // The MCP tool's JSON Schema keeps its shape via Type.Unsafe so the LLM sees
+  // the right args (server-side enforcement is the source of truth for
+  // validation); its description and title strings are cleaned first.
   const schema: TSchema = (
     tool.inputSchema && typeof tool.inputSchema === "object"
-      ? Type.Unsafe(tool.inputSchema)
+      ? Type.Unsafe(sanitizeInputSchema(tool.inputSchema) as object)
       : Type.Object({}, { additionalProperties: true })
   ) as TSchema;
 
