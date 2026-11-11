@@ -1219,7 +1219,8 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     };
     if (output !== undefined) result.output = output;
     if (errorOut) result.error = errorOut;
-    if (Object.keys(usageByProvider).length > 0) result.usageByProvider = usageByProvider;
+    if (Object.keys(usageByProvider).length > 0)
+      result.usageByProvider = Object.fromEntries(Object.entries(usageByProvider));
 
     // Run-level lifecycle: fire `onRunEnd` once, after the loop +
     // `postSuccess` and terminal resolution. Observation only — failures and

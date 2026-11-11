@@ -14,7 +14,7 @@ import { runAgent, createProviderChain } from "@droveragent/facade";
 
 const providers = createProviderChain({
   providers: ["openrouter", "cloudflare-ai-gateway"], // pi-ai provider names, in order
-  models: { "gpt-mini": "openai/gpt-4o-mini" },       // spec model name -> canonical id
+  models: { "gpt-mini": "openai/gpt-4o-mini" }, // spec model name -> canonical id
 });
 
 const handle = runAgent(spec, input, { providers }); // spec.model = "gpt-mini"
@@ -51,10 +51,11 @@ Classification is **status first, structured fields only**. A class that can ben
 provider (credits, key, region) needs the HTTP status plus, where the class says so,
 a field of the parsed error body. Message text is never searched for words: provider
 errors echo request content (a rejected prompt, a page title), so text an outsider
-controls could otherwise bench a provider. Two things are read from the text, because
-over the plain transport pi-ai keeps nothing else: the leading status code of the SDK's
-message (`"402 ..."`), and on a 429 only, a "Retry-After: N" / "try again in Ns" hint
-(at most one wait of `maxRateLimitWaitMs`, default 10 s).
+controls could otherwise bench a provider. The fields come from the response tap (below).
+Only when an attempt has no tap record are two things read from the text, because then
+pi-ai keeps nothing else: the leading status code of the SDK's message (`"402 ..."`), and
+on a 429 only, a "Retry-After: N" / "try again in Ns" hint (at most one wait of
+`maxRateLimitWaitMs`, default 10 s).
 
 | Class | Needs | Fails over | Retried in place | Skipped for the rest of the run |
 |---|---|---|---|---|
@@ -98,13 +99,30 @@ failureClass, status, code, waitMs): class and status, never provider text. `usa
 `RunResult.usageByProvider` name the serving provider. `usageByProvider` covers the calls of this
 invocation: a resumed run starts it empty (the cumulative `usage` is restored from the checkpoint).
 
+## Structured provider errors
+
+pi-ai flattens a failed call to the OpenAI SDK's text (`"403 <message>"`) and drops the response body
+and headers (`onResponse` is not called for non-2xx). The chain restores them per attempt with a
+**response tap**: it tags the attempt's request with a header, and one process-wide `fetch` wrapper
+(installed once, pass-through for every untagged request, tag stripped before the request leaves the
+process) reads a bounded copy of a non-2xx body and records the status, a header allow-list
+(`retry-after`, `retry-after-ms`, `x-ratelimit-*`, `x-request-id`, `cf-ray`; nothing else) and the parsed
+error fields (`error.code`, `limit_source`). Classification uses those fields first (message text is only a fallback: the SDK's leading status when the tap is off, and a `Retry-After` hint on a 429 without the header, always capped by `maxRateLimitWaitMs`), so a
+region refusal is `region_refused` and a real `Retry-After` header is honoured. The failure's status, code,
+`retryAfterMs` and kept headers are on the final message's `diagnostics`; events and the default message
+carry status and code only, and `includeProviderText: true` opts in to the providers' own text.
+
+Attempt tags are random UUIDs, a response is recorded only for a live attempt, and kept header values are cut to 128 characters. `Retry-After` is read strictly (seconds or an HTTP date); a value above `maxRateLimitWaitMs` or a malformed one is not waited on and the chain fails over. If the global `fetch` cannot be patched (frozen global, some Workers setups) the tap switches itself off, no tag header is sent, and classification falls back to the SDK's leading status: Workers are supported only in that degraded mode.
+
+The tap needs the OpenAI SDK to resolve `globalThis.fetch` when its client is created (true for the version
+pi-ai uses); a `streams` entry (custom transport) is not tapped and supplies its own `status` / `error: { code }`
+on a thrown error. Without a tap record the chain falls back to the SDK's leading status.
+
 ## Limits
 
-- pi-ai flattens a failed call to the SDK's text (`"403 <message>"`) and drops the response body and
-  headers, and `onResponse` is not called for non-2xx. Over the plain transport only the leading status
-  survives: a region refusal arrives as a 403 and is classed `forbidden` (it fails over, is not retried
-  in place and is not benched), and a real `Retry-After` header is invisible. A custom `streams` entry that throws
-  an error with `status` and `error: { code }` gets the precise class.
+- Without a tap record (a custom `streams` entry, or a runtime where `fetch` cannot be patched) only the
+  SDK's leading status survives: a region refusal is then a bare 403, classed `forbidden` (it fails over,
+  is not retried in place and is not benched).
 - The OpenAI client's own retries are off (`maxRetries: 0`): failing over is the retry.
 - A failed attempt the provider still billed is not counted.
 - Not verified against live OpenRouter or Cloudflare endpoints: tests use local servers.

@@ -37,6 +37,11 @@ All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version t
   provider for the rest of the run, a bare 403 (`forbidden`) does not. When every provider
   fails the run ends `ProviderError` listing each attempt's class and status. See
   `docs/guides/provider-chain.mdx`.
+- Structured provider errors: a per-attempt response tap restores the status, body error
+  fields and `Retry-After` / rate-limit headers that pi-ai drops, so a region refusal classifies
+  as `region_refused` and nothing parses message text. Final error messages carry class, status
+  and code only (`includeProviderText` opts in to the provider's text); failures are on the
+  message's `diagnostics`.
 - `provider_failover` event (`retry` / `failover` / `exhausted`, with failure
   class and status, never provider text); `usage` events carry `provider` and
   `model`; `RunResult.usageByProvider` splits usage per serving provider.
