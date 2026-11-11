@@ -210,7 +210,13 @@ export interface TraceSummary {
 /** A null-prototype record built from a Map: the only place accumulators become objects. */
 function toRecord<V>(m: ReadonlyMap<string, V>): Record<string, V> {
   const out = Object.create(null) as Record<string, V>;
-  for (const [k, v] of m) Object.defineProperty(out, k, { value: v, enumerable: true, writable: true, configurable: true });
+  for (const [k, v] of m)
+    Object.defineProperty(out, k, {
+      value: v,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
   return out;
 }
 
@@ -229,7 +235,8 @@ export function summarizeTrace(events: ReadonlyArray<TraceEvent>): TraceSummary 
   for (const e of events) {
     if ("unknown" in e) {
       unknownEvents++;
-      if (e.reason === "unknown_kind") unknownKinds.set(e.kind, (unknownKinds.get(e.kind) ?? 0) + 1);
+      if (e.reason === "unknown_kind")
+        unknownKinds.set(e.kind, (unknownKinds.get(e.kind) ?? 0) + 1);
       continue;
     }
     switch (e.kind) {

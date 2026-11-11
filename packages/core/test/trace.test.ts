@@ -149,7 +149,12 @@ describe("trace format v1", () => {
     const events: TraceEvent[] = [];
     for (const name of hostile) {
       events.push({ ...SAMPLES.tool_call_end, toolName: name, durationMs: 4 } as HarnessEvent);
-      events.push({ ...SAMPLES.tool_call_end, toolName: name, result: { content: "x", isError: true }, durationMs: 6 } as HarnessEvent);
+      events.push({
+        ...SAMPLES.tool_call_end,
+        toolName: name,
+        result: { content: "x", isError: true },
+        durationMs: 6,
+      } as HarnessEvent);
       events.push({ ...SAMPLES.usage, provider: name } as HarnessEvent);
       events.push(readEvent({ kind: name, runId: "r", ts: 1 }));
     }
@@ -171,19 +176,36 @@ describe("trace format v1", () => {
     expect(Object.getOwnPropertyNames(Object.prototype).sort()).toEqual(before);
     expect(Object.getPrototypeOf(s.toolCalls.byTool)).toBeNull();
     // JSON round trip keeps them as ordinary keys.
-    const back = JSON.parse(JSON.stringify(s)) as { toolCalls: { byTool: Record<string, unknown> } };
+    const back = JSON.parse(JSON.stringify(s)) as {
+      toolCalls: { byTool: Record<string, unknown> };
+    };
     expect(Object.hasOwn(back.toolCalls.byTool, "constructor")).toBe(true);
   });
 
   test("the reader: a kind that names an Object.prototype member is unknown, not a known kind", () => {
-    for (const kind of ["__proto__", "constructor", "prototype", "toString", "hasOwnProperty", "valueOf"]) {
-      expect(readEvent({ kind, runId: "r", ts: 1 })).toMatchObject({ unknown: true, kind, reason: "unknown_kind" });
+    for (const kind of [
+      "__proto__",
+      "constructor",
+      "prototype",
+      "toString",
+      "hasOwnProperty",
+      "valueOf",
+    ]) {
+      expect(readEvent({ kind, runId: "r", ts: 1 })).toMatchObject({
+        unknown: true,
+        kind,
+        reason: "unknown_kind",
+      });
     }
     // Through JSON, where `__proto__` is an own key of the parsed object.
-    const parsed = JSON.parse('{"kind":"run_end","runId":"r","ts":1,"status":"success","__proto__":{"x":1}}');
+    const parsed = JSON.parse(
+      '{"kind":"run_end","runId":"r","ts":1,"status":"success","__proto__":{"x":1}}',
+    );
     expect(readEvent(parsed)).toEqual(parsed);
     expect(({} as Record<string, unknown>).x).toBeUndefined();
-    const t = parseTraceJsonl('{"kind":"trace_header","traceVersion":1,"runId":"r","__proto__":{"polluted":true}}\n{"kind":"__proto__","runId":"r","ts":1}\n');
+    const t = parseTraceJsonl(
+      '{"kind":"trace_header","traceVersion":1,"runId":"r","__proto__":{"polluted":true}}\n{"kind":"__proto__","runId":"r","ts":1}\n',
+    );
     expect(t.events[0]).toMatchObject({ unknown: true, kind: "__proto__" });
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
