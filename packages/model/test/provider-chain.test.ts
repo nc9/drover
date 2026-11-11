@@ -296,6 +296,8 @@ describe("provider chain", () => {
           to: "b",
           failureClass: cls as never,
           status,
+          // Credits, key and region skip the provider for the run; the rest only pass it over.
+          benched: ["credits_exhausted", "key_refused", "region_refused"].includes(cls),
           ...(cls === "region_refused" ? { code: REGION } : {}),
         },
       ]);
@@ -654,5 +656,115 @@ describe("provider chain", () => {
       expect(bound.notices).toEqual([]); // not classified, no failover/exhausted notice
       expect(a.calls).toHaveLength(1); // the attempt really started before the abort
     }
+  });
+
+  describe("per-class actions", () => {
+    test("default: an invalid request ends the call (exhausted, not benched), no other provider is asked", async () => {
+      const [a, b] = [
+        fake("a", [{ kind: "error", message: "400 unknown model" }]),
+        fake("b", [{ kind: "ok" }]),
+      ];
+      const { result, notices } = await run(chainOf([a, b]));
+      expect(result.stopReason).toBe("error");
+      expect(notices).toEqual([
+        {
+          action: "exhausted",
+          from: "a",
+          to: null,
+          failureClass: "invalid_request",
+          status: 400,
+          benched: false,
+        },
+      ]);
+      expect(b.calls).toHaveLength(0);
+    });
+
+    test('invalid_request: "next" fails over for this call only; the first provider is asked first again', async () => {
+      const [a, b] = [
+        fake("a", [{ kind: "error", message: "400 unknown model" }, { kind: "ok" }]),
+        fake("b", [{ kind: "ok" }]),
+      ];
+      const bound = bind(chainOf([a, b], { actions: { invalid_request: "next" } }));
+      const first = await call(bound);
+      expect(first.result.provider).toBe("b");
+      expect(first.notices).toEqual([
+        {
+          action: "failover",
+          from: "a",
+          to: "b",
+          failureClass: "invalid_request",
+          status: 400,
+          benched: false,
+        },
+      ]);
+      const second = await call(bound); // the next turn of the same run
+      expect(second.result.provider).toBe("a");
+      expect([a.calls.length, b.calls.length]).toEqual([2, 1]);
+    });
+
+    test('"skip" benches the provider for the run; "stop" ends a class that fails over by default', async () => {
+      const [a, b] = [
+        fake("a", [{ kind: "error", message: "400 unknown model" }, { kind: "ok" }]),
+        fake("b", [{ kind: "ok" }]),
+      ];
+      const bound = bind(chainOf([a, b], { actions: { invalid_request: "skip" } }));
+      expect((await call(bound)).notices[0]).toMatchObject({ action: "failover", benched: true });
+      expect((await call(bound)).result.provider).toBe("b"); // a is tried last now
+      const [c, d] = [
+        fake("c", [{ kind: "error", message: "503 down" }]),
+        fake("d", [{ kind: "ok" }]),
+      ];
+      const stopped = await run(chainOf([c, d], { actions: { provider_error: "stop" } }));
+      expect(stopped.notices).toEqual([
+        {
+          action: "exhausted",
+          from: "c",
+          to: null,
+          failureClass: "provider_error",
+          status: 503,
+          benched: false,
+        },
+      ]);
+      expect(d.calls).toHaveLength(0);
+    });
+
+    test("every provider rejects the call: one error with each class and status, no retry loop", async () => {
+      const [a, b] = [
+        fake("a", [{ kind: "error", message: "400 unknown model" }]),
+        fake("b", [{ kind: "error", message: "422 bad field" }]),
+      ];
+      const { result, notices } = await run(
+        chainOf([a, b], { actions: { invalid_request: "next" } }),
+      );
+      expect(result.stopReason).toBe("error");
+      expect(result.errorMessage).toBe(
+        "all providers failed: a: invalid_request (400) | b: invalid_request (422)",
+      );
+      expect(result.diagnostics?.map((d) => d.details)).toEqual([
+        { provider: "a", failureClass: "invalid_request", status: 400, benched: false },
+        { provider: "b", failureClass: "invalid_request", status: 422, benched: false },
+      ]);
+      expect(notices.map((n) => n.action)).toEqual(["failover", "exhausted"]);
+      expect([a.calls.length, b.calls.length]).toEqual([1, 1]);
+    });
+
+    test("rate limit keeps its in-place retry under next; bad actions are refused at construction", async () => {
+      const [a, b] = [
+        fake("a", [{ kind: "error", message: "429 slow. Retry-After: 1" }, { kind: "ok" }]),
+        fake("b", [{ kind: "ok" }]),
+      ];
+      const { notices } = await run(chainOf([a, b], { actions: { rate_limited: "next" } }));
+      expect(notices.map((n) => n.action)).toEqual(["retry"]);
+      expect(() => chainOf([a], { actions: { nonsense: "next" } as never })).toThrow(
+        /unknown failure class/,
+      );
+      expect(() => chainOf([a], { actions: { invalid_request: "maybe" } as never })).toThrow(
+        /must be/,
+      );
+      // Class names are data: a prototype member is not a class.
+      expect(() => chainOf([a], { actions: { constructor: "next" } as never })).toThrow(
+        /unknown failure class/,
+      );
+    });
   });
 });

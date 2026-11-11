@@ -131,6 +131,11 @@ export type HarnessEvent =
       kind: "provider_failover";
       runId: string;
       action: "retry" | "failover" | "exhausted";
+      /**
+       * On `failover` and `exhausted`: `true` when `from` is now skipped (tried last) for the
+       * rest of the run, `false` when it was only passed over for this call.
+       */
+      benched?: boolean;
       from: string;
       /** Next provider; null for `retry` (same provider) and `exhausted`. */
       to: string | null;

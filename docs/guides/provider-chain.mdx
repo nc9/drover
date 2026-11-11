@@ -82,10 +82,39 @@ on a 429 only, a "Retry-After: N" / "try again in Ns" hint (at most one wait of
 | `invalid_request`    | 400, 413, 422                                                               | **no**              | no                                                     | no                              |
 | `other`              | no usable status                                                            | yes, this call only | no                                                     | no                              |
 
-`invalid_request` ends the chain: the same request would fail the same way on the next
-provider. A model answer that fails the output schema is not a provider failure; the
+`invalid_request` ends the chain by default: the same request would usually fail the same way
+on the next provider. A model answer that fails the output schema is not a provider failure; the
 chain never sees it. "Skipped" means tried last for later calls of the same run; it is
 per run and per provider, nothing is shared.
+
+### Choosing the action per class
+
+The table above is the default. `actions` overrides it per failure class with one of:
+
+| action   | what the chain does                                                                             | when it fits                                                                       |
+| -------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `"stop"` | ends the call; no other provider is tried                                                       | a failure the next provider would repeat (the default for `invalid_request`)       |
+| `"next"` | tries the next provider for this call only; this provider is asked first again on the next call | a failure specific to this provider and this call                                  |
+| `"skip"` | tries the next provider and tries this one last for the rest of the run                         | a failure that will not heal within the run (the default for credits, key, region) |
+
+The common case is a model alias or request field that only some providers accept: the first
+provider answers `400 unknown model`, the second would have served the call. Set
+`invalid_request` to `"next"`:
+
+```ts
+createProviderChain({
+  providers: ["openrouter", "cloudflare-ai-gateway"],
+  models: { "gpt-mini": "openai/gpt-4o-mini" },
+  actions: { invalid_request: "next" },
+});
+```
+
+The first provider is passed over for that call only and asked first again on the next one;
+if every provider rejects the call, the run ends with each provider's class and status (no retry
+loop: each provider is tried once per call). Keep the default when your providers accept the
+same models and fields: a genuinely malformed request then fails fast instead of being sent to
+every provider. A rate limit keeps its one in-place `Retry-After` wait under `"next"` and
+`"skip"`.
 
 A bare 403 is `forbidden`, not `key_refused`: over the plain transport a regional refusal,
 a moderation refusal and a bad key all arrive as `403 <text>`, and only a structured field tells
@@ -106,10 +135,13 @@ is always eligible.
 ## Trace and usage
 
 Every reaction is a `provider_failover` event (`retry` / `failover` / `exhausted`, from, to,
-failureClass, status, code, waitMs): class and status, never provider text. `usage` events and
-`RunResult.usageByProvider` name the serving provider. `usageByProvider` is cumulative over the
-run like `usage`: a resume or continuation restores it from the checkpoint (for checkpoints written
-by this version; an older checkpoint has no split, so it restarts from that invocation).
+failureClass, status, code, waitMs): class and status, never provider text. On `failover` and
+`exhausted`, `benched` says whether `from` is now skipped for the rest of the run (`true`) or was
+only passed over for this call (`false`); the final error's `diagnostics` carry the same flag per
+failure. `usage` events and `RunResult.usageByProvider` name the serving provider.
+`usageByProvider` is cumulative over the run like `usage`: a resume or continuation restores it
+from the checkpoint (for checkpoints written by this version; an older checkpoint has no split, so
+it restarts from that invocation).
 
 ## Structured provider errors
 
