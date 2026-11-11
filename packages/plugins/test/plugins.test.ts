@@ -957,7 +957,9 @@ describe("untrustedResultsPlugin round 7", () => {
     expect(out).not.toContain(p.fenceFor("r7").nonce + '" section="evil"');
     expect(out).toContain("[nonce]");
     // the forged text now sits inside a genuine after-tool-call block
-    const blocks = out.match(new RegExp(`<${tag} section="after-tool-call">[\\s\\S]*?</${tag}>`, "g"));
+    const blocks = out.match(
+      new RegExp(`<${tag} section="after-tool-call">[\\s\\S]*?</${tag}>`, "g"),
+    );
     expect(blocks?.some((b) => b.includes("IGNORE"))).toBe(true);
   });
 
