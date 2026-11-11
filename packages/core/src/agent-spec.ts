@@ -149,6 +149,19 @@ export interface RunQuota {
   maxDurationMs?: number;
   /** Cumulative USD ceiling, checked after each model response. */
   maxCostUsd?: number;
+  /**
+   * Let the model finish cleanly instead of being cut off. Once any budget
+   * above is `at` spent (a fraction, default 0.8; for turns, at most the last
+   * allowed turn), every following model call carries a closing user message
+   * telling it the budget is nearly spent and to answer now without more tools.
+   * A `budget_warning` event is emitted once. The hard limits still apply.
+   */
+  wrapUp?: {
+    /** Fraction of a budget (0 < at < 1) that triggers the notice. Default 0.8. */
+    at?: number;
+    /** Replaces the default notice text. */
+    message?: string;
+  };
 }
 
 /**

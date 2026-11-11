@@ -48,6 +48,11 @@ All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version t
 - `makeSummarizer` takes an optional transport; under a chain the compaction
   summariser fails over too.
 
+- `quota.wrapUp` (`{ at?, message? }`) and the `budget_warning` event: once a
+  turn, cost or wall-clock budget is `at` spent (default 0.8), every following
+  model call carries a notice telling the model to finish now without more
+  tools, so a run ends with an answer instead of `status: "quota"`.
+
 ## 0.2.0 — 2026-08-25
 
 `@droveragent/harness` + `@droveragent/facade` only; every other package is

@@ -873,6 +873,52 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           }
         : undefined;
 
+    // Graceful finish: once a budget is `quota.wrapUp.at` spent, every later
+    // model call carries a closing notice. Appended per call (never written to
+    // pi's history or the checkpoint), so a resumed run recomputes it.
+    const wrapUp = quota.wrapUp;
+    let wrapUpActive = false;
+    const wrapUpTrigger = (): { dimension: "turns" | "duration" | "cost"; limit: number; used: number } | null => {
+      if (!wrapUp) return null;
+      const at = wrapUp.at !== undefined && wrapUp.at > 0 && wrapUp.at < 1 ? wrapUp.at : 0.8;
+      if (maxTurns !== undefined) {
+        const used = translator.currentTurn();
+        if (used >= Math.min(Math.ceil(at * maxTurns), maxTurns - 1)) {
+          return { dimension: "turns", limit: maxTurns, used };
+        }
+      }
+      if (quota.maxCostUsd !== undefined) {
+        const used = lastUsage.value.costUsd ?? 0;
+        if (used >= at * quota.maxCostUsd) return { dimension: "cost", limit: quota.maxCostUsd, used };
+      }
+      if (quota.maxDurationMs !== undefined) {
+        const used = Date.now() - startedAt;
+        if (used >= at * quota.maxDurationMs) {
+          return { dimension: "duration", limit: quota.maxDurationMs, used };
+        }
+      }
+      return null;
+    };
+    const baseTransformContext = transformContext;
+    const transformWithWrapUp = wrapUp
+      ? async (messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> => {
+          const next = baseTransformContext ? await baseTransformContext(messages, signal) : messages;
+          let trigger: ReturnType<typeof wrapUpTrigger> = null;
+          if (!wrapUpActive) {
+            trigger = wrapUpTrigger();
+            if (trigger) {
+              wrapUpActive = true;
+              safeEmit({ kind: "budget_warning", runId: ctx.runId, ...trigger, ts: Date.now() });
+            }
+          }
+          if (!wrapUpActive) return next;
+          const text =
+            wrapUp.message ??
+            "Budget notice: this run's budget is nearly spent. Finish now: do not call more tools; give your final answer with what you have.";
+          return [...next, { role: "user", content: text, timestamp: Date.now() } as AgentMessage];
+        }
+      : baseTransformContext;
+
     const loopConfig: AgentLoopConfig = {
       model: resolved.model as never,
       convertToLlm: (messages: AgentMessage[]): Message[] => messages as Message[],
@@ -886,7 +932,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       // routing). `AgentLoopConfig extends SimpleStreamOptions` and pi spreads
       // the whole config into the stream options, so this reaches the provider.
       ...(deps.onPayload ? { onPayload: deps.onPayload } : {}),
-      ...(transformContext ? { transformContext } : {}),
+      ...(transformWithWrapUp ? { transformContext: transformWithWrapUp } : {}),
       ...(beforeToolCall ? { beforeToolCall: beforeToolCall as never } : {}),
       ...(afterToolCall ? { afterToolCall: afterToolCall as never } : {}),
       getFollowUpMessages,

@@ -16,7 +16,7 @@ interface AgentSpec<ISchema = TSchema, OSchema = TSchema> {
   subagents?: SubagentConfig;
   outputRetries?: number;     // default 2
   plugins?: readonly HarnessPlugin[];
-  quota?: RunQuota;           // { maxTurns?, maxDurationMs?, maxCostUsd? }
+  quota?: RunQuota;           // { maxTurns?, maxDurationMs?, maxCostUsd?, wrapUp? }
 }
 ```
 
@@ -76,3 +76,20 @@ its behaviour changes. Function-valued `systemPrompt` uses
 `Function.toString()` so source edits produce different hashes (but
 closure-over-variables drift is invisible — prefer string prompts on
 resumable agents).
+
+## Finishing inside a budget
+
+A hard budget ends the run with `status: "quota"` and no answer. Add
+`quota.wrapUp` to let the model finish cleanly first:
+
+```ts
+quota: { maxTurns: 12, maxCostUsd: 0.5, wrapUp: { at: 0.8 } }
+```
+
+Once any budget is `at` spent (default 0.8; for turns, at most the last allowed
+turn), every following model call carries a closing user message: the budget is
+nearly spent, do not call more tools, answer with what you have. A
+`budget_warning` event (`dimension`, `limit`, `used`) is emitted once. The message
+is appended per call, never written to the history or checkpoint, so a resumed
+run recomputes it. The hard limits still apply: a model that ignores the notice
+is cut off as before. `wrapUp.message` replaces the default text.
