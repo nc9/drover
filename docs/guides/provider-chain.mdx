@@ -56,12 +56,13 @@ export default {
         { name: "openrouter", apiKey: env.OPENROUTER_KEY, useEnv: false },
         {
           name: "cloudflare-ai-gateway",
-          apiKey: env.CF_AIG_TOKEN,
+          apiKey: env.CF_AIG_TOKEN, // sent as cf-aig-authorization by pi-ai
+          // The base URL is pi-ai's gateway URL for the model's API (here `/compat`), with
+          // these filled in; set `baseUrl` to use another.
           vars: {
             CLOUDFLARE_ACCOUNT_ID: env.CF_ACCOUNT_ID,
             CLOUDFLARE_GATEWAY_ID: env.CF_GATEWAY_ID,
           },
-          headers: { "cf-aig-authorization": `Bearer ${env.CF_AIG_TOKEN}` },
           models: { "openai/gpt-5-mini": { id: "gpt-5-mini", contextWindow: 400_000 } },
           useEnv: false,
         },
@@ -74,15 +75,26 @@ export default {
 ```
 
 - `apiKey`, `baseUrl` (its `{PLACEHOLDER}`s filled from `vars`), `headers` (merged over the
-  model's) and `models` are per entry. Anything absent falls back to `apiKeys`, `overrides`,
+  model's) and `models` are per entry. A placeholder is `{[A-Z0-9_]+}` and its value must be
+  letters, digits, `_`, `.` or `-`; an unfilled or unusable one makes the provider unusable for
+  the call (pi-ai is never left to fill it from `process.env`).
+- Base URL: the entry's `baseUrl`, then `overrides`, then pi-ai's registry URL for the
+  provider and the model's API, also for a model declared in `models`. When none is known the
+  provider is refused (`no base URL for provider "..."`): a request is never sent with an empty
+  base URL, which the OpenAI SDK would turn into `api.openai.com`.
+- Headers: on OpenAI-compatible providers an `Authorization` header in `headers` replaces the
+  `apiKey` bearer. On `cloudflare-ai-gateway`, pi-ai sets `cf-aig-authorization` from `apiKey`
+  after `headers`, so a `cf-aig-authorization` header has no effect: put the gateway token in
+  `apiKey`. Anything absent falls back to `apiKeys`, `overrides`,
   `ids` / `extraModels` and then the environment; `useEnv: false` turns the environment off for
   that entry, so a missing setting makes the provider unusable instead of reading `process.env`.
 - `models` puts a provider's model ids in one place: a provider id (`"b-mini"`), `null` (not served
   here), or a declaration for a model pi-ai's registry does not list (`{ id, contextWindow?, ... }`).
 - Two chains with different credentials for the same provider run side by side in one process.
-- Credentials and header values given here go to the provider and nowhere else: never into
-  events, errors, the chain record, storage or traces (tested over a provider that echoes the key
-  back in its error).
+- Credentials and header values given here go to the provider and nowhere else: drover never puts
+  them into events, errors, the chain record, storage or traces (tested over a provider that
+  echoes the key back in its error). The exception is `includeProviderText: true`: the provider's
+  own error text is then kept, and a provider that echoes the key or a header carries it along.
 
 ## Providers and models are data
 
@@ -224,9 +236,14 @@ failed:
 - `usage` is the tokens and cost of the calls the provider served: the billed cost when the chain
   reports it (`billedCost`), pi-ai's list price otherwise.
 - No provider text: classes, counts and numbers only.
+- Compaction summariser calls that go through the chain count in `failed` / `failures` (their
+  failover notices reach the record), but not in `answered` or `usage`: the summariser's answer
+  and usage stay outside the run's model-call accounting.
 - A resume or continuation of the run appends to the record of its previous invocation, read
-  from the run's stored `chain_record` event (needs storage; without it a new invocation starts
-  a fresh record).
+  from the run's stored `chain_record` event. Without one (no storage, the event was not
+  persisted, or listing the stored events failed) the record restarts at zero for that
+  invocation, while `usageByProvider` stays cumulative from the checkpoint, so the two can
+  disagree after such a resume.
 
 ## Structured provider errors
 
@@ -292,7 +309,7 @@ const providers = createProviderChain({
 - `quota.maxCostUsd` (and a continuation's own `budget.maxCostUsd`, where that lands) runs
   on the same per-call figures.
 - Without a chain, wrap the transport instead: `runAgent(spec, input, { streamFn:
-  withProviderCost() })`. A chain does not use `streamFn`, so under a chain use
+withProviderCost() })`. A chain does not use `streamFn`, so under a chain use
   `billedCost`.
 
 ## Limits
