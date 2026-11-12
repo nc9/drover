@@ -112,7 +112,7 @@ is emitted once. `wrapUp.message` replaces the default text.
   - `maxTurns`, for every run: reaching the cap on the answer turn is not a breach (that turn
     was allowed; `maxTurns` is a budget, not a tripwire) and records no overshoot.
   - `maxTokens` and `maxCostUsd`, only once the wrap-up warning fired: this is an overshoot and
-    `wrapUp.overshoot` (`dimension`, `limit`, `observed`) records the excess. Without
+    `wrapUp.overshoot` (`dimension`, `limit`, `observed`, `scope`: `"spec"` or `"budget"`) records the excess. Without
     `quota.wrapUp` a cost or token breach ends the run `quota`.
   - A per-invocation `budget` (resume or continuation, see
     [pause and resume](/guides/pause-resume)) follows the same rule. Its turn cap is never an

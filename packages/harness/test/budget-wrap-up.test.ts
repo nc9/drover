@@ -323,7 +323,7 @@ describe("quota.wrapUp", () => {
       limit: 10,
       used: 6,
       outcome: "wrapped_up",
-      overshoot: { dimension: "tokens", limit: 10, observed: 26 },
+      overshoot: { dimension: "tokens", limit: 10, observed: 26, scope: "spec" },
     });
   });
 

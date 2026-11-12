@@ -1558,6 +1558,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
                 dimension: overshoot.dimension as "cost" | "tokens",
                 limit: overshoot.limit,
                 observed: overshoot.observed,
+                scope: overshoot.scope === "invocation" ? "budget" : "spec",
               },
             }
           : {}),

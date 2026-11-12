@@ -249,10 +249,35 @@ describe("resumeAgent appendMessages (continue a finished run)", () => {
           budget: { maxTokens: 10 },
         }).result;
         expect(cont.status).toBe("success");
-        expect(cont.wrapUp?.overshoot).toEqual({ dimension: "tokens", limit: 10, observed: 15 });
+        expect(cont.wrapUp?.overshoot).toEqual({
+          dimension: "tokens",
+          limit: 10,
+          observed: 15,
+          scope: "budget",
+        });
       },
     );
-    // Without a spec wrap-up the same breach ends quota (the existing budget test covers it).
+  });
+
+  test("the same invocation budget breach without the spec's wrapUp ends quota (#62)", async () => {
+    await withServer(
+      [textReply("first answer", 500, 100), textReply("second answer", 10, 5)],
+      async ({ models }) => {
+        const storage = createMemoryStorage();
+        const opts = { models, sandbox: createNoneSandbox(), env: {}, storage };
+        const first = await runAgent(spec, { q: "one" }, opts).result;
+        const cont = await resumeAgent(spec, first.runId, {
+          ...opts,
+          appendMessages: ["next"],
+          budget: { maxTokens: 10 },
+        }).result;
+        expect(cont.status).toBe("quota");
+        expect(cont.error?.message).toBe(
+          "invocation tokens budget exceeded (limit 10, observed 15)",
+        );
+        expect(cont.wrapUp).toBeUndefined();
+      },
+    );
   });
 
   test("an invocation turn cap reached on the answer turn is not a breach (#62)", async () => {

@@ -38,7 +38,13 @@ export interface RunResult<TOutput = unknown> {
     limit: number;
     used: number;
     outcome?: "wrapped_up" | "cut_off";
-    overshoot?: { dimension: "cost" | "tokens"; limit: number; observed: number };
+    overshoot?: {
+      dimension: "cost" | "tokens";
+      limit: number;
+      observed: number;
+      /** Which limit was crossed: the spec's cumulative `quota`, or this invocation's `budget`. */
+      scope: "spec" | "budget";
+    };
   };
   /** Usage of THIS invocation only. Equals `usage` for a fresh run. */
   usageDelta?: Usage;
