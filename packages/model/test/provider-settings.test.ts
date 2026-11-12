@@ -188,3 +188,166 @@ describe("provider entries as settings", () => {
     expect(() => createProviderChain({ providers: ["a", { name: "a" }] })).toThrow(/listed twice/);
   });
 });
+
+/**
+ * Review fixes (#73): a declared model never goes out with an empty base URL (the OpenAI SDK
+ * would default to api.openai.com and send the provider's credential there), and placeholders
+ * use one pattern for substitution and the leftover check. Real pi-ai transport over HTTP, with
+ * a fetch spy that records every URL and answers anything but the local server itself.
+ */
+describe("provider entries: base URL and placeholder safety", () => {
+  const withSpy = async (
+    fn: (ctx: { urls: string[]; port: number; bodies: string[] }) => Promise<void>,
+  ): Promise<void> => {
+    const urls: string[] = [];
+    const bodies: string[] = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch: async (req) => {
+        bodies.push(new URL(req.url).pathname);
+        return new Response(JSON.stringify({ error: { message: "local", code: "x" } }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      urls.push(url);
+      if (new URL(url).hostname !== "127.0.0.1")
+        return new Response('{"error":{"message":"blocked by test"}}', { status: 599 });
+      return real(input, init);
+    }) as typeof fetch;
+    try {
+      await fn({ urls, port: server.port, bodies });
+    } finally {
+      globalThis.fetch = real;
+      await server.stop(true);
+    }
+  };
+
+  test("a declared model on a provider pi-ai does not list, with no baseUrl, is refused; nothing is sent", async () => {
+    await withSpy(async ({ urls }) => {
+      const chain = createProviderChain({
+        providers: [
+          {
+            name: "my-gateway",
+            apiKey: "sk-secret-declared",
+            models: { "openai/gpt-5-mini": { id: "gpt-5-mini" } },
+            useEnv: false,
+          },
+        ],
+      });
+      const r = await callOnce(chain, "my-gateway");
+      expect(r.stopReason).toBe("error");
+      expect(r.errorMessage).toContain('no base URL for provider "my-gateway"');
+      expect(urls).toEqual([]);
+      expect(JSON.stringify(r)).not.toContain("sk-secret-declared");
+    });
+  });
+
+  test("a declared model takes the overrides' base URL, then the registry's for its API; never api.openai.com", async () => {
+    await withSpy(async ({ urls, port, bodies }) => {
+      // overrides: the local server, placeholders filled from vars.
+      const viaOverrides = createProviderChain({
+        providers: [
+          {
+            name: "cloudflare-ai-gateway",
+            apiKey: "cf-token",
+            vars: { ACCT: "acct-1" },
+            models: { "openai/gpt-5-mini": { id: "gpt-5-mini" } },
+            useEnv: false,
+          },
+        ],
+        overrides: {
+          "cloudflare-ai-gateway": { baseUrl: `http://127.0.0.1:${port}/v1/{ACCT}/compat` },
+        },
+      });
+      await callOnce(viaOverrides, "cloudflare-ai-gateway");
+      expect(bodies).toEqual(["/v1/acct-1/compat/chat/completions"]);
+
+      // No baseUrl anywhere: pi-ai's registry URL for openai-completions on the gateway (/compat).
+      urls.length = 0;
+      const viaRegistry = createProviderChain({
+        providers: [
+          {
+            name: "cloudflare-ai-gateway",
+            apiKey: "cf-token",
+            vars: { CLOUDFLARE_ACCOUNT_ID: "acct-1", CLOUDFLARE_GATEWAY_ID: "gw-1" },
+            models: { "openai/gpt-5-mini": { id: "gpt-5-mini" } },
+            useEnv: false,
+          },
+        ],
+        maxRateLimitWaitMs: 0,
+      });
+      await callOnce(viaRegistry, "cloudflare-ai-gateway");
+      expect(urls.length).toBeGreaterThan(0);
+      for (const u of urls) {
+        expect(new URL(u).hostname).toBe("gateway.ai.cloudflare.com");
+        expect(new URL(u).pathname.startsWith("/v1/acct-1/gw-1/compat/")).toBe(true);
+      }
+      expect(urls.some((u) => u.includes("api.openai.com"))).toBe(false);
+    });
+  });
+
+  test("a placeholder with a digit is filled, and left unfilled it is refused, not read by pi-ai from process.env", async () => {
+    await withSpy(async ({ urls, port, bodies }) => {
+      const entry = (vars?: Record<string, string>) => ({
+        name: "cloudflare-ai-gateway",
+        apiKey: "cf-token",
+        baseUrl: `http://127.0.0.1:${port}/v1/{ACCT2}/compat`,
+        ...(vars ? { vars } : {}),
+        models: { "openai/gpt-5-mini": { id: "gpt-5-mini" } },
+        useEnv: false,
+      });
+      // pi-ai fills `{NAME}` from process.env for Cloudflare providers: set one to prove it is not used.
+      const before = process.env.ACCT2;
+      process.env.ACCT2 = "from-process-env";
+      try {
+        const missing = await callOnce(
+          createProviderChain({ providers: [entry()] }),
+          "cloudflare-ai-gateway",
+        );
+        expect(missing.stopReason).toBe("error");
+        expect(missing.errorMessage).toContain("no usable value for {ACCT2}");
+        expect(urls).toEqual([]);
+
+        await callOnce(
+          createProviderChain({ providers: [entry({ ACCT2: "acct-2" })] }),
+          "cloudflare-ai-gateway",
+        );
+        expect(bodies).toEqual(["/v1/acct-2/compat/chat/completions"]);
+      } finally {
+        if (before === undefined) delete process.env.ACCT2;
+        else process.env.ACCT2 = before;
+      }
+    });
+  });
+
+  test("a placeholder value must be plain id characters: '/', '..', '?' are refused and never echoed", async () => {
+    await withSpy(async ({ urls, port }) => {
+      for (const bad of ["a/b", "..", "x?y=1", "a b", ""]) {
+        const r = await callOnce(
+          createProviderChain({
+            providers: [
+              {
+                name: "gw",
+                apiKey: "k",
+                baseUrl: `http://127.0.0.1:${port}/v1/{ACCT}`,
+                vars: { ACCT: bad },
+                models: { "openai/gpt-5-mini": { id: "gpt-5-mini" } },
+                useEnv: false,
+              },
+            ],
+          }),
+          "gw",
+        );
+        expect(r.stopReason).toBe("error");
+        expect(r.errorMessage).toContain("no usable value for {ACCT}");
+        if (bad !== "") expect(r.errorMessage).not.toContain(bad);
+      }
+      expect(urls).toEqual([]);
+    });
+  });
+});

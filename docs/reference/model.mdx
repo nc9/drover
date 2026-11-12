@@ -96,6 +96,7 @@ function createProviderChain(opts: {
   includeProviderText?: boolean; // default false
   billedCost?: boolean; // OpenRouter billed usage.cost as the call's cost
   actions?: Partial<Record<ProviderFailureClass, "stop" | "next" | "skip">>; // per-class override of FAILOVER
+  balances?: Record<string, BalanceSource>; // per provider; read back by balanceSources()
 }): ProviderChain;
 ```
 
@@ -103,6 +104,10 @@ function createProviderChain(opts: {
 credential, base URL (with `{PLACEHOLDER}` values in `vars`), extra headers and models (by canonical
 id: a provider id, `null`, or a declaration for a model pi-ai does not list) as settings; the
 environment fills only what is absent, and `useEnv: false` turns it off for the entry.
+Placeholders are `{[A-Z0-9_]+}` with values of letters, digits, `_`, `.` or `-`. The base URL
+falls back to `overrides`, then pi-ai's registry URL for the provider and model API; with none,
+the provider is refused, never sent with an empty base URL. See the provider-chain guide for
+header precedence (`Authorization`, `cf-aig-authorization`).
 
 ## `withProviderCost`
 

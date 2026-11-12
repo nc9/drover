@@ -51,7 +51,9 @@ export interface RunResult<TOutput = unknown> {
   /**
    * Under a provider chain: one entry per configured provider, in chain order, including
    * providers that only failed. Appended to by a resume or continuation of the run when
-   * storage holds the previous invocation's `chain_record` event.
+   * storage holds the previous invocation's `chain_record` event; without it the record
+   * restarts at zero, while `usageByProvider` stays cumulative from the checkpoint.
+   * Compaction summariser calls count in `failed` / `failures` but not in `answered` / `usage`.
    */
   chainRecord?: ChainRecordEntry[];
   /** Tool ids invoked during the run, in order. Duplicates preserved. */

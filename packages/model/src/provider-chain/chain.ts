@@ -2,6 +2,7 @@ import type { BalanceSource, ProviderFailureClass } from "@droveragent/core";
 import {
   createAssistantMessageEventStream,
   getModel,
+  getModels,
   streamSimple,
   type Api,
   type AssistantMessage,
@@ -54,19 +55,31 @@ export type ProviderFailoverListener = (notice: ProviderFailoverNotice) => void;
  * A chain provider given as settings instead of (or on top of) environment variables: a
  * Worker's bindings, one tenant's credentials, a test's fakes. Every setting falls back to the
  * environment only when absent, and `useEnv: false` turns the environment off for this entry.
- * Credentials and header values given here are sent to the provider and nowhere else: they
- * never appear in events, errors, the chain record, storage or traces.
+ * Credentials and header values given here are sent to the provider and nowhere else: drover
+ * never puts them in events, errors, the chain record, storage or traces. With
+ * `includeProviderText: true` the provider's own error text is kept, and a provider that echoes
+ * a request header or key back in its error body would carry it into the error message.
  */
 export interface ProviderEntry {
   /** pi-ai provider name: its registry entry, and the default env var for its key. */
   name: string;
   /** The API key. Default: `apiKeys[name]`, then the provider's env var. */
   apiKey?: string;
-  /** Base URL; `{PLACEHOLDER}`s are filled from `vars`, then the environment. */
+  /**
+   * Base URL; `{PLACEHOLDER}`s (`[A-Z0-9_]`) are filled from `vars`, then the environment (not
+   * with `useEnv: false`). A value must be letters, digits, `_`, `.` or `-`; an unfilled or
+   * unusable placeholder refuses the provider for the call. Default: the provider's base URL in
+   * pi-ai's registry (also for a model declared in `models`).
+   */
   baseUrl?: string;
   /** Values for `{PLACEHOLDER}`s in the base URL (e.g. `CLOUDFLARE_ACCOUNT_ID`). */
   vars?: Readonly<Record<string, string>>;
-  /** Extra request headers (e.g. a gateway's own auth header), merged over the model's. */
+  /**
+   * Extra request headers, merged over the model's. On OpenAI-compatible providers an
+   * `Authorization` header here replaces the `apiKey` bearer. On `cloudflare-ai-gateway`, pi-ai
+   * sets `cf-aig-authorization` from `apiKey` after these, so put the gateway token in `apiKey`;
+   * a `cf-aig-authorization` header here has no effect.
+   */
   headers?: Readonly<Record<string, string>>;
   /**
    * Models for this provider, by canonical id, in one place: a provider id (string), `null`
@@ -239,6 +252,28 @@ function own<V>(rec: Readonly<Record<string, V>> | undefined, key: string): V | 
   return rec !== undefined && Object.hasOwn(rec, key) ? rec[key] : undefined;
 }
 
+/**
+ * A `{PLACEHOLDER}` in a base URL. One pattern for substitution and the leftover check, and a
+ * superset of the names pi-ai itself fills from `process.env` (`[A-Z_][A-Z0-9_]*`), so an unfilled
+ * one is refused here instead of being read from the environment behind `useEnv: false`.
+ */
+const PLACEHOLDER = /\{([A-Z0-9_]+)\}/g;
+/** A placeholder value goes into a URL path: plain id characters only, never `.` / `..` alone. */
+const PLACEHOLDER_VALUE = /^(?!\.{1,2}$)[\w.-]+$/;
+
+/**
+ * A provider's own base URL in pi-ai's registry for models of `api` (one provider can serve
+ * several APIs at different paths: Cloudflare's gateway has `/compat`, `/openai`, `/anthropic`).
+ */
+const registryBaseUrl = (provider: string, api: string): string | undefined => {
+  try {
+    const models = getModels(provider as never) as ReadonlyArray<Model<Api>>;
+    return models.find((m) => m.api === api)?.baseUrl || undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 export function createProviderChain(options: ProviderChainOptions): ProviderChain {
   if (options.providers.length === 0) throw new Error("createProviderChain: no providers");
   const env = options.env ?? (process.env as Record<string, string | undefined>);
@@ -299,7 +334,14 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       return {
         name: declared.id,
         api: "openai-completions",
-        baseUrl: entries.get(provider)?.baseUrl ?? "",
+        // Never "": an empty base URL makes the OpenAI SDK default to api.openai.com, which
+        // would send this provider's credential there. The entry's, then the overrides', then
+        // the provider's registry URL; `callFor` refuses if none is known.
+        baseUrl:
+          entries.get(provider)?.baseUrl ??
+          own(options.overrides, provider)?.baseUrl ??
+          registryBaseUrl(provider, declared.api ?? "openai-completions") ??
+          "",
         reasoning: false,
         input: ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -329,12 +371,15 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       entry.baseUrl ??
       own(options.overrides, provider)?.baseUrl ??
       found.baseUrl
-    ).replace(
-      /\{([A-Z_][A-Z0-9_]*)\}/g,
-      (_m, n: string) => own(entry.vars, n) ?? entryEnv[n] ?? `{${n}}`,
-    );
-    if (/\{[A-Z_]+\}/.test(baseUrl))
-      return `no value for ${baseUrl.match(/\{[A-Z_]+\}/)![0]} in the settings or environment`;
+    ).replace(PLACEHOLDER, (_m, n: string) => {
+      const v = own(entry.vars, n) ?? entryEnv[n];
+      // An unusable value stays a placeholder and is refused below (the value is never echoed).
+      return v !== undefined && PLACEHOLDER_VALUE.test(v) ? v : `{${n}}`;
+    });
+    const left = baseUrl.match(new RegExp(PLACEHOLDER.source));
+    if (left)
+      return `no usable value for ${left[0]} in the settings or environment (letters, digits, "_", "." and "-" only)`;
+    if (baseUrl.trim() === "") return `no base URL for provider "${provider}"`;
     const apiKey = entry.apiKey ?? own(options.apiKeys, provider) ?? readApiKey(provider, entryEnv);
     if (!apiKey) return `no API key for provider "${provider}"`;
     const headers = {
