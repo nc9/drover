@@ -55,7 +55,9 @@ interface RunOptions {
 ```ts
 interface ResumeOptions extends Omit<RunOptions, "runId"> {
   storage: StorageAdapter;   // required, not optional
-  appendMessages?: string[]; // continue a `success` run with new user turns
+  // Continue a `success` run with new user turns. `untrusted: true` items are
+  // fenced by the run's fencing plugins (section "appended-input").
+  appendMessages?: Array<string | { content: string; untrusted?: boolean }>;
   budget?: InvocationBudget; // this call only: maxTurns, maxTokens, maxCostUsd, maxDurationMs
 }
 ```

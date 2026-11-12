@@ -75,6 +75,17 @@ export type EventEmitter = (event: HarnessEvent) => void;
 
 export type { HarnessDeps } from "./deps.ts";
 
+/**
+ * A user message appended to a resumed run's history (`RunArgs.appendMessages`).
+ * `untrusted: true` marks text from outside the host (a user, an email, a fetched
+ * page): the run's fencing plugins (`wrapUntrusted`, section `"appended-input"`)
+ * fence it before it enters the history. With no fencing plugin it goes in raw.
+ */
+export interface AppendedMessage {
+  content: string;
+  untrusted?: boolean;
+}
+
 export interface RunArgs<S extends AgentSpec<TSchema, TSchema>> {
   spec: S;
   input: AgentInput<S>;
@@ -88,6 +99,12 @@ export interface RunArgs<S extends AgentSpec<TSchema, TSchema>> {
    * messages, and counters initialise from the checkpoint.
    */
   resumeFrom?: CheckpointRow;
+  /**
+   * User messages appended to `resumeFrom`'s history, in order, after every
+   * plugin's `assertResumable` passed (so a fence never mints a nonce for a
+   * run it would refuse). Ignored without `resumeFrom`.
+   */
+  appendMessages?: ReadonlyArray<AppendedMessage>;
   /**
    * Budget for this invocation alone (a continuation's own turns, tokens,
    * cost and time), on top of the spec's cumulative `quota`. See
@@ -284,17 +301,17 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     toolCalls: [],
   };
   return Effect.gen(function* () {
-    const { spec, input, ctx, emit, deps, resumeFrom, pauseFlag, compactFlag, emitDeltas, budget } =
-      args;
-    const isResume = resumeFrom !== undefined;
+    const { spec, input, ctx, emit, deps, pauseFlag, compactFlag, emitDeltas, budget } = args;
+    const resumeArg = args.resumeFrom;
+    const isResume = resumeArg !== undefined;
     // Turn counter at the start of this invocation (the checkpoint's on resume).
-    const startTurn = resumeFrom ? resumeFrom.seq : 0;
+    const startTurn = resumeArg ? resumeArg.seq : 0;
     const startedAt = Date.now();
     // Clock for the wrap-up wall-clock threshold only (test seam); hard limits use real timers.
     const clock = deps.now ?? Date.now;
     const clockStartedAt = clock();
     const usage: Usage = { inputTokens: 0, outputTokens: 0 };
-    const toolCalls: string[] = resumeFrom ? [...resumeFrom.toolCalls] : [];
+    const toolCalls: string[] = resumeArg ? [...resumeArg.toolCalls] : [];
 
     const explicitPlugins: ReadonlyArray<import("@droveragent/core").HarnessPlugin> =
       spec.plugins ?? [];
@@ -327,6 +344,39 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         }
       }
     }
+    // Appended user messages join the history only now, after `assertResumable`:
+    // fencing one earlier could mint a fresh nonce for a run whose nonce was lost.
+    const appended = isResume ? (args.appendMessages ?? []) : [];
+    const fenceAppended = appended.some((m) => m.untrusted === true)
+      ? untrustedFencer(plugins, ctx)
+      : undefined;
+    let appendedMessages: ReadonlyArray<unknown> = [];
+    try {
+      appendedMessages = appended.map((m) => ({
+        role: "user",
+        content:
+          m.untrusted === true && fenceAppended
+            ? fenceAppended("appended-input", m.content)
+            : m.content,
+        timestamp: Date.now(),
+      }));
+    } catch (e) {
+      return yield* Effect.fail(
+        new PluginError({
+          runId: ctx.runId,
+          pluginId: plugins.find((p) => p.wrapUntrusted)?.id ?? "unknown",
+          hook: "wrapUntrusted",
+          message: e instanceof Error ? e.message : String(e),
+        }),
+      );
+    }
+    const resumeFrom: CheckpointRow | undefined =
+      resumeArg && appendedMessages.length > 0
+        ? {
+            ...resumeArg,
+            messages: [...(resumeArg.messages as ReadonlyArray<unknown>), ...appendedMessages],
+          }
+        : resumeArg;
     const storage = deps.storage;
     // Seq counter continues from the checkpoint to avoid collisions with the
     // events that were already persisted before pause. We add a small gap so
