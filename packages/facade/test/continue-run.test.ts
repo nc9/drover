@@ -196,6 +196,109 @@ describe("resumeAgent appendMessages (continue a finished run)", () => {
     );
   });
 
+  test("a continuation of a run already past the wrap-up threshold: notice on its first call, never in the checkpoint (#62)", async () => {
+    const wrapSpec = defineAgent({
+      ...spec,
+      id: "continue-wrap-probe",
+      quota: { maxTokens: 1000, wrapUp: { at: 0.5 } },
+    });
+    await withServer(
+      [textReply("first answer", 500, 100), textReply("second answer", 10, 5)],
+      async ({ models, bodies }) => {
+        const storage = createMemoryStorage();
+        const opts = { models, sandbox: createNoneSandbox(), env: {}, storage };
+        const first = await runAgent(wrapSpec, { q: "one" }, opts).result;
+        expect(first.status).toBe("success");
+        // 600 of 1000 spent: past the 0.5 threshold, but the first run made no later call.
+        expect(JSON.stringify(bodies[0]!.messages)).not.toContain("Budget notice");
+
+        const cont = await resumeAgent(wrapSpec, first.runId, {
+          ...opts,
+          appendMessages: ["and now a follow-up"],
+        }).result;
+        expect(cont.status).toBe("success");
+        expect(cont.wrapUp).toMatchObject({ dimension: "tokens", outcome: "wrapped_up" });
+        // The continuation's first (and only) call carries the notice.
+        expect(bodies.length).toBe(2);
+        expect(JSON.stringify(bodies[1]!.messages)).toContain("Budget notice");
+
+        const cp = await Effect.runPromise(storage.loadLatestCheckpoint(first.runId));
+        const stored = JSON.stringify(cp!.messages);
+        expect(stored).toContain("and now a follow-up");
+        expect(stored).toContain("second answer");
+        expect(stored).not.toContain("Budget notice");
+      },
+    );
+  });
+
+  test("an invocation budget breach on a validated answer is forgiven only once the spec's wrap-up fired (#62)", async () => {
+    const wrapSpec = defineAgent({
+      ...spec,
+      id: "continue-wrap-budget-probe",
+      quota: { maxTokens: 1000, wrapUp: { at: 0.5 } },
+    });
+    await withServer(
+      [textReply("first answer", 500, 100), textReply("second answer", 10, 5)],
+      async ({ models }) => {
+        const storage = createMemoryStorage();
+        const opts = { models, sandbox: createNoneSandbox(), env: {}, storage };
+        const first = await runAgent(wrapSpec, { q: "one" }, opts).result;
+        const cont = await resumeAgent(wrapSpec, first.runId, {
+          ...opts,
+          appendMessages: ["next"],
+          budget: { maxTokens: 10 },
+        }).result;
+        expect(cont.status).toBe("success");
+        expect(cont.wrapUp?.overshoot).toEqual({
+          dimension: "tokens",
+          limit: 10,
+          observed: 15,
+          scope: "budget",
+        });
+      },
+    );
+  });
+
+  test("the same invocation budget breach without the spec's wrapUp ends quota (#62)", async () => {
+    await withServer(
+      [textReply("first answer", 500, 100), textReply("second answer", 10, 5)],
+      async ({ models }) => {
+        const storage = createMemoryStorage();
+        const opts = { models, sandbox: createNoneSandbox(), env: {}, storage };
+        const first = await runAgent(spec, { q: "one" }, opts).result;
+        const cont = await resumeAgent(spec, first.runId, {
+          ...opts,
+          appendMessages: ["next"],
+          budget: { maxTokens: 10 },
+        }).result;
+        expect(cont.status).toBe("quota");
+        expect(cont.error?.message).toBe(
+          "invocation tokens budget exceeded (limit 10, observed 15)",
+        );
+        expect(cont.wrapUp).toBeUndefined();
+      },
+    );
+  });
+
+  test("an invocation turn cap reached on the answer turn is not a breach (#62)", async () => {
+    await withServer(
+      [textReply("first answer", 5, 5), textReply("second answer", 5, 5)],
+      async ({ models }) => {
+        const storage = createMemoryStorage();
+        const opts = { models, sandbox: createNoneSandbox(), env: {}, storage };
+        const first = await runAgent(spec, { q: "one" }, opts).result;
+        const cont = await resumeAgent(spec, first.runId, {
+          ...opts,
+          appendMessages: ["next"],
+          budget: { maxTurns: 1 },
+        }).result;
+        expect(cont.status).toBe("success");
+        expect(cont.finalText).toBe("second answer");
+        expect(cont.wrapUp).toBeUndefined();
+      },
+    );
+  });
+
   test("finished run without appendMessages still refuses, pointing at the option", async () => {
     await withServer([textReply("hi", 1, 1)], async ({ models }) => {
       const storage = createMemoryStorage();
