@@ -60,6 +60,8 @@ Every event has `kind`, `runId` (string), `ts` (epoch ms). Required fields beyon
 | `usage`                             | `turn`, `usage`                                                                              | per model call: tokens, `costUsd`; `provider` and `model` when the message names them                                                                                                                                                                                |
 | `compaction`                        | `turn`, `trigger`, `strategy`, `beforeTokens`, `afterTokens`, `collapsedRange`, `summarized` |                                                                                                                                                                                                                                                                      |
 | `subagent_start` / `subagent_end`   | `childRunId`, `agentId` / `status`                                                           | child events are in the child's own trace                                                                                                                                                                                                                            |
+| `provider_failover`                 | `action`, `from`, `failureClass`                                                             | under a provider chain: `action` is `retry`, `failover` or `exhausted`; `to` (next provider or null), `status` (number or null), `benched?`, `code?` (allow-listed error code), `waitMs?` (before a retry); no provider text                                         |
+| `budget_warning`                    | `dimension`, `limit`, `used`                                                                 | `quota.wrapUp`: a turn, token, cost or wall-clock budget is `at` spent (`dimension` is `turns`, `tokens`, `cost` or `duration`); emitted once per invocation, for the first budget to cross it                                                                       |
 | `chain_record`                      | `providers`                                                                                  | under a provider chain, once before `run_end`: one entry per configured provider in chain order (`provider`, `answered`, `failed`, `failures` by class, `benchedAtTurn`, `usage`); no provider text. A trace without it (no chain, or an older trace) reads normally |
 | `warning`                           | `code`, `message`, `count`                                                                   | a problem the host should fix that did not stop the run; `untrusted_unfenced`: untrusted `appendMessages` items went in unfenced (no fencing plugin). `message` is the harness's own text                                                                            |
 | `output_validated`, `output_retry`  | `attempt`, `reason` (retry)                                                                  |                                                                                                                                                                                                                                                                      |
@@ -67,9 +69,9 @@ Every event has `kind`, `runId` (string), `ts` (epoch ms). Required fields beyon
 | `error`                             | `tag`, `message`                                                                             |                                                                                                                                                                                                                                                                      |
 | `run_end`                           | `status`                                                                                     | `success`, `quota`, `cancelled`, `error`, `paused`: the final status                                                                                                                                                                                                 |
 
-Kinds added by other changes (provider failover, budget warnings) appear as unknown kinds in this reader until
-they are added to the table; `summarizeTrace` counts them in `unknownKinds`, so nothing is lost and a viewer can
-still show that they happened.
+A kind this reader does not know (one added by a newer version) is returned as unknown by `readEvent`;
+`summarizeTrace` counts it in `unknownKinds`, so nothing is lost and a viewer can still show that it
+happened.
 
 ## Untrusted fields
 
@@ -142,6 +144,29 @@ One run: a tool call, usage, and the final status. Lines are shown as exported (
 {"kind":"usage","runId":"run_1","ts":1700000000200,"turn":1,"usage":{"inputTokens":10,"outputTokens":5,"costUsd":0.01}}
 {"kind":"assistant_text","runId":"run_1","ts":1700000000201,"turn":1,"text":"done"}
 {"kind":"run_end","runId":"run_1","ts":1700000009000,"status":"success"}
+```
+
+## Samples
+
+One line per kind that the complete example above does not show, as exported (the same values
+the test suite round-trips through every storage adapter):
+
+```
+{"kind":"thinking","runId":"run_1","ts":1700000000000,"turn":1,"text":"hm"}
+{"kind":"assistant_delta","runId":"run_1","ts":1700000000000,"turn":1,"text":"h"}
+{"kind":"thinking_delta","runId":"run_1","ts":1700000000000,"turn":1,"text":"h"}
+{"kind":"compaction","runId":"run_1","ts":1700000000000,"turn":2,"trigger":"auto","strategy":"drop-tool-results","beforeTokens":900,"afterTokens":300,"collapsedRange":[1,5],"summarized":false}
+{"kind":"subagent_start","runId":"run_1","ts":1700000000000,"childRunId":"run_1:1","agentId":"child"}
+{"kind":"subagent_end","runId":"run_1","ts":1700000000000,"childRunId":"run_1:1","status":"success"}
+{"kind":"provider_failover","runId":"run_1","ts":1700000000000,"action":"failover","from":"openrouter","to":"cloudflare-ai-gateway","failureClass":"region_refused","status":403,"code":"unsupported_country_region_territory"}
+{"kind":"budget_warning","runId":"run_1","ts":1700000000000,"dimension":"turns","limit":10,"used":8}
+{"kind":"chain_record","runId":"run_1","ts":1700000000000,"providers":[{"provider":"openrouter","answered":0,"failed":1,"failures":{"key_refused":1},"benchedAtTurn":1,"usage":{"inputTokens":0,"outputTokens":0}},{"provider":"cloudflare-ai-gateway","answered":2,"failed":0,"failures":{},"benchedAtTurn":null,"usage":{"inputTokens":300,"outputTokens":30}}]}
+{"kind":"warning","runId":"run_1","ts":1700000000000,"code":"untrusted_unfenced","message":"1 appended message(s) marked untrusted went in unfenced","count":1}
+{"kind":"output_validated","runId":"run_1","ts":1700000000000}
+{"kind":"output_retry","runId":"run_1","ts":1700000000000,"attempt":1,"reason":"bad json"}
+{"kind":"memory_written","runId":"run_1","ts":1700000000000,"entry":{"id":"m1","scope":"global","kind":"user","summary":"s"}}
+{"kind":"memory_recalled","runId":"run_1","ts":1700000000000,"query":null,"scopes":["global"],"hits":[{"id":"m1","scope":"global","score":1}]}
+{"kind":"error","runId":"run_1","ts":1700000000000,"tag":"ProviderError","message":"402"}
 ```
 
 ## Comparing runs across harness versions
