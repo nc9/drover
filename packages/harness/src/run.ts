@@ -21,7 +21,11 @@ import {
   type ToolExecutionContext,
   type Usage,
 } from "@droveragent/core";
-import { resolveModel } from "@droveragent/model";
+import {
+  DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+  resolveModel,
+  withStreamIdleTimeout,
+} from "@droveragent/model";
 import { fenceSummarizer, fencersLast, systemAddenda, untrustedFencer } from "./plugin-hooks.ts";
 import {
   forgetTool,
@@ -501,6 +505,20 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     }
     const maxParallel = parallel ?? 1;
 
+    // `providers` must be a provider chain (`createProviderChain`); anything else fails here,
+    // before any model call, instead of failing (or hanging) somewhere inside the loop.
+    const providersProblem =
+      deps.providers === undefined ? null : chainShapeProblem(deps.providers);
+    if (providersProblem !== null) {
+      return yield* Effect.fail(
+        new SpecConfigError({
+          runId: ctx.runId,
+          agentId: spec.id,
+          message: `the "providers" option must be a provider chain from createProviderChain({ providers: [...] }) (in @droveragent/model), whose providers are pi-ai provider names or ProviderEntry objects: ${providersProblem}`,
+        }),
+      );
+    }
+
     // A provider chain brings its own models (explicit `preResolvedModels` win)
     // and its own transport, bound to this run's event stream.
     const preResolvedModels = deps.providers
@@ -527,7 +545,11 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           chainRecorder?.onNotice(ev, translator.currentTurn());
           safeEmit(ev);
         }) as StreamFn)
-      : deps.streamFn;
+      : // A transport that never yields must not hang the run (the chain has its own, per attempt).
+        (withStreamIdleTimeout(
+          (deps.streamFn ?? streamSimple) as Parameters<typeof withStreamIdleTimeout>[0],
+          deps.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+        ) as StreamFn);
 
     const resolved = yield* resolveModel(spec.model, {
       runId: ctx.runId,
@@ -1148,8 +1170,15 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         summaryApiKey,
         undefined,
         deps.onPayload,
-        // Only a chain reroutes the summariser; a bare `streamFn` never did.
-        deps.providers ? runStreamFn : undefined,
+        // Only a chain reroutes the summariser; a bare `streamFn` never did. Without a chain it
+        // keeps pi-ai's own transport, under the same idle watchdog as the run's calls, so a
+        // summary call that never answers fails as a CompactionError instead of hanging.
+        deps.providers
+          ? runStreamFn
+          : (withStreamIdleTimeout(
+              streamSimple,
+              deps.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+            ) as StreamFn),
         // The fence plugin's note, so the summariser knows what a fence is.
         systemAddenda(plugins, ctx).join("\n\n") || undefined,
       );
@@ -2202,6 +2231,19 @@ export function hashSpec(spec: AgentSpec): string {
     h = (h * 31 + s.charCodeAt(i)) | 0;
   }
   return (h >>> 0).toString(16);
+}
+
+/** Why `providers` is not a usable provider chain, or null when it is. */
+function chainShapeProblem(p: unknown): string | null {
+  if (p === null || typeof p !== "object") return `got ${p === null ? "null" : typeof p}`;
+  const c = p as Record<string, unknown>;
+  if (typeof c.forRun !== "function") return "forRun is not a function";
+  if (typeof c.preResolvedModels !== "function") return "preResolvedModels is not a function";
+  if (!Array.isArray(c.providers)) return "providers (the chain's provider names) is missing";
+  if (c.providers.length === 0) return "the chain lists no providers";
+  if (!c.providers.every((n) => typeof n === "string" && n !== ""))
+    return "the chain's providers must be non-empty names";
+  return null;
 }
 
 /**

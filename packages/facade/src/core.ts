@@ -119,6 +119,14 @@ export interface RunOptionsBase {
    * A provider chain (`providers`) does not use it.
    */
   streamFn?: HarnessDeps["streamFn"];
+  /**
+   * A model call whose stream yields no event for this long ends as a provider failure, so a
+   * transport that never answers cannot hang the run. Default 600 000 (10 minutes); 0 turns it
+   * off. A provider chain has its own (`createProviderChain({ streamIdleTimeoutMs })`).
+   * A model that reasons silently (no streamed events) for longer than this times out: raise
+   * it for such models.
+   */
+  streamIdleTimeoutMs?: number;
 }
 
 /**
@@ -244,6 +252,9 @@ export function runAgent<S extends AgentSpec<TSchema, TSchema>>(
     ...(options.memory ? { memory: options.memory } : {}),
     ...(options.onPayload ? { onPayload: options.onPayload } : {}),
     ...(options.streamFn ? { streamFn: options.streamFn } : {}),
+    ...(options.streamIdleTimeoutMs !== undefined
+      ? { streamIdleTimeoutMs: options.streamIdleTimeoutMs }
+      : {}),
     ...(options.includeProviderErrorText ? { includeProviderErrorText: true } : {}),
     ...(options.providers ? { providers: options.providers } : {}),
   };
@@ -265,26 +276,7 @@ export function runAgent<S extends AgentSpec<TSchema, TSchema>>(
     ...(options.emitDeltas ? { emitDeltas: true } : {}),
   });
 
-  const result: Promise<RunResult<AgentOutput<S>>> = Effect.runPromise(Effect.either(effect)).then(
-    (either) => {
-      stream.close();
-      if (either._tag === "Right") return either.right;
-      const err = either.left;
-      const tag = (err as { _tag?: string })._tag ?? "Error";
-      const message = (err as { message?: string }).message ?? String(err);
-      const out: RunResult<AgentOutput<S>> = {
-        runId,
-        status: tag === "CancelledError" ? "cancelled" : "error",
-        finalText: "",
-        turns: 0,
-        durationMs: 0,
-        usage: { inputTokens: 0, outputTokens: 0 },
-        toolCalls: [],
-        error: { tag, message },
-      };
-      return out;
-    },
-  );
+  const result: Promise<RunResult<AgentOutput<S>>> = settleRun<S>(effect, runId, stream.close);
 
   return {
     runId,
@@ -410,6 +402,9 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
     ...(options.memory ? { memory: options.memory } : {}),
     ...(options.onPayload ? { onPayload: options.onPayload } : {}),
     ...(options.streamFn ? { streamFn: options.streamFn } : {}),
+    ...(options.streamIdleTimeoutMs !== undefined
+      ? { streamIdleTimeoutMs: options.streamIdleTimeoutMs }
+      : {}),
     ...(options.includeProviderErrorText ? { includeProviderErrorText: true } : {}),
     ...(options.providers ? { providers: options.providers } : {}),
   };
@@ -542,23 +537,14 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
       compactFlag,
       ...(options.emitDeltas ? { emitDeltas: true } : {}),
     });
-    const either = await Effect.runPromise(Effect.either(effect));
+    return settleRun<S>(effect, runId, stream.close);
+  })().catch((defect: unknown): RunResult<AgentOutput<S>> => {
+    // A throw before the run starts (a storage adapter that throws instead of failing, a
+    // malformed checkpoint): the events still end and `result` still resolves.
     stream.close();
-    if (either._tag === "Right") return either.right;
-    const err = either.left;
-    const tag = (err as { _tag?: string })._tag ?? "Error";
-    const message = (err as { message?: string }).message ?? String(err);
-    return {
-      runId,
-      status: tag === "CancelledError" ? "cancelled" : "error",
-      finalText: "",
-      turns: 0,
-      durationMs: 0,
-      usage: { inputTokens: 0, outputTokens: 0 },
-      toolCalls: [],
-      error: { tag, message },
-    } as RunResult<AgentOutput<S>>;
-  })();
+    const cause = (defect as { cause?: unknown }).cause ?? defect;
+    return resumeFailure("InternalError", cause instanceof Error ? cause.message : String(cause));
+  });
 
   return {
     runId,
@@ -586,6 +572,44 @@ function isAppendItem(m: unknown): m is string | AppendedMessage {
     (o.untrusted === undefined || typeof o.untrusted === "boolean") &&
     Object.keys(o).every((k) => k === "content" || k === "untrusted")
   );
+}
+
+/**
+ * Run the harness effect to a `RunResult`, always closing the event stream. A typed failure
+ * becomes `status: "error"` (or `"cancelled"`) with its tag; an unexpected throw (a defect,
+ * e.g. a malformed option the harness did not catch) becomes `status: "error"` with tag
+ * `"InternalError"`, instead of a rejected promise and an event stream that never ends.
+ */
+async function settleRun<S extends AgentSpec<TSchema, TSchema>>(
+  effect: Effect.Effect<RunResult<AgentOutput<S>>, unknown, never>,
+  runId: string,
+  close: () => void,
+): Promise<RunResult<AgentOutput<S>>> {
+  const failed = (tag: string, message: string): RunResult<AgentOutput<S>> =>
+    ({
+      runId,
+      status: tag === "CancelledError" ? "cancelled" : "error",
+      finalText: "",
+      turns: 0,
+      durationMs: 0,
+      usage: { inputTokens: 0, outputTokens: 0 },
+      toolCalls: [],
+      error: { tag, message },
+    }) as RunResult<AgentOutput<S>>;
+  try {
+    const either = await Effect.runPromise(Effect.either(effect));
+    if (either._tag === "Right") return either.right;
+    const err = either.left;
+    return failed(
+      (err as { _tag?: string })._tag ?? "Error",
+      (err as { message?: string }).message ?? String(err),
+    );
+  } catch (defect) {
+    const cause = (defect as { cause?: unknown }).cause ?? defect;
+    return failed("InternalError", cause instanceof Error ? cause.message : String(cause));
+  } finally {
+    close();
+  }
 }
 
 /**

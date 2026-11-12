@@ -24,6 +24,7 @@ import {
 import { applyBilledCost, isOpenRouter, withUsageInclude } from "./provider-cost.ts";
 import { rawFromResponse, startAttemptTap, type AttemptTap } from "./response-tap.ts";
 import { PINNED_PROVIDERS, pinnedStream } from "./pinned-stream.ts";
+import { DEFAULT_STREAM_IDLE_TIMEOUT_MS, withStreamIdleTimeout } from "../stream-idle.ts";
 
 /** pi-agent-core's `StreamFn`. */
 export type ChainStreamFn = (
@@ -149,6 +150,12 @@ export interface ProviderChainOptions {
   includeProviderText?: boolean;
   /** Replace a provider's transport (tests, proxies), by provider name. */
   streams?: Readonly<Record<string, ChainStreamFn>>;
+  /**
+   * An attempt whose stream yields no event for this long ends as a `timeout` failure (and
+   * fails over), so a provider that never answers cannot hang the run. Default 600 000 (10
+   * minutes); 0 turns it off.
+   */
+  streamIdleTimeoutMs?: number;
   /** Wait for a retry (tests). */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /**
@@ -505,7 +512,12 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       // A model whose provider is not in the chain (a compaction `summaryModel`,
       // a subagent's own model) is not the chain's to route: it goes straight to
       // pi-ai with the key the resolver gave it. No failover, no tap.
-      if (!names.includes(canonical.provider)) return streamSimple(canonical, context, callOptions);
+      // Watched like an attempt, so a model outside the chain cannot hang the run either.
+      if (!names.includes(canonical.provider))
+        return withStreamIdleTimeout(
+          streamSimple,
+          options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+        )(canonical, context, callOptions);
       const out = createAssistantMessageEventStream();
       const signal = callOptions?.signal;
       const end = (msg: AssistantMessage): void => {
@@ -561,9 +573,12 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
         };
         // Azure and Bedrock go through pi-ai's full stream: its simple stream drops the
         // pinned base URL / region and would fall back to process.env (pinned-stream.ts).
-        const stream =
+        // Every attempt is watched for idleness (#81).
+        const stream = withStreamIdleTimeout(
           own(options.streams, provider) ??
-          (PINNED_PROVIDERS.has(provider) ? pinnedStream : streamSimple);
+            (PINNED_PROVIDERS.has(provider) ? pinnedStream : streamSimple),
+          options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+        );
         let inner: AssistantMessageEventStream;
         try {
           // The SDK's own retries are off: failing over is the retry.

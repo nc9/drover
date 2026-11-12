@@ -93,6 +93,7 @@ function createProviderChain(opts: {
   apiKeys?: Record<string, string>;
   env?: Record<string, string | undefined>;
   maxRateLimitWaitMs?: number; // default 10_000
+  streamIdleTimeoutMs?: number; // default 600_000: an attempt with no stream event for this long is a timeout
   includeProviderText?: boolean; // default false
   billedCost?: boolean; // OpenRouter billed usage.cost as the call's cost
   actions?: Partial<Record<ProviderFailureClass, "stop" | "next" | "skip">>; // per-class override of FAILOVER

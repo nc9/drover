@@ -85,6 +85,16 @@ export interface HarnessDeps {
    */
   providers?: ProviderChain;
   /**
+   * A model call whose stream yields no event for this long ends as a provider failure
+   * (`"Request timed out."`), so a transport that never answers cannot hang the run. Applies
+   * to `streamFn` and pi-ai's own transport; a provider chain applies its own
+   * (`streamIdleTimeoutMs` on `createProviderChain`) per attempt. Default 600 000 (10 minutes);
+   * 0 turns it off.
+   * A model that reasons silently (no streamed events) for longer than this times out: raise
+   * it for such models.
+   */
+  streamIdleTimeoutMs?: number;
+  /**
    * Patch the provider request body immediately before it is sent. pi calls it
    * with the built params and the model; return the replacement payload, or
    * `undefined` to leave it unchanged.
