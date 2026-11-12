@@ -20,9 +20,16 @@ export function toPiTool(
     signal: AbortSignal;
     run: import("@droveragent/core").RunContext;
   },
+  exec?: {
+    /** pi's per-tool mode: `"parallel"` only for `concurrency: "safe"` tools. */
+    executionMode: "parallel" | "sequential";
+    /** The run's semaphore: a slot is held while the tool executes. */
+    slots: { acquire: () => Promise<() => void> };
+  },
 ): AgentTool<TSchema> {
   return {
     name: tool.id,
+    ...(exec ? { executionMode: exec.executionMode } : {}),
     description: tool.description,
     parameters: tool.inputSchema,
     label: tool.id,
@@ -44,9 +51,15 @@ export function toPiTool(
         signal: base.signal,
         run: base.run,
       };
-      const result: ToolResult = await Effect.runPromise(
-        tool.execute(params, ctx) as Effect.Effect<ToolResult, never, never>,
-      );
+      const release = exec ? await exec.slots.acquire() : undefined;
+      let result: ToolResult;
+      try {
+        result = await Effect.runPromise(
+          tool.execute(params, ctx) as Effect.Effect<ToolResult, never, never>,
+        );
+      } finally {
+        release?.();
+      }
       if (result.isError) {
         // Pi-agent-core expects tools to throw on failure for the
         // model to see `is_error: true`. Wrap the message so callers

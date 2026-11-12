@@ -1,10 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import {
-  defineTool,
-  type HarnessEvent,
-  type ToolDef,
-  type ToolResult,
-} from "@droveragent/core";
+import { defineTool, type HarnessEvent, type ToolDef, type ToolResult } from "@droveragent/core";
 import { Effect } from "effect";
 
 import type { MemoryAdapter, MemoryHit, MemoryKind, MemoryScope } from "./adapter.ts";
@@ -90,9 +85,7 @@ export function rememberTool(opts: RememberToolOptions): ToolDef<typeof Remember
           body: input.body,
           ...(input.tags ? { tags: input.tags } : {}),
           ...(input.id ? { id: input.id } : {}),
-          ...(input.scope === "agent" || input.scope === "run"
-            ? { agentId: opts.agentId }
-            : {}),
+          ...(input.scope === "agent" || input.scope === "run" ? { agentId: opts.agentId } : {}),
           ...(input.scope === "run" ? { runId: opts.runId } : {}),
         };
         const result = yield* Effect.either(opts.adapter.put(draft));
@@ -103,7 +96,11 @@ export function rememberTool(opts: RememberToolOptions): ToolDef<typeof Remember
             data: { reason: result.left.reason, op: result.left.op },
           } as ToolResult;
         }
-        const entry = result.right as Awaited<ReturnType<typeof opts.adapter.put> extends Effect.Effect<infer R, infer _E, infer _R> ? Promise<R> : never>;
+        const entry = result.right as Awaited<
+          ReturnType<typeof opts.adapter.put> extends Effect.Effect<infer R, infer _E, infer _R>
+            ? Promise<R>
+            : never
+        >;
         if (opts.emit) {
           try {
             opts.emit({
@@ -143,6 +140,8 @@ export function recallTool(opts: RecallToolOptions): ToolDef<typeof RecallInput>
   const defaultLimit = opts.defaultLimit ?? 10;
   return defineTool({
     id: "recall",
+    // Read-only: may run alongside other calls of the turn (spec.toolExecution.parallel).
+    concurrency: "safe",
     description:
       "Search saved memories. Omit `query` to list by recency. Default scopes: " +
       "global + agent (and the active run when one is set). Pass `scopes` to override.",
@@ -268,7 +267,10 @@ function formatHits(hits: ReadonlyArray<MemoryHit>, scopes: ReadonlyArray<Memory
   if (hits.length === 0) {
     return `(no memories matched in scopes: ${scopes.join(", ")})`;
   }
-  const lines: string[] = [`## Recalled (${hits.length} entries, scopes: ${scopes.join(", ")})`, ""];
+  const lines: string[] = [
+    `## Recalled (${hits.length} entries, scopes: ${scopes.join(", ")})`,
+    "",
+  ];
   for (const h of hits) {
     const head = `### [${h.scope} · ${h.kind}] ${h.summary}`;
     const meta = `score: ${h.score.toFixed(2)} · id: ${h.id}${

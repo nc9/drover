@@ -15,6 +15,8 @@ const InputSchema = Type.Object({
 export function grepTool(sandbox: SandboxAdapter): ToolDef<typeof InputSchema> {
   return defineTool({
     id: "grep",
+    // Read-only: may run alongside other calls of the turn (spec.toolExecution.parallel).
+    concurrency: "safe",
     description:
       "Recursive regex search. Returns up to max_results matching lines with file:line prefixes.",
     inputSchema: InputSchema,

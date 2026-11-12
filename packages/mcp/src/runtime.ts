@@ -66,7 +66,10 @@ export async function createMcpRuntime(
         await client.connect(transport);
         const list = await client.listTools();
         const tools = list.tools.flatMap((t) => {
-          const tool = mcpToolToDroverTool(cfg.id, client, t);
+          const safe =
+            cfg.concurrencySafe === true ||
+            (Array.isArray(cfg.concurrencySafe) && cfg.concurrencySafe.includes(String(t.name)));
+          const tool = mcpToolToDroverTool(cfg.id, client, t, safe);
           if ("refused" in tool) {
             // The name is server text too: log a cleaned, bounded copy.
             console.error(
@@ -164,6 +167,7 @@ function mcpToolToDroverTool(
   serverId: string,
   client: Client,
   tool: McpToolDescriptor,
+  concurrencySafe = false,
 ): AnyToolDef | { refused: string } {
   // Only an allowlisted subset of the server's JSON Schema reaches the model
   // (see schema.ts); server-side enforcement stays the source of truth for
@@ -188,6 +192,7 @@ function mcpToolToDroverTool(
     id: prefixed,
     description: surface.description,
     inputSchema: schema,
+    ...(concurrencySafe ? { concurrency: "safe" as const } : {}),
     execute: (input, ctx): Effect.Effect<ToolResult, SandboxError, never> =>
       Effect.tryPromise({
         try: async (): Promise<ToolResult> => {

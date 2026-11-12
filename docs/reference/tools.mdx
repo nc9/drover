@@ -19,6 +19,9 @@ defineAgent({
 
 ## Tools
 
+`read`, `ls`, `grep` and `find` are `concurrency: "safe"`: with `toolExecution.parallel`
+they may run alongside other calls of the same turn. `bash`, `write` and `edit` are not.
+
 ### `bash`
 
 ```ts

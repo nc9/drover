@@ -15,6 +15,7 @@ interface AgentSpec<ISchema = TSchema, OSchema = TSchema> {
   mcpServers?: readonly string[];
   subagents?: SubagentConfig;
   outputRetries?: number;     // default 2
+  toolExecution?: { parallel?: number }; // default: one tool call at a time
   plugins?: readonly HarnessPlugin[];
   quota?: RunQuota;           // { maxTurns?, maxDurationMs?, maxCostUsd?, maxTokens?, wrapUp? }
 }
@@ -141,3 +142,38 @@ is emitted once. `wrapUp.message` replaces the default text.
 - **Continuations.** A per-continuation budget (resume with its own budget, a separate change)
   does not trigger the notice yet; `wrapUp` follows the spec's cumulative `quota`.
 - **Testing.** `HarnessDeps.now` replaces the clock used for the wall-clock threshold.
+
+## Parallel tool calls
+
+```ts
+defineAgent({
+  // ...
+  tools: ["read", "grep", "ls"],
+  toolExecution: { parallel: 4 }, // up to 4 calls of one model turn at once
+});
+```
+
+Off by default: tool calls run one at a time. With `toolExecution.parallel` set to an
+integer above 1 (anything else fails the run with `SpecConfigError` before any model call):
+
+- Only tools marked `concurrency: "safe"` run concurrently. The read-only built-ins are:
+  `read`, `ls`, `grep`, `find`, `recall`, `skill_load`, `skill_resource` and
+  `show_tool_result`. `write`, `edit`, `bash`, `remember`, `forget` and the subagent `task`
+  tool are not, and neither are MCP tools unless the server config says so
+  (`concurrencySafe`). A custom tool opts in with `concurrency: "safe"` only when it has no
+  shared mutable state.
+- One call of an unsafe tool in a turn makes that whole turn sequential.
+- At most `parallel` calls run at once; the rest wait for a slot.
+- The model gets the results in call order. A failure in one call does not cancel the
+  others.
+- `tool_call_start` events for the turn come first, in call order. `tool_call_end` events
+  come in completion order, and a call's `durationMs` includes any wait for a slot. Pair
+  them by `toolUseId`.
+- `beforeToolCall` hooks still run one call at a time, in call order, before any call of
+  the turn executes, so call caps (`toolCallCapPlugin`) and policy plugins see exact counts.
+  `afterToolCall` hooks and `wrapTool` wrappers run as each call finishes.
+- The fence of `untrustedResultsPlugin` is kept per tool call, so concurrent results are
+  fenced independently.
+- Some plugins see a turn's calls together: `circuitBreakerPlugin` can trip only after the
+  batch (every call of the turn was admitted before any finished), and two identical calls in
+  one turn both run under `dedupPlugin` (neither is cached yet).

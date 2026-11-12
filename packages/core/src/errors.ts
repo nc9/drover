@@ -121,6 +121,16 @@ export class CompactionConfigError extends Data.TaggedError("CompactionConfigErr
 }> {}
 
 /**
+ * An agent spec setting is invalid (e.g. `toolExecution.parallel` that is not an integer
+ * >= 1). Caught at run start, before any model call.
+ */
+export class SpecConfigError extends Data.TaggedError("SpecConfigError")<{
+  readonly runId: string;
+  readonly agentId: string;
+  readonly message: string;
+}> {}
+
+/**
  * Discriminated union of every error a run can fail with.
  * Effect surface uses this as the error channel: `Effect<RunResult, HarnessError, R>`.
  */
@@ -137,4 +147,5 @@ export type HarnessError =
   | PluginError
   | MemoryError
   | LifecycleError
-  | CompactionConfigError;
+  | CompactionConfigError
+  | SpecConfigError;

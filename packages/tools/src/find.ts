@@ -13,6 +13,8 @@ const InputSchema = Type.Object({
 export function findTool(sandbox: SandboxAdapter): ToolDef<typeof InputSchema> {
   return defineTool({
     id: "find",
+    // Read-only: may run alongside other calls of the turn (spec.toolExecution.parallel).
+    concurrency: "safe",
     description: "Locate files by name pattern.",
     inputSchema: InputSchema,
     execute: (input, ctx) =>
@@ -23,8 +25,15 @@ export function findTool(sandbox: SandboxAdapter): ToolDef<typeof InputSchema> {
         if (input.max_depth !== undefined) args.push("-maxdepth", String(input.max_depth));
         if (input.type) args.push("-type", input.type);
         if (input.name) args.push("-name", input.name);
-        const result = yield* sandbox.run("find", args, { cwd: ctx.cwd, env: ctx.env, signal: ctx.signal });
-        const content = result.stdout.length > 16384 ? result.stdout.slice(0, 16384) + "\n…[truncated]" : result.stdout;
+        const result = yield* sandbox.run("find", args, {
+          cwd: ctx.cwd,
+          env: ctx.env,
+          signal: ctx.signal,
+        });
+        const content =
+          result.stdout.length > 16384
+            ? result.stdout.slice(0, 16384) + "\n…[truncated]"
+            : result.stdout;
         return {
           content: content || "(no matches)",
           isError: result.exitCode !== 0,
