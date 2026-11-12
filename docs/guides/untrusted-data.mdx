@@ -38,7 +38,10 @@ const spec = defineAgent({
   MCP tools, `bash`, `recall` and `task` are all fenced by default. The plugin
   never inspects output to decide: a result containing a fence-shaped string is
   wrapped like any other. `selfFenced` names tools that wrap their own output
-  (`fence.fenceFor(runId)`); their errors are still wrapped.
+  (`fence.fenceFor(runId)`). For `selfFenced` and `trusted` tools alike only a success
+  is exempt: an error is fenced whether the tool fails or returns
+  `{ isError: true, content }` as a value (the convention of MCP tools, `bash` and
+  others), because an error message can quote outside text such as an upstream body.
 - **Stored copies.** The truncate plugin stores oversized results with their
   provenance (`trusted`, producing tool, run), keyed by (run, tool-use id) with a
   suffixed handle when a backend repeats an id (`call_0`, `call_0~2`).
@@ -162,8 +165,8 @@ takes a string or any JSON-able value; `wrapText` is the whole-text variant.
   deny reasons reach the model raw: they are operator or plugin text. A plugin that
   puts outside text into either is responsible for fencing it (`wrapUntrusted`, or
   `plugin.fenceFor(runId)`).
-- **Trusted tools' errors.** A trusted tool's own error text is not produced by the
-  fence plugin, so it reaches the model fenced, like any other unrecognised text.
+- **Trusted tools' errors.** A trusted tool's error reaches the model fenced, whether it
+  fails or returns `{ isError: true, content }` as a value: only its successes are raw.
 - **Text a host adds** through `appendMessages` as a plain string, or builds into
   prompts itself. An `appendMessages` item passed as `{ content, untrusted: true }`
   is fenced (section `"appended-input"`).
