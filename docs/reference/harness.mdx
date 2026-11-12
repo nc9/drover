@@ -31,7 +31,14 @@ interface RunArgs<S> {
 `runAgent` wraps this with an internal async-iterable queue.
 
 `resumeFrom` switches to `runAgentLoopContinue` and skips fresh-run
-setup (input validation, run-row create, initial user message).
+setup (input validation, run-row create, initial user message). The
+history is given a fresh leading `system` message built from the spec;
+checkpoints never store one, so a checkpoint from before pi 1.x resumes
+the same way.
+
+A provider response that stops with pi's `"pending"` or `"deferred"` stop
+reason (an asynchronous or batch response, not a final answer) fails the run
+with a `ProviderError` saying the stop reason is not supported.
 
 `pauseFlag` is a mutable holder. When `requested` is true and the
 loop ends, the terminal status is `paused` (otherwise `cancelled`).
