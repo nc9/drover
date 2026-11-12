@@ -185,6 +185,11 @@ export interface RunQuota {
  * measured from where that invocation started, not across the whole run.
  * Enforced alongside the spec's cumulative {@link RunQuota}; the first breach
  * wins. Omitted fields are unbounded.
+ *
+ * As for the quota, a validated final answer wins over a breach of its own
+ * call: always for `maxTurns`, and for `maxTokens` / `maxCostUsd` only once the
+ * spec's `quota.wrapUp` warning fired (an invocation budget has no wrap-up
+ * warning of its own), recorded as `RunResult.wrapUp.overshoot`.
  */
 export interface InvocationBudget {
   /** Turns completed in this invocation. */

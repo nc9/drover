@@ -114,6 +114,14 @@ is emitted once. `wrapUp.message` replaces the default text.
   - `maxTokens` and `maxCostUsd`, only once the wrap-up warning fired: this is an overshoot and
     `wrapUp.overshoot` (`dimension`, `limit`, `observed`) records the excess. Without
     `quota.wrapUp` a cost or token breach ends the run `quota`.
+  - A per-invocation `budget` (resume or continuation, see
+    [pause and resume](/guides/pause-resume)) follows the same rule. Its turn cap is never an
+    overshoot on the answer turn; its token or cost cap is forgiven only once the SPEC's
+    `quota.wrapUp` warning fired in this invocation. `budget` has no wrap-up warning of its
+    own, so without `quota.wrapUp` (or before its threshold) a `budget` breach ends `quota`.
+  - If that call failed at the provider (`stopReason: "error"`), the provider error is the
+    outcome: the run ends `error` with `ProviderError`, not `quota` / `cut_off`, for a turn
+    breach and, once the warning fired, a cost or token breach.
 
   The `postSuccess` lifecycle is skipped in both cases (the budget is spent). An answer that
   fails the output schema, or a breaching call that asked for tools, still ends `quota`; a

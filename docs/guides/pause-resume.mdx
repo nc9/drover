@@ -98,6 +98,14 @@ async function onNewInput(runId: string, text: string) {
   applies too, but only its turns and cost are cumulative over the whole run:
   `quota.maxDurationMs` restarts with every invocation (resume or
   continuation). The first breach wins and ends the call `status: "quota"`.
+  Exception, as for `quota`: a validated final answer wins over a breach of
+  its own call. For `budget.maxTurns` that holds always. For `budget.maxTokens`
+  and `budget.maxCostUsd` it holds only once the spec's `quota.wrapUp`
+  warning fired (`budget` has no warning of its own); see
+  [the answer wins over its own breach](/concepts/agent-spec).
+- A continuation of a run already past the spec's `quota.wrapUp` threshold
+  carries the budget notice from its first call. The notice is per call and is
+  never stored in the checkpoint.
 - `usage` and `usageByProvider` are cumulative over the run (both are stored in
   the checkpoint); `usageDelta` is this call only.
 - `appendMessages` content is untrusted when it comes from outside your
