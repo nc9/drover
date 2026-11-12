@@ -113,5 +113,12 @@ export const SAMPLES: Record<Kind, HarnessEvent> = {
     reordered: false,
     warnings: [],
   },
-  error: { ...base, kind: "error", tag: "ProviderError", message: "402" },
+  error: {
+    ...base,
+    kind: "error",
+    tag: "ProviderError",
+    message: "provider error 429 (openrouter: credits_exhausted 429 insufficient_quota)",
+    status: 429,
+    details: { code: "insufficient_quota", type: "insufficient_quota", retryAfterMs: 2000 },
+  },
 };

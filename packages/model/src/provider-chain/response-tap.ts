@@ -4,7 +4,7 @@
  * pi-ai flattens a failed call to the OpenAI SDK's text (`"403 <message>"`) and
  * drops the response: its `onResponse` callback is not called for non-2xx, and the
  * client is created inside pi without a `fetch` option. So the status text is all
- * a classifier gets, and the body's `code`, `limit_source` and `Retry-After` are lost.
+ * a classifier gets, and the body's `code`, `type`, `limit_source` and `Retry-After` are lost.
  *
  * This tap puts them back, per attempt. The chain tags an attempt's request with a
  * header; one process-wide `fetch` wrapper (installed once, pass-through for untagged
@@ -58,6 +58,7 @@ export interface AttemptResponse {
   retryAfterMalformed?: true;
   /** Parsed error body fields (`error.code`, `error.type`, `limit_source`). Never the message. */
   code?: string;
+  type?: string;
   limitSource?: string;
 }
 
@@ -413,6 +414,7 @@ export function retryAfterFromHeaders(h: Record<string, string>): number | undef
 export function rawFromResponse(res: AttemptResponse, message: string): RawFailure {
   const raw: RawFailure = { message, status: res.status };
   if (res.code !== undefined) raw.code = res.code;
+  if (res.type !== undefined) raw.type = res.type;
   if (res.limitSource !== undefined) raw.limitSource = res.limitSource;
   if (Object.keys(res.headers).length > 0) raw.headers = res.headers;
   // A present but malformed value was dropped from `headers`; it still must not read as "no wait".

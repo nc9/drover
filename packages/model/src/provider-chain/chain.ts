@@ -237,6 +237,7 @@ function failureDiagnostics(
       status: x.status,
       benched: benchedBy.has(x),
       ...(x.code ? { code: x.code } : {}),
+      ...(x.type ? { type: x.type } : {}),
       ...(x.retryAfterMs !== undefined ? { retryAfterMs: x.retryAfterMs } : {}),
       ...(x.headers ? { headers: x.headers } : {}),
     },

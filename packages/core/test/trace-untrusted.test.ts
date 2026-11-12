@@ -69,6 +69,21 @@ describe("trace untrusted fields", () => {
     expect(p[2]).toEqual(SAMPLES.turn_start);
   });
 
+  test("error details.type is marked: redaction masks it and keeps code and retryAfterMs (#92)", () => {
+    expect(UNTRUSTED_FIELDS.error).toContain("details.type");
+    const masked = redactEvent(SAMPLES.error, () => "mask") as unknown as {
+      message: string;
+      details: { code?: string; type?: string; retryAfterMs?: number };
+    };
+    expect(masked.message).toBe(REDACTED);
+    expect(masked.details).toEqual({
+      code: "insufficient_quota",
+      type: REDACTED,
+      retryAfterMs: 2000,
+    });
+    expect("unknown" in readEvent(masked)).toBe(false);
+  });
+
   test("summary never reads marked text: hostile text and a __proto__ tool name change nothing", () => {
     const hostile = {
       ...SAMPLES.tool_call_end,

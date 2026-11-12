@@ -3,6 +3,8 @@
  * the checkpoint scrub that keeps raw provider text out of storage. Internal:
  * not re-exported from the package index.
  */
+import type { ProviderErrorDetails } from "@droveragent/core";
+import { KNOWN_CODES } from "@droveragent/model";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 
 /** The slice of pi's assistant message the provider-failure check reads. */
@@ -24,9 +26,12 @@ const NAME = /^[A-Za-z0-9._:/-]{1,64}$/;
  * (provider name, failure class, status, allow-listed code). Never the provider's text.
  * `status` is the last attempt's.
  */
-function chainFailures(msg: ProviderMessage): { list: string; status: number | null } | null {
+function chainFailures(
+  msg: ProviderMessage,
+): { list: string; status: number | null; details: ProviderErrorDetails | undefined } | null {
   const parts: string[] = [];
   let status: number | null = null;
+  let details: ProviderErrorDetails | undefined;
   for (const d of msg.diagnostics ?? []) {
     if (d?.type !== "provider_failure" || !d.details) continue;
     const { provider, failureClass, status: st, code } = d.details;
@@ -36,14 +41,32 @@ function chainFailures(msg: ProviderMessage): { list: string; status: number | n
     const c = typeof code === "string" && NAME.test(code) ? code : null;
     parts.push([`${provider}: ${failureClass}`, s, c].filter((v) => v !== null).join(" "));
     status = s;
+    details = detailsOf(d.details);
   }
-  return parts.length > 0 ? { list: parts.join("; "), status } : null;
+  return parts.length > 0 ? { list: parts.join("; "), status, details } : null;
 }
 
-/** A run-ending provider failure: status-only message, HTTP status when known. */
+/**
+ * The structured fields of one chain failure that may leave the harness (`error.details`):
+ * plain tokens and a finite wait only. Undefined when none is known.
+ */
+function detailsOf(d: Record<string, unknown>): ProviderErrorDetails | undefined {
+  const out: ProviderErrorDetails = {};
+  // The chain's own allow-list, not just a token check: only codes the chain itself keeps.
+  if (typeof d.code === "string" && KNOWN_CODES.has(d.code)) out.code = d.code;
+  if (typeof d.type === "string" && NAME.test(d.type)) out.type = d.type;
+  const w = d.retryAfterMs;
+  // A malformed Retry-After is recorded as MAX_SAFE_INTEGER ("beyond any cap"): not a real wait.
+  if (typeof w === "number" && Number.isFinite(w) && w >= 0 && w < Number.MAX_SAFE_INTEGER)
+    out.retryAfterMs = Math.round(w);
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** A run-ending provider failure: status-only message, HTTP status and structured details when known. */
 export interface ProviderFailure {
   message: string;
   status?: number;
+  details?: ProviderErrorDetails;
 }
 
 /**
@@ -68,6 +91,8 @@ export function providerError(
     return {
       message: includeText && raw !== "" ? `${head}: ${raw}` : head,
       ...(chain.status !== null ? { status: chain.status } : {}),
+      // The last attempt's fields, like `status`.
+      ...(chain.details ? { details: chain.details } : {}),
     };
   }
   const code = /^([45]\d\d)\b/.exec(raw)?.[1];

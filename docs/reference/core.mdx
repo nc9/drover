@@ -96,7 +96,7 @@ interface RunResult<TOutput = unknown> {
   durationMs: number;
   usage: { inputTokens: number; outputTokens: number; costUsd?: number; ... };
   toolCalls: readonly string[];
-  error?: { tag: string; message: string; status?: number }; // status: ProviderError only
+  error?: { tag: string; message: string; status?: number; details?: ProviderErrorDetails }; // status, details: ProviderError only
 }
 ```
 
@@ -129,6 +129,32 @@ failed run instead of an empty success. The run ends `status: "error"` with
 and no output decode is attempted. When the provider reported an HTTP status,
 it is also a number on `error.status` and on the `error` event's `status`
 (absent when unknown).
+
+Under a provider chain the failure also carries `error.details` (on `RunResult.error` and the
+`error` event) when any of these is known for the last attempt:
+
+```ts
+interface ProviderErrorDetails {
+  code?: string; // allow-listed provider error code, e.g. "insufficient_quota"
+  type?: string; // the error body's `type`, e.g. "rate_limit_error" (a plain token)
+  retryAfterMs?: number; // the wait the provider asked for
+}
+```
+
+Sources, all filtered:
+
+- the response tap: the error body's `code` and `type`, and the `Retry-After` / `retry-after-ms`
+  header;
+- an error thrown by the provider SDK or a custom transport: its `status`, `code` and
+  `retryAfterMs` fields and its `error` body;
+- on a 429 with no header only, a wait read from the message text ("try again in 1.5s").
+
+`code` is kept only when it is on the chain's allow-list (`KNOWN_CODES` in
+`@droveragent/model`). `type` is the provider's own string, kept only when it is a plain token
+(letters, digits and `_ . : -`, at most 64 characters), so treat it as untrusted: it is a
+marked field in the trace format (`details.type`). `retryAfterMs` is a number; a malformed
+`Retry-After` (read as "beyond any cap") is not reported as a wait. No provider message text
+is ever copied in. Without a chain pi-ai keeps only the status, so `details` is absent.
 
 | final assistant message                                                                                | `error.message`                                      | `status` |
 | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- | -------- |

@@ -7,7 +7,12 @@ import {
   type Model,
 } from "@mariozechner/pi-ai";
 
-import { createProviderChain, type ChainStreamFn, type ProviderEntry } from "../src/index.ts";
+import {
+  createProviderChain,
+  startAttemptTap,
+  type ChainStreamFn,
+  type ProviderEntry,
+} from "../src/index.ts";
 
 type Seen = { apiKey?: string; baseUrl: string; headers?: Record<string, string>; id: string };
 
@@ -211,6 +216,9 @@ describe("provider entries: base URL and placeholder safety", () => {
         });
       },
     });
+    // Install the response tap BEFORE spying: installed during the spy, it would wrap the spy,
+    // and once the spy is removed it would no longer be the global fetch for later tests.
+    startAttemptTap().dispose();
     const real = globalThis.fetch;
     globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       const url = input instanceof Request ? input.url : String(input);
@@ -526,6 +534,9 @@ describe("provider entries: pins survive pi-ai (real transport, decoy env)", () 
   test("azure: the entry's base URL wins over a decoy AZURE_OPENAI_BASE_URL / RESOURCE_NAME in process.env", async () => {
     const { seen, server } = localServer();
     const urls: string[] = [];
+    // Install the response tap BEFORE spying: installed during the spy, it would wrap the spy,
+    // and once the spy is removed it would no longer be the global fetch for later tests.
+    startAttemptTap().dispose();
     const real = globalThis.fetch;
     globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       const url = input instanceof Request ? input.url : String(input);
