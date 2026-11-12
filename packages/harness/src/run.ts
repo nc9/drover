@@ -349,28 +349,32 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // Appended user messages join the history only now, after `assertResumable`:
     // fencing one earlier could mint a fresh nonce for a run whose nonce was lost.
     const appended = isResume ? (args.appendMessages ?? []) : [];
-    const fenceAppended = appended.some((m) => m.untrusted === true)
-      ? untrustedFencer(plugins, ctx)
-      : undefined;
-    let appendedMessages: ReadonlyArray<unknown> = [];
-    try {
-      appendedMessages = appended.map((m) => ({
-        role: "user",
-        content:
-          m.untrusted === true && fenceAppended
-            ? fenceAppended("appended-input", m.content)
-            : m.content,
-        timestamp: Date.now(),
-      }));
-    } catch (e) {
-      return yield* Effect.fail(
-        new PluginError({
-          runId: ctx.runId,
-          pluginId: plugins.find((p) => p.wrapUntrusted)?.id ?? "unknown",
-          hook: "wrapUntrusted",
-          message: e instanceof Error ? e.message : String(e),
-        }),
-      );
+    // Fencers in plugin order (as `untrustedFencer` composes them), applied one by one so a
+    // throw names the plugin that threw.
+    const appendFencers = plugins.filter((p) => p.wrapUntrusted);
+    const untrustedCount = appended.filter((m) => m.untrusted === true).length;
+    // Untrusted items that went in as written (no fencing plugin): reported once `run_start` is out.
+    const unfencedAppended = appendFencers.length === 0 ? untrustedCount : 0;
+    const appendedMessages: unknown[] = [];
+    for (const m of appended) {
+      let content = m.content;
+      if (m.untrusted === true) {
+        for (const p of appendFencers) {
+          try {
+            content = p.wrapUntrusted!("appended-input", content, ctx);
+          } catch (e) {
+            return yield* Effect.fail(
+              new PluginError({
+                runId: ctx.runId,
+                pluginId: p.id,
+                hook: "wrapUntrusted",
+                message: e instanceof Error ? e.message : String(e),
+              }),
+            );
+          }
+        }
+      }
+      appendedMessages.push({ role: "user", content, timestamp: Date.now() });
     }
     const resumeFrom: CheckpointRow | undefined =
       resumeArg && appendedMessages.length > 0
@@ -444,6 +448,16 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     }
 
     safeEmit({ kind: "run_start", runId: ctx.runId, agentId: spec.id, specHash, ts: Date.now() });
+    if (unfencedAppended > 0) {
+      safeEmit({
+        kind: "warning",
+        runId: ctx.runId,
+        code: "untrusted_unfenced",
+        message: `${unfencedAppended} appended message(s) marked untrusted went in unfenced: no plugin on the run fences (wrapUntrusted). Add untrustedResultsPlugin.`,
+        count: unfencedAppended,
+        ts: Date.now(),
+      });
+    }
 
     if (!isResume && !Value.Check(spec.inputSchema, input)) {
       const issues = collectIssues(spec.inputSchema, input);

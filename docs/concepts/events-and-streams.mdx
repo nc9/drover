@@ -28,6 +28,7 @@ plugins observe via `onEvent`.
 | `run_end`           | terminal                                                     | `status`                                                                                                                                                                           |
 | `provider_failover` | the provider chain reacted to a failed model call            | `action` (`retry` / `failover` / `exhausted`), `from`, `to`, `failureClass`, `status`, `code?`, `waitMs?`, `benched?` (skipped for the run vs this call only; never provider text) |
 | `budget_warning`    | a budget crossed its `quota.wrapUp` threshold (once per run) | `dimension`, `limit`, `used`                                                                                                                                                       |
+| `warning`           | something the host should fix that did not stop the run      | `code` (`untrusted_unfenced`), `message`, `count`                                                                                                                                  |
 | `error`             | tagged error                                                 | `tag`, `message`                                                                                                                                                                   |
 
 Every event has `runId`, `ts`. Turn-scoped events also have `turn`.

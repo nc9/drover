@@ -557,3 +557,91 @@ describe("fence review round 3: onRunEnd isolation, cancelled status, run row", 
     expect(row?.status).toBe("cancelled");
   });
 });
+
+describe("appendMessages fencing nits (#66 follow-up)", () => {
+  const resumeFrom = (runId: string) => ({
+    runId,
+    seq: 1,
+    messages: [{ role: "user", content: "x", timestamp: 1 }, text("first answer")],
+    usage: { inputTokens: 0, outputTokens: 0 },
+    toolCalls: [],
+    retriesUsed: 0,
+    ts: Date.now(),
+  });
+
+  test("a throwing fence is named in the PluginError, not the first fencer of the run", async () => {
+    const ok = {
+      id: "ok-fence",
+      wrapUntrusted: (_s: string, t: string) => `[ok]${t}`,
+    };
+    const broken = {
+      id: "broken-fence",
+      wrapUntrusted: () => {
+        throw new Error("fence broke");
+      },
+    };
+    const { streamFn, calls } = scripted([() => text("never")]);
+    const r = await Effect.runPromise(
+      Effect.either(
+        runAgentEffect({
+          spec: agent({ id: "p", plugins: [ok as never, broken as never] }),
+          input: { q: "x" },
+          ctx: ctx("nits-1"),
+          emit: () => {},
+          deps: deps(streamFn),
+          resumeFrom: resumeFrom("nits-1"),
+          appendMessages: [{ content: "outside", untrusted: true }],
+        }),
+      ),
+    );
+    expect(r._tag).toBe("Left");
+    if (r._tag === "Left") {
+      expect(r.left).toMatchObject({
+        _tag: "PluginError",
+        pluginId: "broken-fence",
+        hook: "wrapUntrusted",
+      });
+    }
+    expect(calls.length).toBe(0);
+  });
+
+  test("an untrusted item with no fence emits one warning after run_start; a plain item none", async () => {
+    const { streamFn } = scripted([() => text("done")]);
+    const events: HarnessEvent[] = [];
+    const result = await Effect.runPromise(
+      runAgentEffect({
+        spec: agent({ id: "p" }),
+        input: { q: "x" },
+        ctx: ctx("nits-2"),
+        emit: (e) => events.push(e),
+        deps: deps(streamFn),
+        resumeFrom: resumeFrom("nits-2"),
+        appendMessages: [
+          { content: "a", untrusted: true },
+          { content: "plain" },
+          { content: "b", untrusted: true },
+        ],
+      }),
+    );
+    expect(result.status).toBe("success");
+    const kinds = events.map((e) => e.kind);
+    expect(kinds.indexOf("warning")).toBe(kinds.indexOf("run_start") + 1);
+    expect(events.filter((e) => e.kind === "warning")).toEqual([
+      expect.objectContaining({ code: "untrusted_unfenced", count: 2 }),
+    ]);
+
+    const plainEvents: HarnessEvent[] = [];
+    await Effect.runPromise(
+      runAgentEffect({
+        spec: agent({ id: "p" }),
+        input: { q: "x" },
+        ctx: ctx("nits-3"),
+        emit: (e) => plainEvents.push(e),
+        deps: deps(scripted([() => text("done")]).streamFn),
+        resumeFrom: resumeFrom("nits-3"),
+        appendMessages: [{ content: "plain" }],
+      }),
+    );
+    expect(plainEvents.some((e) => e.kind === "warning")).toBe(false);
+  });
+});
