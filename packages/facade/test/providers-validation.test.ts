@@ -186,3 +186,33 @@ describe("a transport that never yields", () => {
     expect(result.status).toBe("error");
   });
 });
+
+describe("resumeAgent before the run starts", () => {
+  test("a storage adapter that throws still ends the events and resolves the result", async () => {
+    const { resumeAgent } = await import("../src/core.ts");
+    const storage = {
+      loadRun: () => {
+        throw new Error("adapter exploded");
+      },
+    } as never;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const hung = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("resume did not settle")), 3_000);
+    });
+    try {
+      const h = resumeAgent(spec, "run-x", { sandbox: "disabled", storage });
+      const drain = (async () => {
+        for await (const _e of h.events) {
+          /* drain */
+        }
+      })();
+      const r = await Promise.race([h.result, hung]);
+      await Promise.race([drain, hung]);
+      expect(r.status).toBe("error");
+      expect(r.error?.tag).toBe("InternalError");
+      expect(r.error?.message).toContain("adapter exploded");
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+});

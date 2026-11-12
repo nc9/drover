@@ -155,7 +155,9 @@ on a 429 only, a "Retry-After: N" / "try again in Ns" hint (at most one wait of
 
 An attempt whose stream yields no event for `streamIdleTimeoutMs` (default 10 minutes; 0 turns
 it off) is aborted and classified `timeout`, so it fails over like any other timeout instead of
-hanging the run.
+hanging the run. Models outside the chain (a compaction `summaryModel`, a subagent's model)
+are watched with the same limit. A model that reasons silently for longer than the limit
+before its first event times out too: raise `streamIdleTimeoutMs` for such models.
 
 | Class                | Needs                                                                       | Fails over          | Retried in place                                       | Skipped for the rest of the run |
 | -------------------- | --------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------ | ------------------------------- |

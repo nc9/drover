@@ -60,12 +60,20 @@ export function withStreamIdleTimeout<F extends StreamLike>(
   return async (model, context, options) => {
     const ac = new AbortController();
     const caller = options?.signal;
-    const onCallerAbort = (): void => ac.abort(caller?.reason);
-    if (caller?.aborted) ac.abort(caller.reason);
-    else caller?.addEventListener("abort", onCallerAbort, { once: true });
     let done = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let onIdle: () => void = () => {};
+    // A caller abort ends the call now (an inner transport that ignores its signal must not
+    // keep it open until the idle timer fires).
+    let onAbort: () => void = () => {};
+    const onCallerAbort = (): void => {
+      ac.abort(caller?.reason);
+      if (done) return;
+      finish();
+      onAbort();
+    };
+    if (caller?.aborted) ac.abort(caller.reason);
+    else caller?.addEventListener("abort", onCallerAbort, { once: true });
     const finish = (): void => {
       done = true;
       clearTimeout(timer);
@@ -87,6 +95,7 @@ export function withStreamIdleTimeout<F extends StreamLike>(
     try {
       inner = await new Promise<AssistantMessageEventStream>((resolve, reject) => {
         onIdle = () => reject(new Error("Request timed out."));
+        onAbort = () => reject(new Error("Request was aborted."));
         Promise.resolve(fn(model, context, { ...options, signal: ac.signal })).then(
           resolve,
           reject,
@@ -99,6 +108,13 @@ export function withStreamIdleTimeout<F extends StreamLike>(
     const out = createAssistantMessageEventStream();
     onIdle = () => {
       out.push({ type: "error", reason: "error", error: timedOut(model) });
+      out.end();
+    };
+    onAbort = () => {
+      const m = timedOut(model);
+      m.stopReason = "aborted";
+      m.errorMessage = "Request was aborted.";
+      out.push({ type: "error", reason: "aborted", error: m });
       out.end();
     };
     void (async () => {

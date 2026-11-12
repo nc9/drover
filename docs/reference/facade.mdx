@@ -61,7 +61,10 @@ any model call with `error.tag === "SpecConfigError"`, naming the option.
 `streamIdleTimeoutMs`: a model call whose stream yields no event for this long ends as a
 provider failure (`ProviderError`), so a transport that never answers cannot hang the run (in
 a Worker, a hang is cancelled by the runtime with nothing to log). A chain applies its own,
-per attempt, and fails over (`createProviderChain({ streamIdleTimeoutMs })`).
+per attempt, and fails over (`createProviderChain({ streamIdleTimeoutMs })`). The compaction
+summariser and models outside the chain are watched too. The limit is time without ANY stream
+event: a model that reasons silently (no streamed thinking) for longer than
+`streamIdleTimeoutMs` before its first token times out, so raise the setting for such models.
 
 An unexpected throw inside the run still ends the event stream and resolves `result` with
 `status: "error"` and `error.tag === "InternalError"`; `result` never rejects.

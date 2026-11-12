@@ -512,7 +512,12 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       // A model whose provider is not in the chain (a compaction `summaryModel`,
       // a subagent's own model) is not the chain's to route: it goes straight to
       // pi-ai with the key the resolver gave it. No failover, no tap.
-      if (!names.includes(canonical.provider)) return streamSimple(canonical, context, callOptions);
+      // Watched like an attempt, so a model outside the chain cannot hang the run either.
+      if (!names.includes(canonical.provider))
+        return withStreamIdleTimeout(
+          streamSimple,
+          options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+        )(canonical, context, callOptions);
       const out = createAssistantMessageEventStream();
       const signal = callOptions?.signal;
       const end = (msg: AssistantMessage): void => {

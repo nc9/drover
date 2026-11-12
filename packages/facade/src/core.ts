@@ -123,6 +123,8 @@ export interface RunOptionsBase {
    * A model call whose stream yields no event for this long ends as a provider failure, so a
    * transport that never answers cannot hang the run. Default 600 000 (10 minutes); 0 turns it
    * off. A provider chain has its own (`createProviderChain({ streamIdleTimeoutMs })`).
+   * A model that reasons silently (no streamed events) for longer than this times out: raise
+   * it for such models.
    */
   streamIdleTimeoutMs?: number;
 }
@@ -536,7 +538,13 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
       ...(options.emitDeltas ? { emitDeltas: true } : {}),
     });
     return settleRun<S>(effect, runId, stream.close);
-  })();
+  })().catch((defect: unknown): RunResult<AgentOutput<S>> => {
+    // A throw before the run starts (a storage adapter that throws instead of failing, a
+    // malformed checkpoint): the events still end and `result` still resolves.
+    stream.close();
+    const cause = (defect as { cause?: unknown }).cause ?? defect;
+    return resumeFailure("InternalError", cause instanceof Error ? cause.message : String(cause));
+  });
 
   return {
     runId,

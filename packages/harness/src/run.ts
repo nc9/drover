@@ -1170,8 +1170,15 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         summaryApiKey,
         undefined,
         deps.onPayload,
-        // Only a chain reroutes the summariser; a bare `streamFn` never did.
-        deps.providers ? runStreamFn : undefined,
+        // Only a chain reroutes the summariser; a bare `streamFn` never did. Without a chain it
+        // keeps pi-ai's own transport, under the same idle watchdog as the run's calls, so a
+        // summary call that never answers fails as a CompactionError instead of hanging.
+        deps.providers
+          ? runStreamFn
+          : (withStreamIdleTimeout(
+              streamSimple,
+              deps.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+            ) as StreamFn),
         // The fence plugin's note, so the summariser knows what a fence is.
         systemAddenda(plugins, ctx).join("\n\n") || undefined,
       );

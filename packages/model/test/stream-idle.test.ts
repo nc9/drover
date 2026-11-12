@@ -122,3 +122,54 @@ describe("provider chain: an idle attempt fails over", () => {
     expect(notices[0]).toMatchObject({ from: "a", to: "b", failureClass: "timeout" });
   });
 });
+
+describe("withStreamIdleTimeout: steady streams and caller aborts", () => {
+  test("events spaced at ~0.6x the limit never time out, even when the whole call is longer", async () => {
+    const limit = 50;
+    const slow: ChainStreamFn = (m) => {
+      const s = createAssistantMessageEventStream();
+      const a = answer(m.provider);
+      void (async () => {
+        s.push({ type: "start", partial: a });
+        for (let i = 0; i < 6; i++) {
+          await new Promise((r) => setTimeout(r, limit * 0.6));
+          s.push({ type: "text_delta", contentIndex: 0, delta: "x", partial: a });
+        }
+        s.push({ type: "done", reason: "stop", message: a });
+        s.end();
+      })();
+      return s;
+    };
+    const started = Date.now();
+    const r = await (await withStreamIdleTimeout(slow, limit)(model(), ctx)).result();
+    expect(Date.now() - started).toBeGreaterThan(limit * 3);
+    expect(r.stopReason).toBe("stop");
+  });
+
+  test("a caller abort ends the call at once, even when the transport ignores its signal", async () => {
+    const ac = new AbortController();
+    const started = Date.now();
+    const s = await withStreamIdleTimeout(silent, 10_000)(model(), ctx, { signal: ac.signal });
+    setTimeout(() => ac.abort(), 10);
+    const r = await s.result();
+    expect(r.stopReason).toBe("aborted");
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+});
+
+test("provider chain: a model outside the chain goes to pi-ai under the watchdog", async () => {
+  const server = Bun.serve({ port: 0, fetch: () => new Promise<Response>(() => {}) });
+  try {
+    const chain = createProviderChain({
+      providers: [{ name: "a", apiKey: "k", baseUrl: "https://a.test/v1" }],
+      streams: { a: answering },
+      streamIdleTimeoutMs: 50,
+    });
+    const outside = { ...model("elsewhere"), baseUrl: `http://127.0.0.1:${server.port}/v1` };
+    const r = await (await chain.forRun()(outside, ctx, { apiKey: "k" })).result();
+    expect(r.stopReason).toBe("error");
+    expect(r.errorMessage).toBe("Request timed out.");
+  } finally {
+    await server.stop(true);
+  }
+});

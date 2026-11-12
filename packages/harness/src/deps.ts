@@ -90,6 +90,8 @@ export interface HarnessDeps {
    * to `streamFn` and pi-ai's own transport; a provider chain applies its own
    * (`streamIdleTimeoutMs` on `createProviderChain`) per attempt. Default 600 000 (10 minutes);
    * 0 turns it off.
+   * A model that reasons silently (no streamed events) for longer than this times out: raise
+   * it for such models.
    */
   streamIdleTimeoutMs?: number;
   /**
