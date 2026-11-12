@@ -488,3 +488,140 @@ describe("provider entries: Azure and Bedrock base URLs", () => {
     expect(bad.got).toEqual([]);
   });
 });
+
+/**
+ * #76 review: pi-ai's simple stream drops `azureBaseUrl`, Bedrock `region` and `bearerToken`,
+ * then reads process.env. The chain uses pi-ai's full stream for these providers. Real
+ * transport, with decoy process.env values that must never be used.
+ */
+describe("provider entries: pins survive pi-ai (real transport, decoy env)", () => {
+  const withEnv = async (vars: Record<string, string>, fn: () => Promise<void>) => {
+    const before = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, vars);
+    try {
+      await fn();
+    } finally {
+      for (const [k, v] of Object.entries(before)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  };
+  const localServer = () => {
+    const seen: Array<{ path: string; auth: string | null }> = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch: (req) => {
+        seen.push({ path: new URL(req.url).pathname, auth: req.headers.get("authorization") });
+        return new Response('{"error":{"message":"local","code":"x"}}', {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    return { seen, server };
+  };
+
+  test("azure: the entry's base URL wins over a decoy AZURE_OPENAI_BASE_URL / RESOURCE_NAME in process.env", async () => {
+    const { seen, server } = localServer();
+    const urls: string[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : String(input);
+      urls.push(url);
+      if (new URL(url).hostname !== "127.0.0.1")
+        return new Response('{"error":{"message":"blocked"}}', { status: 599 });
+      return real(input, init);
+    }) as typeof fetch;
+    try {
+      await withEnv(
+        {
+          AZURE_OPENAI_BASE_URL: "https://decoy.openai.azure.com/openai/v1",
+          AZURE_OPENAI_RESOURCE_NAME: "decoy",
+          AZURE_OPENAI_DEPLOYMENT_NAME_MAP: "gpt-4.1=decoy-deployment",
+        },
+        async () => {
+          const chain = createProviderChain({
+            providers: [
+              {
+                name: "azure-openai-responses",
+                apiKey: "az-tenant-key",
+                baseUrl: `http://127.0.0.1:${server.port}/openai/v1`,
+                useEnv: false,
+              },
+            ],
+          });
+          const r = await callOnce(chain, "azure-openai-responses", "gpt-4.1");
+          expect(r.stopReason).toBe("error");
+        },
+      );
+      expect(urls.length).toBeGreaterThan(0);
+      for (const u of urls) expect(new URL(u).hostname).toBe("127.0.0.1");
+      expect(urls.some((u) => u.includes("decoy"))).toBe(false);
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.every((s) => s.path.startsWith("/openai/v1/"))).toBe(true);
+    } finally {
+      globalThis.fetch = real;
+      await server.stop(true);
+    }
+  });
+
+  test("bedrock: the entry's apiKey is the bearer token and its endpoint and region are used, not a decoy AWS_* env", async () => {
+    const { seen, server } = localServer();
+    try {
+      await withEnv(
+        {
+          AWS_REGION: "us-west-2",
+          AWS_BEARER_TOKEN_BEDROCK: "decoy-bearer",
+          AWS_BEDROCK_FORCE_HTTP1: "1",
+        },
+        async () => {
+          const chain = createProviderChain({
+            providers: [
+              {
+                name: "amazon-bedrock",
+                apiKey: "tenant-bearer",
+                region: "eu-west-1",
+                baseUrl: `http://127.0.0.1:${server.port}`,
+                useEnv: false,
+              },
+            ],
+          });
+          const r = await callOnce(chain, "amazon-bedrock", "amazon.nova-lite-v1:0");
+          expect(r.stopReason).toBe("error");
+        },
+      );
+      expect(seen.length).toBeGreaterThan(0);
+      for (const s of seen) expect(s.auth).toBe("Bearer tenant-bearer");
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("bedrock: under useEnv: false an entry without apiKey is refused (IAM credentials come from the environment)", async () => {
+    const chain = createProviderChain({
+      providers: [{ name: "amazon-bedrock", region: "eu-west-1", useEnv: false }],
+    });
+    const r = await callOnce(chain, "amazon-bedrock", "amazon.nova-lite-v1:0");
+    expect(r.errorMessage).toContain('amazon-bedrock with useEnv: false needs "apiKey"');
+  });
+
+  test("pinnedOptions keeps the pins and maps reasoning like pi-ai's simple streams", async () => {
+    const { pinnedOptions } = await import("../src/provider-chain/pinned-stream.ts");
+    const { getModel } = await import("@mariozechner/pi-ai");
+    const nova = getModel("amazon-bedrock" as never, "amazon.nova-lite-v1:0" as never) as never;
+    expect(
+      pinnedOptions(nova, { apiKey: "k", region: "eu-west-1", bearerToken: "t" } as never),
+    ).toMatchObject({ region: "eu-west-1", bearerToken: "t", reasoning: undefined, apiKey: "k" });
+    const az = getModel("azure-openai-responses" as never, "gpt-4.1" as never) as never;
+    expect(
+      pinnedOptions(az, {
+        apiKey: "k",
+        azureBaseUrl: "https://x.openai.azure.com/openai/v1",
+      } as never),
+    ).toMatchObject({
+      azureBaseUrl: "https://x.openai.azure.com/openai/v1",
+      reasoningEffort: undefined,
+    });
+  });
+});

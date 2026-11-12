@@ -86,12 +86,21 @@ export default {
   entry needs `baseUrl` (`https://<resource>.openai.azure.com/openai/v1`), or
   `AZURE_OPENAI_BASE_URL` / `AZURE_OPENAI_RESOURCE_NAME` in the entry's environment (not read
   with `useEnv: false`); otherwise the provider is refused. The URL chosen is also passed to
-  pi-ai as `azureBaseUrl`, so its own `process.env` lookup cannot replace it.
+  pi-ai as `azureBaseUrl`, so its own `process.env` lookup cannot replace it. With
+  `useEnv: false` the API version (`v1`) and deployment name (the model id) are pinned too, so
+  pi-ai's `AZURE_OPENAI_API_VERSION` / `AZURE_OPENAI_DEPLOYMENT_NAME_MAP` are not read.
 - Bedrock (`amazon-bedrock`): `region` (or `AWS_REGION` / `AWS_DEFAULT_REGION` in the entry's
   environment) picks `https://bedrock-runtime.<region>.amazonaws.com` and is passed as the
   request's region; `baseUrl` (a VPC endpoint, a proxy) wins over the derived URL. Without a
   region a registry model keeps its own catalog URL, and a model declared in `models` is
   refused (`a declared model needs "region" or "baseUrl"`).
+- Bedrock credentials: an entry's `apiKey` is a Bedrock API key, sent as the bearer token.
+  Without one, the AWS SDK reads IAM credentials from its default chain (`process.env`,
+  `~/.aws`, instance and container roles), so with `useEnv: false` an entry without `apiKey`
+  is refused. pi-ai also reads `AWS_BEDROCK_SKIP_AUTH` / `AWS_BEDROCK_FORCE_HTTP1` from the
+  process environment.
+- Azure and Bedrock calls go through pi-ai's full `stream()` with complete options: its simple
+  stream drops `azureBaseUrl`, `region` and `bearerToken` and falls back to `process.env`.
 - Headers: on OpenAI-compatible providers an `Authorization` header in `headers` replaces the
   `apiKey` bearer. On `cloudflare-ai-gateway`, pi-ai sets `cf-aig-authorization` from `apiKey`
   after `headers`, so a `cf-aig-authorization` header has no effect: put the gateway token in

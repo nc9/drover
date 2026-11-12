@@ -23,6 +23,7 @@ import {
 } from "./classify.ts";
 import { applyBilledCost, isOpenRouter, withUsageInclude } from "./provider-cost.ts";
 import { rawFromResponse, startAttemptTap, type AttemptTap } from "./response-tap.ts";
+import { PINNED_PROVIDERS, pinnedStream } from "./pinned-stream.ts";
 
 /** pi-agent-core's `StreamFn`. */
 export type ChainStreamFn = (
@@ -418,8 +419,28 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       return provider === "azure-openai-responses"
         ? `no base URL for provider "${provider}": set "baseUrl" (https://<resource>.openai.azure.com/openai/v1), or AZURE_OPENAI_BASE_URL / AZURE_OPENAI_RESOURCE_NAME in the environment`
         : `no base URL for provider "${provider}"`;
-    if (provider === "azure-openai-responses") extra.azureBaseUrl = baseUrl;
-    const apiKey = entry.apiKey ?? own(options.apiKeys, provider) ?? readApiKey(provider, entryEnv);
+    if (provider === "azure-openai-responses") {
+      extra.azureBaseUrl = baseUrl;
+      // Nothing else from process.env either: pi-ai reads the API version and a deployment-name
+      // map from it.
+      if (entry.useEnv === false) {
+        extra.azureApiVersion = "v1";
+        extra.azureDeploymentName = id;
+      }
+    }
+    const explicitKey = entry.apiKey ?? own(options.apiKeys, provider);
+    if (provider === "amazon-bedrock") {
+      // `apiKey` is a Bedrock API key, sent as the bearer token. Without one, the AWS SDK reads
+      // IAM credentials from its default chain (process.env, ~/.aws, instance roles), which
+      // `useEnv: false` rules out.
+      if (explicitKey) extra.bearerToken = explicitKey;
+      else if (entry.useEnv === false)
+        return `amazon-bedrock with useEnv: false needs "apiKey" (a Bedrock API key): IAM credentials come from the AWS SDK's environment chain`;
+    }
+    const apiKey =
+      explicitKey ??
+      readApiKey(provider, entryEnv) ??
+      (provider === "amazon-bedrock" ? "aws-sdk-default-credentials" : null);
     if (!apiKey) return `no API key for provider "${provider}"`;
     const headers = {
       ...found.headers,
@@ -507,7 +528,11 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
             message,
           };
         };
-        const stream = own(options.streams, provider) ?? streamSimple;
+        // Azure and Bedrock go through pi-ai's full stream: its simple stream drops the
+        // pinned base URL / region and would fall back to process.env (pinned-stream.ts).
+        const stream =
+          own(options.streams, provider) ??
+          (PINNED_PROVIDERS.has(provider) ? pinnedStream : streamSimple);
         let inner: AssistantMessageEventStream;
         try {
           // The SDK's own retries are off: failing over is the retry.
