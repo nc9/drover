@@ -93,3 +93,59 @@ describe("isOpenRouter", () => {
     expect(isOpenRouter({})).toBe(false);
   });
 });
+
+describe("billed cost settles deterministically (#78)", () => {
+  test("once the caller has read the body to its end, cost() needs no settle window", async () => {
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () =>
+        new Response(
+          'data: {"choices":[]}\n\ndata: {"usage":{"prompt_tokens":1,"cost":0.05}}\n\ndata: [DONE]\n\n',
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    });
+    try {
+      const before = liveAttemptTaps();
+      for (let i = 0; i < 50; i++) {
+        const tap = startAttemptTap({ cost: true });
+        const res = await fetch(`http://127.0.0.1:${server.port}/`, { headers: tap.header });
+        await res.text(); // the caller's branch reaches its end
+        // A zero window: only the deterministic path can return the billed figure.
+        // oxlint-disable-next-line no-await-in-loop -- sequential attempts on purpose
+        expect(await tap.cost(0)).toBe(0.05);
+        tap.dispose();
+      }
+      expect(liveAttemptTaps()).toBe(before);
+    } finally {
+      await server.stop(true);
+    }
+  });
+
+  test("a body still open keeps the settle window: no cost, no wait beyond it", async () => {
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () =>
+        new Response(
+          new ReadableStream({
+            start(c) {
+              c.enqueue(enc.encode('data: {"choices":[]}\n\n')); // never closes, no cost
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    });
+    try {
+      const tap = startAttemptTap({ cost: true });
+      const res = await fetch(`http://127.0.0.1:${server.port}/`, { headers: tap.header });
+      const t0 = Date.now();
+      expect(await tap.cost(30)).toBeUndefined();
+      expect(Date.now() - t0).toBeLessThan(1_000);
+      tap.dispose();
+      await res.body?.cancel();
+    } finally {
+      await server.stop(true);
+    }
+  });
+});
