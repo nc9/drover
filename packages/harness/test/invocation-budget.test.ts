@@ -10,7 +10,10 @@ import { defineAgent, type InvocationBudget, type RunContext } from "@droveragen
 import { createNoneSandbox } from "@droveragent/sandbox";
 import type { PreResolvedModel } from "@droveragent/model";
 import type { CheckpointRow } from "@droveragent/storage";
-import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai/compat";
+import {
+  createAssistantMessageEventStream,
+  type AssistantMessage,
+} from "@earendil-works/pi-ai/compat";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 
 import { runAgentEffect } from "../src/run.ts";

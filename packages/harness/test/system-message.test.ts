@@ -118,7 +118,7 @@ const run = (
         sandbox: createNoneSandbox(),
         preResolvedModels: new Map([["m", { model, apiKey: "k" }]]),
         streamFn,
-        ...(extraDeps ?? {}),
+        ...extraDeps,
       },
       ...rest,
     }) as never,

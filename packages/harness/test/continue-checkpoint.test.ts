@@ -10,7 +10,10 @@ import { defineAgent, type RunContext } from "@droveragent/core";
 import { createProviderChain, type ChainStreamFn } from "@droveragent/model";
 import { createNoneSandbox } from "@droveragent/sandbox";
 import { createMemoryStorage, type StorageAdapter } from "@droveragent/storage";
-import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai/compat";
+import {
+  createAssistantMessageEventStream,
+  type AssistantMessage,
+} from "@earendil-works/pi-ai/compat";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 
 import { runAgentEffect } from "../src/run.ts";
