@@ -56,7 +56,9 @@ interface RunOptions {
 `providers` must be a chain from `createProviderChain` (`@droveragent/model`), whose
 `providers` are pi-ai provider names or `ProviderEntry` objects. Any other value, such as the
 hand-built `{ forRun, preResolvedModels }` object 0.3.0-next.1 accepted, fails the run before
-any model call with `error.tag === "SpecConfigError"`, naming the option.
+any model call with `error.tag === "SpecConfigError"`, naming the option. `runAgent` does
+not throw for this: it resolves with the error on `result.error`, so check it (a Worker
+handler that only catches exceptions will miss it).
 
 `streamIdleTimeoutMs`: a model call whose stream yields no event for this long ends as a
 provider failure (`ProviderError`), so a transport that never answers cannot hang the run (in
