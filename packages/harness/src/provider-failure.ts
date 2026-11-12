@@ -5,7 +5,7 @@
  */
 import type { ProviderErrorDetails } from "@droveragent/core";
 import { KNOWN_CODES } from "@droveragent/model";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 /** The slice of pi's assistant message the provider-failure check reads. */
 export type ProviderMessage = {

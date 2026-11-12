@@ -30,9 +30,9 @@
  * (only the request hash and the response events are), and a failed call's raw
  * provider text is replaced by its status-only form unless `keepProviderText`.
  */
-import { createAssistantMessageEventStream } from "@mariozechner/pi-ai";
-import type { AssistantMessage, AssistantMessageEvent } from "@mariozechner/pi-ai";
-import type { StreamFn } from "@mariozechner/pi-agent-core";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
+import type { AssistantMessage, AssistantMessageEvent } from "@earendil-works/pi-ai/compat";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
 
 export const RECORDING_VERSION = 1;
 

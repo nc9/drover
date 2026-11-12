@@ -8,7 +8,7 @@
  * over its rendered content is the most direct, self-contained signal — the
  * same `~4 chars/token` rule opencode uses for head/tail selection.
  */
-import type { ImageContent, Message, TextContent } from "@mariozechner/pi-ai";
+import type { ImageContent, Message, TextContent } from "@earendil-works/pi-ai/compat";
 
 const CHARS_PER_TOKEN = 4;
 /** Flat per-image estimate (base64 length wildly overstates real image tokens). */

@@ -9,7 +9,7 @@ import { defineAgent, type HarnessEvent, type RunContext } from "@droveragent/co
 import { createProviderChain, type ChainStreamFn } from "@droveragent/model";
 import { createNoneSandbox } from "@droveragent/sandbox";
 import { createMemoryStorage, type StorageAdapter } from "@droveragent/storage";
-import { createAssistantMessageEventStream, type AssistantMessage } from "@mariozechner/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai/compat";
 
 import { runAgentEffect } from "../src/run.ts";
 

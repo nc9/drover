@@ -14,8 +14,8 @@
  * to call a tool instead of writing the summary.
  */
 import { COMPACTION_SUMMARY_MARKER } from "@droveragent/core";
-import { completeSimple, type streamSimple } from "@mariozechner/pi-ai";
-import type { KnownApi, Message, Model, SimpleStreamOptions } from "@mariozechner/pi-ai";
+import { completeSimple, type streamSimple } from "@earendil-works/pi-ai/compat";
+import type { KnownApi, Message, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
 
 import { providerError } from "../provider-failure.ts";
 

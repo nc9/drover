@@ -229,7 +229,7 @@ describe("Workers guard classifier", () => {
     expect(
       nodeImportViolations({
         "nm/some-lib/index.js": { imports: [{ path: "fs", kind: "require-call" }] },
-        "nm/@mariozechner/pi-ai/dist/env-api-keys.js": {
+        "nm/@earendil-works/pi-ai/dist/env-api-keys.js": {
           imports: [
             { path: "node:fs", kind: "require-call" },
             { path: "node:child_process", kind: "require-call" },
@@ -238,7 +238,7 @@ describe("Workers guard classifier", () => {
       }),
     ).toEqual([
       "fs (require-call) <- nm/some-lib/index.js",
-      "node:child_process (require-call) <- nm/@mariozechner/pi-ai/dist/env-api-keys.js",
+      "node:child_process (require-call) <- nm/@earendil-works/pi-ai/dist/env-api-keys.js",
     ]);
   });
 });

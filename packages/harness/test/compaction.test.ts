@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import type { CompactionPolicy, HarnessEvent } from "@droveragent/core";
 import { COMPACTION_SUMMARY_MARKER } from "@droveragent/core";
-import type { AssistantMessage, Message, ToolResultMessage, Usage } from "@mariozechner/pi-ai";
+import type { AssistantMessage, Message, ToolResultMessage, Usage } from "@earendil-works/pi-ai/compat";
 
 import {
   buildSummaryMessage,

@@ -5,8 +5,8 @@ import type { SandboxAdapter } from "@droveragent/sandbox";
 import type { MemoryAdapter } from "@droveragent/memory";
 import type { SkillRegistry } from "@droveragent/skills";
 import type { StorageAdapter } from "@droveragent/storage";
-import type { StreamFn } from "@mariozechner/pi-agent-core";
-import type { SimpleStreamOptions } from "@mariozechner/pi-ai";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
+import type { SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
 
 /**
  * Per-run dependencies the harness needs. Extracted into its own module so

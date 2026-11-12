@@ -5,7 +5,7 @@ import {
   type AssistantMessage,
   type Context,
   type Model,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 
 import {
   createProviderChain,
@@ -620,7 +620,7 @@ describe("provider entries: pins survive pi-ai (real transport, decoy env)", () 
 
   test("pinnedOptions keeps the pins and maps reasoning like pi-ai's simple streams", async () => {
     const { pinnedOptions } = await import("../src/provider-chain/pinned-stream.ts");
-    const { getModel } = await import("@mariozechner/pi-ai");
+    const { getModel } = await import("@earendil-works/pi-ai/compat");
     const nova = getModel("amazon-bedrock" as never, "amazon.nova-lite-v1:0" as never) as never;
     expect(
       pinnedOptions(nova, { apiKey: "k", region: "eu-west-1", bearerToken: "t" } as never),
@@ -729,7 +729,7 @@ describe("provider entries: Bedrock region from the endpoint", () => {
 
   test("pi-ai's full stream gets the pinned region, which it prefers over process.env.AWS_REGION", async () => {
     const { pinnedOptions } = await import("../src/provider-chain/pinned-stream.ts");
-    const { getModel } = await import("@mariozechner/pi-ai");
+    const { getModel } = await import("@earendil-works/pi-ai/compat");
     const nova = getModel("amazon-bedrock" as never, "amazon.nova-lite-v1:0" as never) as never;
     await withDecoy(async () => {
       expect(pinnedOptions(nova, { apiKey: "k", region: "us-east-1" } as never).region).toBe(

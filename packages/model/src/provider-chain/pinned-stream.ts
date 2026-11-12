@@ -17,7 +17,7 @@ import {
   type Context,
   type Model,
   type SimpleStreamOptions,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 
 /** Providers the chain sends through `pinnedStream` instead of `streamSimple`. */
 export const PINNED_PROVIDERS: ReadonlySet<string> = new Set([

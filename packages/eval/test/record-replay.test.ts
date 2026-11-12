@@ -4,8 +4,8 @@ import { Type } from "@sinclair/typebox";
 import { defineAgent, type HarnessEvent, type RunContext } from "@droveragent/core";
 import { runAgentEffect, type HarnessDeps } from "@droveragent/harness";
 import { createNoneSandbox } from "@droveragent/sandbox";
-import { createAssistantMessageEventStream, type AssistantMessage } from "@mariozechner/pi-ai";
-import type { StreamFn } from "@mariozechner/pi-agent-core";
+import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai/compat";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
 
 import {
   ReplayAmbiguousError,

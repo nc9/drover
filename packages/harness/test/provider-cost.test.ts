@@ -4,8 +4,8 @@ import { Type } from "@sinclair/typebox";
 import { defineAgent, type RunContext } from "@droveragent/core";
 import { createNoneSandbox } from "@droveragent/sandbox";
 import type { PreResolvedModel } from "@droveragent/model";
-import { createAssistantMessageEventStream } from "@mariozechner/pi-ai";
-import type { StreamFn } from "@mariozechner/pi-agent-core";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
 
 import { runAgentEffect } from "../src/run.ts";
 import { pendingProviderCostCalls, withProviderCost } from "../src/provider-cost.ts";
