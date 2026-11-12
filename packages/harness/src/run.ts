@@ -906,6 +906,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
               output?: number;
               cacheRead?: number;
               cacheWrite?: number;
+              reasoning?: number;
               cost?: { total?: number };
             };
           }
@@ -919,6 +920,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           if (cacheRead > 0) next.cacheReadTokens = cacheRead;
           const cacheWrite = (lastUsage.value.cacheWriteTokens ?? 0) + (u.cacheWrite ?? 0);
           if (cacheWrite > 0) next.cacheWriteTokens = cacheWrite;
+          // Absent until some response reports it; then cumulative (a subset of output).
+          const reasoning = sumReported(lastUsage.value.reasoningTokens, u.reasoning);
+          if (reasoning !== undefined) next.reasoningTokens = reasoning;
           const cost = (lastUsage.value.costUsd ?? 0) + (u.cost?.total ?? 0);
           if (cost > 0) next.costUsd = cost;
           lastUsage.value = next;
@@ -928,6 +932,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             const one: Usage = { inputTokens: u.input ?? 0, outputTokens: u.output ?? 0 };
             if (u.cacheRead) one.cacheReadTokens = u.cacheRead;
             if (u.cacheWrite) one.cacheWriteTokens = u.cacheWrite;
+            if (u.reasoning && u.reasoning > 0) one.reasoningTokens = u.reasoning;
             if (u.cost?.total) one.costUsd = u.cost.total;
             chainRecorder.onMessage(
               served,
@@ -947,6 +952,8 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             if (cr > 0) slot.cacheReadTokens = cr;
             const cw = (prev.cacheWriteTokens ?? 0) + (u.cacheWrite ?? 0);
             if (cw > 0) slot.cacheWriteTokens = cw;
+            const rt = sumReported(prev.reasoningTokens, u.reasoning);
+            if (rt !== undefined) slot.reasoningTokens = rt;
             const c = (prev.costUsd ?? 0) + (u.cost?.total ?? 0);
             if (c > 0) slot.costUsd = c;
             usageByProvider[served] = slot;
@@ -1542,6 +1549,8 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       usage.cacheReadTokens = lastUsage.value.cacheReadTokens;
     if (lastUsage.value.cacheWriteTokens !== undefined)
       usage.cacheWriteTokens = lastUsage.value.cacheWriteTokens;
+    if (lastUsage.value.reasoningTokens !== undefined)
+      usage.reasoningTokens = lastUsage.value.reasoningTokens;
     if (lastUsage.value.costUsd !== undefined) usage.costUsd = lastUsage.value.costUsd;
 
     // Resolve terminal status. Priority order:
@@ -1828,6 +1837,8 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           usage.cacheReadTokens = lastUsage.value.cacheReadTokens;
         if (lastUsage.value.cacheWriteTokens !== undefined)
           usage.cacheWriteTokens = lastUsage.value.cacheWriteTokens;
+        if (lastUsage.value.reasoningTokens !== undefined)
+          usage.reasoningTokens = lastUsage.value.reasoningTokens;
         if (lastUsage.value.costUsd !== undefined) usage.costUsd = lastUsage.value.costUsd;
       }
     }
@@ -2339,6 +2350,16 @@ function createSemaphore(n: number): { acquire: (signal?: AbortSignal) => Promis
   };
 }
 
+/**
+ * Running sum of a counter that is absent until something positive is reported. pi-ai fills
+ * `Usage.reasoning` with 0 for providers that return no split (OpenAI Responses, Google), so
+ * 0 cannot be told from "not reported": both stay absent, like the cache token fields.
+ */
+function sumReported(total: number | undefined, add: number | undefined): number | undefined {
+  if (typeof add !== "number" || !(add > 0)) return total;
+  return (total ?? 0) + add;
+}
+
 /** Every token the provider reported: input + output + cache read + cache write. */
 function totalTokens(u: Usage): number {
   return u.inputTokens + u.outputTokens + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0);
@@ -2355,6 +2376,8 @@ function usageDelta(now: Usage, before: Usage | undefined): Usage {
   if (cr > 0) out.cacheReadTokens = cr;
   const cw = (now.cacheWriteTokens ?? 0) - (before.cacheWriteTokens ?? 0);
   if (cw > 0) out.cacheWriteTokens = cw;
+  const rt = (now.reasoningTokens ?? 0) - (before.reasoningTokens ?? 0);
+  if (rt > 0) out.reasoningTokens = rt;
   const cost = (now.costUsd ?? 0) - (before.costUsd ?? 0);
   if (cost > 0) out.costUsd = cost;
   return out;

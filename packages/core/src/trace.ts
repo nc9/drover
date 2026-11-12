@@ -308,6 +308,8 @@ export interface NameStats {
 export interface UsageStats {
   inputTokens: number;
   outputTokens: number;
+  /** Reasoning tokens (a subset of `outputTokens`); present only when some `usage` event reported them. */
+  reasoningTokens?: number;
   costUsd: number;
 }
 
@@ -359,7 +361,7 @@ export function summarizeTrace(events: ReadonlyArray<TraceEvent>): TraceSummary 
   const total = { count: 0, errors: 0, totalMs: 0 };
   let repeatedFailures = 0;
   const byTool = new Map<string, NameStats>();
-  const usage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+  const usage: UsageStats = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
   const byProvider = new Map<string, UsageStats>();
   const unknownKinds = new Map<string, number>();
   let status: string | null = null;
@@ -395,6 +397,8 @@ export function summarizeTrace(events: ReadonlyArray<TraceEvent>): TraceSummary 
         usage.inputTokens += e.usage.inputTokens;
         usage.outputTokens += e.usage.outputTokens;
         usage.costUsd += e.usage.costUsd ?? 0;
+        const reasoning = e.usage.reasoningTokens ?? 0;
+        if (reasoning > 0) usage.reasoningTokens = (usage.reasoningTokens ?? 0) + reasoning;
         const provider = (e as { provider?: unknown }).provider;
         if (typeof provider === "string") {
           let p = byProvider.get(provider);
@@ -402,6 +406,7 @@ export function summarizeTrace(events: ReadonlyArray<TraceEvent>): TraceSummary 
           p.inputTokens += e.usage.inputTokens;
           p.outputTokens += e.usage.outputTokens;
           p.costUsd += e.usage.costUsd ?? 0;
+          if (reasoning > 0) p.reasoningTokens = (p.reasoningTokens ?? 0) + reasoning;
         }
         break;
       }

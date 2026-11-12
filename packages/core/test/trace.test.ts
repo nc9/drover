@@ -147,6 +147,27 @@ describe("trace format v1", () => {
     expect(s.usage.costUsd).toBeCloseTo(0.02);
   });
 
+  test("summary: reasoningTokens sum per run and per provider, absent when never reported", () => {
+    const withReasoning = (provider: string, reasoningTokens?: number) =>
+      ({
+        ...SAMPLES.usage,
+        provider,
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+          ...(reasoningTokens === undefined ? {} : { reasoningTokens }),
+        },
+      }) as HarnessEvent;
+    const s = summarizeTrace([withReasoning("a", 3), withReasoning("a", 4), withReasoning("b")]);
+    expect(s.usage.reasoningTokens).toBe(7);
+    expect(s.usageByProvider["a"]!.reasoningTokens).toBe(7);
+    expect(Object.hasOwn(s.usageByProvider["b"]!, "reasoningTokens")).toBe(false);
+    // outputTokens keeps its meaning (reasoning is a subset), so it is not added to.
+    expect(s.usage.outputTokens).toBe(15);
+    const none = summarizeTrace([withReasoning("a")]);
+    expect(Object.hasOwn(none.usage, "reasoningTokens")).toBe(false);
+  });
+
   // Names in a trace are data: a tool, provider or kind called `__proto__` / `constructor` / `prototype`
   // must be an ordinary key and must never reach Object.prototype.
   test("hostile names: summarising and reading change no prototype and report the names as keys", () => {

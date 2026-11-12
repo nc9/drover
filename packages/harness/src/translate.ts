@@ -137,6 +137,7 @@ export function createTranslator(
                 output?: number;
                 cacheRead?: number;
                 cacheWrite?: number;
+                reasoning?: number;
                 cost?: { total?: number };
               };
             }
@@ -147,6 +148,7 @@ export function createTranslator(
               outputTokens: number;
               cacheReadTokens?: number;
               cacheWriteTokens?: number;
+              reasoningTokens?: number;
               costUsd?: number;
             } = {
               inputTokens: usage.input ?? 0,
@@ -154,6 +156,8 @@ export function createTranslator(
             };
             if (usage.cacheRead) u.cacheReadTokens = usage.cacheRead;
             if (usage.cacheWrite) u.cacheWriteTokens = usage.cacheWrite;
+            // A subset of output; absent unless positive (pi-ai reports 0 for "no split").
+            if (usage.reasoning && usage.reasoning > 0) u.reasoningTokens = usage.reasoning;
             if (usage.cost?.total !== undefined) u.costUsd = usage.cost.total;
             const served = msg as { provider?: unknown; model?: unknown };
             events.push({
