@@ -136,18 +136,23 @@ export class ReplayExhaustedError extends Error {
 }
 
 /** Canonical JSON: sorted keys, `timestamp` dropped (it differs on every run). */
-const canonical = (v: unknown): string => {
-  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+const canonical = (v: unknown, omit: ReadonlySet<string> = TIMESTAMP_ONLY): string => {
+  if (Array.isArray(v)) return `[${v.map((x) => canonical(x, omit)).join(",")}]`;
   if (v !== null && typeof v === "object") {
     const o = v as Record<string, unknown>;
     return `{${Object.keys(o)
-      .filter((k) => k !== "timestamp" && o[k] !== undefined)
+      .filter((k) => !omit.has(k) && o[k] !== undefined)
       .sort()
-      .map((k) => `${JSON.stringify(k)}:${canonical(o[k])}`)
+      .map((k) => `${JSON.stringify(k)}:${canonical(o[k], omit)}`)
       .join(",")}}`;
   }
   return JSON.stringify(v) ?? "null";
 };
+const TIMESTAMP_ONLY: ReadonlySet<string> = new Set(["timestamp"]);
+/** Fields that differ between two otherwise identical answers (a provider's per-response id, clocks). */
+const VOLATILE_ANSWER_FIELDS: ReadonlySet<string> = new Set(["timestamp", "responseId"]);
+/** An answer's identity for the ambiguity check: its events, without volatile fields, key order ignored. */
+const answerKey = (t: RecordedTurn): string => canonical(t.events, VOLATILE_ANSWER_FIELDS);
 
 /** cyrb53: small, sync, runtime-agnostic (no node:crypto, fine in Workers). */
 const hashString = (s: string): string => {
@@ -278,11 +283,13 @@ export const recordStream = (
   const fn: StreamFn = (model, context, options) => {
     const index = next++;
     const thread = threadKey(context);
-    const concurrent = (inFlight.get(thread) ?? 0) > 0;
-    inFlight.set(thread, (inFlight.get(thread) ?? 0) + 1);
     const threadIndex = perThread.get(thread) ?? 0;
     perThread.set(thread, threadIndex + 1);
     const requestHash = hashRequest(context);
+    // Counted in flight only once the hashes are done: a throw above leaves no
+    // phantom in-flight call that would mark a later, sequential call concurrent.
+    const concurrent = (inFlight.get(thread) ?? 0) > 0;
+    inFlight.set(thread, (inFlight.get(thread) ?? 0) + 1);
     const out = createAssistantMessageEventStream();
     void (async () => {
       const events: AssistantMessageEvent[] = [];
@@ -397,8 +404,8 @@ export const replayStream = (recording: StreamRecording, options: ReplayOptions 
     // cannot be told apart: refuse rather than hand one the other's answer.
     if (
       matching.length > 1 &&
-      list.some((t) => t.concurrent) &&
-      new Set(matching.map((t) => JSON.stringify(t.events))).size > 1
+      matching.some((t) => t.concurrent) &&
+      new Set(matching.map(answerKey)).size > 1
     )
       throw new ReplayAmbiguousError(thread, threadIndex, matching.length);
     let turn = matching[0];

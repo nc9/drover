@@ -12,8 +12,11 @@ import {
   ReplayDriftError,
   ReplayExhaustedError,
   createRecorder,
+  hashRequest,
   recordStream,
   replayStream,
+  threadKey,
+  type RecordedTurn,
   type StreamRecording,
 } from "../src/index.ts";
 
@@ -435,5 +438,108 @@ describe("record / replay", () => {
     const replay = replayStream(rec.recording());
     expect((await (await replay(fakeModel, ctxSame)).result()).stopReason).toBe("error");
     expect((await (await replay(fakeModel, ctxSame)).result()).stopReason).toBe("stop");
+  });
+
+  describe("ambiguity check details", () => {
+    const ctxOf = (second?: string) => ({
+      systemPrompt: "child",
+      messages: [
+        { role: "user" as const, content: "task", timestamp: 1 },
+        ...(second ? [{ role: "user" as const, content: second, timestamp: 2 }] : []),
+      ],
+    });
+    const turn = (
+      index: number,
+      threadIndex: number,
+      ctxArg: ReturnType<typeof ctxOf>,
+      text: string,
+      extra: Partial<RecordedTurn> = {},
+      responseId = "r",
+      timestamp = 0,
+    ): RecordedTurn => ({
+      index,
+      thread: threadKey(ctxArg),
+      threadIndex,
+      requestHash: hashRequest(ctxArg),
+      modelId: "m",
+      events: [
+        {
+          type: "done",
+          reason: "stop",
+          message: {
+            ...base([{ type: "text", text }], "stop", 1),
+            timestamp,
+            responseId,
+          } as AssistantMessage,
+        },
+      ],
+      ...extra,
+    });
+
+    test("concurrent answers that differ only in timestamp or responseId are not ambiguous", async () => {
+      const c = ctxOf();
+      const recording: StreamRecording = {
+        version: 1,
+        turns: [
+          turn(0, 0, c, "same", { concurrent: true }, "gen-1", 100),
+          turn(1, 1, c, "same", { concurrent: true }, "gen-2", 200),
+        ],
+      };
+      const replay = replayStream(recording);
+      const m = await (await replay(fakeModel, c)).result();
+      expect((m.content[0] as { text: string }).text).toBe("same");
+    });
+
+    test("only the matching turns' concurrency counts: a sequential retry in a thread that also had concurrent calls replays", async () => {
+      const first = ctxOf();
+      const later = ctxOf("follow-up");
+      const recording: StreamRecording = {
+        version: 1,
+        turns: [
+          // Two concurrent calls with the same answer earlier in the thread.
+          turn(0, 0, first, "same", { concurrent: true }),
+          turn(1, 1, first, "same", { concurrent: true }),
+          // Later, one request repeated sequentially (a retry) with different answers.
+          turn(2, 2, later, "first try"),
+          turn(3, 3, later, "second try"),
+        ],
+      };
+      const replay = replayStream(recording);
+      await (await replay(fakeModel, first)).result();
+      await (await replay(fakeModel, first)).result();
+      const a = await (await replay(fakeModel, later)).result();
+      const b = await (await replay(fakeModel, later)).result();
+      expect([a, b].map((m) => (m.content[0] as { text: string }).text)).toEqual([
+        "first try",
+        "second try",
+      ]);
+    });
+
+    test("a call whose request cannot be hashed leaves no phantom in-flight call behind", async () => {
+      const rec = createRecorder();
+      let n = 0;
+      const fast: StreamFn = () => {
+        const s = createAssistantMessageEventStream();
+        s.push({
+          type: "done",
+          reason: "stop",
+          message: base([{ type: "text", text: `a${n++}` }], "stop", 1),
+        });
+        s.end();
+        return s;
+      };
+      const fn = recordStream(fast, rec.sink);
+      // A BigInt in the history makes the request hash throw (the thread key only reads the first message).
+      const unhashable = {
+        systemPrompt: "child",
+        messages: [
+          { role: "user" as const, content: "task", timestamp: 1 },
+          { role: "user" as const, content: "x", timestamp: 2, extra: 1n },
+        ],
+      };
+      expect(() => fn(fakeModel, unhashable as never)).toThrow();
+      await (await fn(fakeModel, ctxOf())).result();
+      expect(rec.recording().turns.every((t) => !t.concurrent)).toBe(true);
+    });
   });
 });
