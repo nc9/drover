@@ -58,10 +58,12 @@ import {
   scrubProviderErrorText,
   type ProviderMessage,
 } from "./provider-failure.ts";
+import type { ModelCallDecision } from "@droveragent/core";
 import type { HarnessDeps } from "./deps.ts";
 import { mcpActive, memoryActive, skillsActive, subagentsActive } from "./capability-gates.ts";
 import type { AgentLoopConfig, AgentMessage } from "@mariozechner/pi-agent-core";
 import type { KnownApi, Message, Model, UserMessage } from "@mariozechner/pi-ai";
+import { createAssistantMessageEventStream, streamSimple } from "@mariozechner/pi-ai";
 import { Value } from "@sinclair/typebox/value";
 import { Kind, type TSchema } from "@sinclair/typebox";
 import * as path from "node:path";
@@ -669,6 +671,12 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     const breachMessage: { value: unknown } = { value: null };
 
     // Snapshot of pi's message list, updated each LLM call via transformContext.
+    // Set by a `beforeModelCall` refusal (see `guardedTransform`). From then on the sink ignores
+    // pi's events for the aborted call: no usage, no turn count, no checkpoint.
+    const refusal: { value: { tag: string; message: string; turn: number } | null } = {
+      value: null,
+    };
+
     // Used to checkpoint state for resume. Seeded from the checkpoint on resume.
     const messagesSnapshot: { value: ReadonlyArray<AgentMessage> } = {
       value: resumeFrom ? (resumeFrom.messages as ReadonlyArray<AgentMessage>) : [],
@@ -707,6 +715,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     };
 
     const sink = (e: PiEvent): void => {
+      // A refused model call was never made: pi still closes it as an aborted message and a
+      // turn, which must not add usage, count as a turn or persist a checkpoint.
+      if (refusal.value) return;
       // Track last assistant text live for output validation.
       if (e.type === "message_end") {
         const msg = e.message;
@@ -1131,6 +1142,90 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         }
       : baseTransformContext;
 
+    // Admission control: plugins may refuse a model call (a balance preflight). The refusal aborts the
+    // loop before that call is made and the run ends `error` with the plugin's tag and message.
+    // Order: the guard runs FIRST, before compaction and the checkpoint snapshot (the base
+    // transform), so a refused call spends nothing, not even a compaction summary call. One check
+    // per model call of this run: under a provider chain it is not repeated per failover attempt,
+    // the compaction summariser's own call is not checked (it belongs to the checked call), and a
+    // subagent's calls are checked only by the plugins on the child's spec.
+    // Order: guard, then the base transform (compaction, checkpoint snapshot), then the wrap-up
+    // notice; the postSuccess continuation gets guard then base only (no notice).
+    let modelCalls = 0;
+    const guards = plugins.filter((p) => p.beforeModelCall);
+    const guardOver = (
+      inner:
+        | ((messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>)
+        | undefined,
+    ) =>
+      guards.length > 0
+        ? async (messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> => {
+            if (refusal.value) return messages;
+            modelCalls += 1;
+            for (const p of guards) {
+              let decision: ModelCallDecision = { kind: "allow" };
+              try {
+                decision = await Effect.runPromise(
+                  p.beforeModelCall!(
+                    { callNumber: modelCalls, usage: { ...lastUsage.value } },
+                    ctx,
+                  ).pipe(
+                    Effect.catchAllCause(() =>
+                      Effect.succeed({ kind: "allow" } as ModelCallDecision),
+                    ),
+                  ),
+                );
+              } catch {
+                /* a broken guard must not take the run down */
+              }
+              if (decision.kind === "refuse") {
+                refusal.value = {
+                  tag: decision.tag,
+                  message: decision.message,
+                  turn: translator.currentTurn(),
+                };
+                abortController.abort();
+                return messages; // no compaction, no snapshot: the call will not be made
+              }
+            }
+            return inner ? inner(messages, signal) : messages;
+          }
+        : inner;
+    const guardedTransform = guardOver(transformWithWrapUp);
+
+    // After a refusal the transport is never called (whatever it does with an aborted signal):
+    // pi gets an already-aborted assistant message instead.
+    const guardedStreamFn: StreamFn | undefined =
+      guards.length > 0
+        ? (model, context, options) => {
+            if (!refusal.value) return (runStreamFn ?? streamSimple)(model, context, options);
+            const stream = createAssistantMessageEventStream();
+            stream.push({
+              type: "error",
+              reason: "aborted",
+              error: {
+                role: "assistant",
+                content: [],
+                api: model.api,
+                provider: model.provider,
+                model: model.id,
+                usage: {
+                  input: 0,
+                  output: 0,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  totalTokens: 0,
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+                },
+                stopReason: "aborted",
+                timestamp: Date.now(),
+              },
+            });
+            stream.end();
+            return stream;
+          }
+        : runStreamFn;
+
     const loopConfig: AgentLoopConfig = {
       model: resolved.model as never,
       convertToLlm: (messages: AgentMessage[]): Message[] => messages as Message[],
@@ -1144,7 +1239,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       // routing). `AgentLoopConfig extends SimpleStreamOptions` and pi spreads
       // the whole config into the stream options, so this reaches the provider.
       ...(deps.onPayload ? { onPayload: deps.onPayload } : {}),
-      ...(transformWithWrapUp ? { transformContext: transformWithWrapUp } : {}),
+      ...(guardedTransform ? { transformContext: guardedTransform } : {}),
       ...(beforeToolCall ? { beforeToolCall: beforeToolCall as never } : {}),
       ...(afterToolCall ? { afterToolCall: afterToolCall as never } : {}),
       getFollowUpMessages,
@@ -1236,7 +1331,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             loopConfig,
             sink as (e: PiEvent) => void,
             abortController.signal,
-            runStreamFn,
+            guardedStreamFn,
           );
         } else {
           finalMessages = await runAgentLoop(
@@ -1245,7 +1340,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             loopConfig,
             sink as (e: PiEvent) => void,
             abortController.signal,
-            runStreamFn,
+            guardedStreamFn,
           );
         }
       } catch (err) {
@@ -1306,6 +1401,16 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
 
     if (pauseFlag?.requested) {
       status = "paused";
+    } else if (refusal.value && !ctx.signal.aborted) {
+      status = "error";
+      errorOut = { tag: refusal.value.tag, message: refusal.value.message };
+      safeEmit({
+        kind: "error",
+        runId: ctx.runId,
+        tag: errorOut.tag,
+        message: errorOut.message,
+        ts: Date.now(),
+      });
     } else if (ctx.signal.aborted) {
       status = "cancelled";
       errorOut = { tag: "CancelledError", message: "cancelled by caller" };
@@ -1442,9 +1547,11 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         // the notice must neither fire in it nor leak into it. Compaction and
         // checkpointing (the base transform) still apply.
         const { transformContext: _wrapped, ...loopWithoutWrapUp } = loopConfig;
+        // The admission guard still applies (a refused closing call is never sent).
+        const postTransform = guardOver(transformContext);
         const postLoopConfig: AgentLoopConfig = {
           ...loopWithoutWrapUp,
-          ...(transformContext ? { transformContext } : {}),
+          ...(postTransform ? { transformContext: postTransform } : {}),
           getFollowUpMessages: async (): Promise<UserMessage[]> => [],
         };
         yield* Effect.promise(async (): Promise<void> => {
@@ -1458,13 +1565,26 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
               postLoopConfig,
               sink as (e: PiEvent) => void,
               abortController.signal,
-              runStreamFn,
+              // Guarded like the main loop: a refused closing call never reaches the transport.
+              guardedStreamFn,
             );
           } catch (err) {
             loopError = err as Error;
           }
         });
-        if (loopError) {
+        if (refusal.value) {
+          // A `beforeModelCall` refusal during post-processing ends the run like one in
+          // the main loop: `error` with the plugin's tag and message.
+          status = "error";
+          errorOut = { tag: refusal.value.tag, message: refusal.value.message };
+          safeEmit({
+            kind: "error",
+            runId: ctx.runId,
+            tag: errorOut.tag,
+            message: errorOut.message,
+            ts: Date.now(),
+          });
+        } else if (loopError) {
           // The wall-clock timer stays armed through `postSuccess`, and the
           // shared `sink` keeps checking turns/cost — so a breach here is a
           // quota abort, not a crash. Mirror the main post-loop split.
@@ -1538,7 +1658,8 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // A `quota` status carries its `QuotaExceededError` in `errorOut` (set
     // in the post-loop block above) and is returned as a `RunResult` — the
     // run reached a terminal state, it just exhausted a budget.
-    const turns = translator.currentTurn();
+    // A refused call's turn was started (pi emitted turn_start) but made no model call: not counted.
+    const turns = refusal.value ? refusal.value.turn - 1 : translator.currentTurn();
 
     const durationMs = Date.now() - startedAt;
     const endedAt = Date.now();
