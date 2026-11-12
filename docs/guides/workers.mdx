@@ -113,20 +113,20 @@ What works without a filesystem:
 No extra packages are needed: `@opentelemetry/api`, an optional peer of the Mistral SDK inside
 pi-ai that a Worker bundler must resolve, is a dependency of `@droveragent/model`.
 
-Measured with `bun build src/core.ts --target=browser --minify --external 'node:*'`:
+Measured with `bun build src/core.ts --target=browser --conditions workerd --minify --external 'node:*'`:
 
-| Bundle                                                                  | Size         |
-| ----------------------------------------------------------------------- | ------------ |
-| `@droveragent/facade/core`, every pi-ai provider                        | about 2.3 MB |
-| the same with the other provider SDKs external (OpenAI-compatible only) | about 1.0 MB |
+| Bundle                                                                  | Size          |
+| ----------------------------------------------------------------------- | ------------- |
+| `@droveragent/facade/core`, every pi-ai provider                        | about 2.27 MB |
+| the same with the other provider SDKs external (OpenAI-compatible only) | about 1.03 MB |
 
-A test (`packages/facade/test/core-entry.test.ts`) fails when the first number passes 2.4 MB.
+A test (`packages/facade/test/core-entry.test.ts`) fails when the first number passes 2.6 MB.
 
 pi-ai loads each provider through a dynamic import, and bundlers follow those. To ship one
 provider, mark the other SDKs external:
 
 ```sh
-bun build src/worker.ts --target=browser --minify \
+bun build src/worker.ts --target=browser --conditions workerd --minify \
   --external 'node:*' \
   --external @anthropic-ai/sdk --external @google/genai --external @mistralai/mistralai \
   --external '@aws-sdk/*' --external '@smithy/*' --external proxy-agent --external undici

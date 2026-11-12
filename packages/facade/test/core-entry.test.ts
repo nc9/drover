@@ -160,8 +160,13 @@ const WORKERS_STATIC_NODE = new Set(["path", "crypto"]);
 const ALLOWED_REQUIRE_SITES: ReadonlyArray<{ file: RegExp; module: string }> = [
   { file: /@mariozechner\/pi-ai\/dist\/env-api-keys\.js$/, module: "fs" },
 ];
-/** Minified browser bundle of `src/core.ts`, all pi-ai providers included. Measured: ~2.27 MB (mistral 2.7 + @opentelemetry/api, #69). */
-const CORE_BUNDLE_BUDGET_BYTES = 2_400_000;
+/**
+ * Minified browser bundle of `src/core.ts`, all pi-ai providers included. Measured: ~2.27 MB
+ * (2026-11, mistral 2.7 + @opentelemetry/api since #69; was ~2.09 MB). The budget leaves
+ * ~0.3 MB for provider-SDK minor bumps inside pi-ai's ranges, which drover does not pin for
+ * consumers; a jump past it means a new SDK or a static import, and is worth a look.
+ */
+const CORE_BUNDLE_BUDGET_BYTES = 2_600_000;
 
 type MetaInputs = Record<string, { imports?: Array<{ path: string; kind: string }> }>;
 
