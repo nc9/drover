@@ -50,9 +50,40 @@ export interface ProviderFailoverNotice {
 }
 export type ProviderFailoverListener = (notice: ProviderFailoverNotice) => void;
 
+/**
+ * A chain provider given as settings instead of (or on top of) environment variables: a
+ * Worker's bindings, one tenant's credentials, a test's fakes. Every setting falls back to the
+ * environment only when absent, and `useEnv: false` turns the environment off for this entry.
+ * Credentials and header values given here are sent to the provider and nowhere else: they
+ * never appear in events, errors, the chain record, storage or traces.
+ */
+export interface ProviderEntry {
+  /** pi-ai provider name: its registry entry, and the default env var for its key. */
+  name: string;
+  /** The API key. Default: `apiKeys[name]`, then the provider's env var. */
+  apiKey?: string;
+  /** Base URL; `{PLACEHOLDER}`s are filled from `vars`, then the environment. */
+  baseUrl?: string;
+  /** Values for `{PLACEHOLDER}`s in the base URL (e.g. `CLOUDFLARE_ACCOUNT_ID`). */
+  vars?: Readonly<Record<string, string>>;
+  /** Extra request headers (e.g. a gateway's own auth header), merged over the model's. */
+  headers?: Readonly<Record<string, string>>;
+  /**
+   * Models for this provider, by canonical id, in one place: a provider id (string), `null`
+   * (not served here), or a model declaration for one pi-ai's registry does not list
+   * (`{ id, contextWindow?, maxTokens?, cost?, ... }`; api `openai-completions` by default).
+   */
+  models?: Readonly<Record<string, string | null | (Partial<Model<Api>> & { id: string })>>;
+  /** Read the environment for anything not given here. Default true. */
+  useEnv?: boolean;
+}
+
 export interface ProviderChainOptions {
-  /** pi-ai provider names, in order of preference: `["openrouter", "cloudflare-ai-gateway"]`. */
-  providers: readonly string[];
+  /**
+   * Providers in order of preference: pi-ai provider names (`["openrouter",
+   * "cloudflare-ai-gateway"]`), or `ProviderEntry` settings objects, or a mix.
+   */
+  providers: ReadonlyArray<string | ProviderEntry>;
   /**
    * Spec model name -> canonical model id (OpenRouter style, `openai/gpt-4o-mini`). These become the
    * harness's `preResolvedModels`; any other name resolves through the normal resolver.
@@ -200,6 +231,21 @@ function own<V>(rec: Readonly<Record<string, V>> | undefined, key: string): V | 
 export function createProviderChain(options: ProviderChainOptions): ProviderChain {
   if (options.providers.length === 0) throw new Error("createProviderChain: no providers");
   const env = options.env ?? (process.env as Record<string, string | undefined>);
+  // Entries by name, and the names in chain order.
+  const entries = new Map<string, ProviderEntry>();
+  const names: string[] = [];
+  for (const p of options.providers) {
+    const entry: ProviderEntry = typeof p === "string" ? { name: p } : p;
+    if (typeof entry.name !== "string" || entry.name === "")
+      throw new Error("createProviderChain: a provider entry needs a name");
+    if (entries.has(entry.name))
+      throw new Error(`createProviderChain: provider "${entry.name}" is listed twice`);
+    entries.set(entry.name, entry);
+    names.push(entry.name);
+  }
+  /** The environment for an entry: none when `useEnv: false`. */
+  const envFor = (entry: ProviderEntry): Readonly<Record<string, string | undefined>> =>
+    entry.useEnv === false ? {} : env;
   const sleep = options.sleep ?? defaultSleep;
   const maxWait = options.maxRateLimitWaitMs ?? 10_000;
   const ACTIONS: ReadonlySet<string> = new Set(["stop", "next", "skip"]);
@@ -225,11 +271,36 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
   };
 
   const idFor = (provider: string, canonicalId: string): string | null => {
+    const declared = own(entries.get(provider)?.models, canonicalId);
+    if (declared !== undefined)
+      return typeof declared === "string" ? declared : (declared?.id ?? null);
     const mapped = own(options.ids, canonicalId);
     if (mapped && Object.hasOwn(mapped, provider)) return mapped[provider] ?? null;
     return provider === "cloudflare-ai-gateway"
       ? canonicalId.replace(/^openai\//, "")
       : canonicalId;
+  };
+
+  /** The model for a provider and id: an entry declaration, `extraModels`, then pi-ai's registry. */
+  const modelFor = (provider: string, canonicalId: string, id: string): Model<Api> | undefined => {
+    const declared = own(entries.get(provider)?.models, canonicalId);
+    if (declared !== null && typeof declared === "object")
+      return {
+        name: declared.id,
+        api: "openai-completions",
+        baseUrl: entries.get(provider)?.baseUrl ?? "",
+        reasoning: false,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 128_000,
+        maxTokens: 16_384,
+        ...declared,
+        provider,
+      } as Model<Api>;
+    return (
+      options.extraModels?.find((m) => m.provider === provider && m.id === id) ??
+      (getModel(provider as never, id as never) as Model<Api> | undefined)
+    );
   };
 
   /** The call for one provider: pi-ai's own model entry (base URL, api, quirks) plus key; null if it cannot serve the id. */
@@ -239,19 +310,37 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
   ): { model: Model<Api>; apiKey: string } | string | null => {
     const id = idFor(provider, canonicalId);
     if (id === null) return null;
-    const found =
-      options.extraModels?.find((m) => m.provider === provider && m.id === id) ??
-      (getModel(provider as never, id as never) as Model<Api> | undefined);
+    const found = modelFor(provider, canonicalId, id);
     if (!found) return null;
-    const baseUrl = (own(options.overrides, provider)?.baseUrl ?? found.baseUrl).replace(
+    const entry = entries.get(provider) ?? { name: provider };
+    const entryEnv = envFor(entry);
+    const baseUrl = (
+      entry.baseUrl ??
+      own(options.overrides, provider)?.baseUrl ??
+      found.baseUrl
+    ).replace(
       /\{([A-Z_][A-Z0-9_]*)\}/g,
-      (_m, n: string) => env[n] ?? `{${n}}`,
+      (_m, n: string) => own(entry.vars, n) ?? entryEnv[n] ?? `{${n}}`,
     );
     if (/\{[A-Z_]+\}/.test(baseUrl))
-      return `no value for ${baseUrl.match(/\{[A-Z_]+\}/)![0]} in the environment`;
-    const apiKey = own(options.apiKeys, provider) ?? readApiKey(provider, env);
+      return `no value for ${baseUrl.match(/\{[A-Z_]+\}/)![0]} in the settings or environment`;
+    const apiKey = entry.apiKey ?? own(options.apiKeys, provider) ?? readApiKey(provider, entryEnv);
     if (!apiKey) return `no API key for provider "${provider}"`;
-    return { model: { ...found, ...own(options.overrides, provider), baseUrl, id }, apiKey };
+    const headers = {
+      ...found.headers,
+      ...own(options.overrides, provider)?.headers,
+      ...entry.headers,
+    };
+    return {
+      model: {
+        ...found,
+        ...own(options.overrides, provider),
+        baseUrl,
+        id,
+        ...(Object.keys(headers).length > 0 ? { headers } : {}),
+      },
+      apiKey,
+    };
   };
 
   const forRun = (listener?: ProviderFailoverListener): ChainStreamFn => {
@@ -268,8 +357,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       // A model whose provider is not in the chain (a compaction `summaryModel`,
       // a subagent's own model) is not the chain's to route: it goes straight to
       // pi-ai with the key the resolver gave it. No failover, no tap.
-      if (!options.providers.includes(canonical.provider))
-        return streamSimple(canonical, context, callOptions);
+      if (!names.includes(canonical.provider)) return streamSimple(canonical, context, callOptions);
       const out = createAssistantMessageEventStream();
       const signal = callOptions?.signal;
       const end = (msg: AssistantMessage): void => {
@@ -405,7 +493,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
         const servable: Array<{ provider: string; call: { model: Model<Api>; apiKey: string } }> =
           [];
         const unusable: string[] = [];
-        for (const provider of options.providers) {
+        for (const provider of names) {
           const call = callFor(provider, canonical.id);
           if (call === null) continue;
           if (typeof call === "string") unusable.push(`${provider}: ${call}`);
@@ -416,7 +504,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
           return end(
             errorMessage(
               canonical,
-              options.providers[0]!,
+              names[0]!,
               `no provider can serve model "${canonical.id}"${why}`,
             ),
           );
@@ -502,20 +590,16 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
     for (const [name, id] of Object.entries(options.models ?? {})) {
       // The harness needs one model object for cost and context window: the first provider's registry entry, else a plain one.
       let model: Model<Api> | undefined;
-      for (const p of options.providers) {
+      for (const p of names) {
         const pid = idFor(p, id);
-        model =
-          pid === null
-            ? undefined
-            : (options.extraModels?.find((m) => m.provider === p && m.id === pid) ??
-              (getModel(p as never, pid as never) as Model<Api> | undefined));
+        model = pid === null ? undefined : modelFor(p, id, pid);
         if (model) break;
       }
       model ??= {
         id,
         name: id,
         api: "openai-completions",
-        provider: options.providers[0]!,
+        provider: names[0]!,
         baseUrl: "",
         reasoning: false,
         input: ["text"],
@@ -531,5 +615,5 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
     return map;
   };
 
-  return { providers: options.providers, forRun, preResolvedModels };
+  return { providers: names, forRun, preResolvedModels };
 }
