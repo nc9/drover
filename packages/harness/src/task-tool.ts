@@ -51,6 +51,13 @@ export interface TaskToolOptions {
    * (unless it has one with the same id), each child being its own run.
    */
   parentPlugins?: ReadonlyArray<import("@droveragent/core").HarnessPlugin>;
+  /**
+   * Child sequence numbers already used by earlier invocations of this parent run (a resume or
+   * continuation): the first child of this invocation is `childSeqStart + 1`. The harness passes
+   * the number of `task` calls in the checkpoint; with storage, the highest stored child id of the
+   * parent also counts (see `taskTool`).
+   */
+  childSeqStart?: number;
 }
 
 /** Default subagent nesting depth — also surfaced in the `subagents` prompt fragment. */
@@ -79,15 +86,37 @@ const TaskInputSchema = Type.Object({
  *
  * Child run id is the parent's run id with a `:<n>` suffix (n is a
  * monotonically increasing per-parent counter, so the trace ancestor
- * is unambiguous and grandchildren get e.g. `parent:2:1`).
+ * is unambiguous and grandchildren get e.g. `parent:2:1`). The counter
+ * continues across the parent's invocations (resume, continuation): it
+ * starts above `childSeqStart` and, with storage, above the highest
+ * child id the store already holds for the parent, so a later child
+ * never reuses an earlier child's id (#97).
  */
 export function taskTool(opts: TaskToolOptions): AnyToolDef {
   const maxDepth = opts.maxDepth ?? DEFAULT_MAX_DEPTH;
   const fanOut = opts.fanOut ?? DEFAULT_FAN_OUT;
   const allowed = new Set(opts.allowedAgents);
 
-  let nextChildSeq = 0;
+  let nextChildSeq = Math.max(0, Math.floor(opts.childSeqStart ?? 0));
   let inFlight = 0;
+  // With storage, the stored children of the parent are read once (first spawn of this
+  // invocation) and the counter moves above the highest `${parent}:<n>` found.
+  let storedSeqChecked = false;
+  const storedChildSeq = (parentRunId: string) =>
+    opts.deps.storage
+      ? opts.deps.storage.listRuns({ parentRunId }).pipe(
+          Effect.map((rows) =>
+            rows.reduce((max, r) => {
+              const m = r.id.startsWith(`${parentRunId}:`)
+                ? /^(\d+)$/.exec(r.id.slice(parentRunId.length + 1))
+                : null;
+              return m ? Math.max(max, Number(m[1])) : max;
+            }, 0),
+          ),
+          // A storage outage must not block the spawn: the checkpoint count still applies.
+          Effect.catchAll(() => Effect.succeed(0)),
+        )
+      : Effect.succeed(0);
 
   return defineTool({
     id: "task",
@@ -147,6 +176,10 @@ export function taskTool(opts: TaskToolOptions): AnyToolDef {
           ...(input.max_turns ? { quota: { ...spec.quota, maxTurns: input.max_turns } } : {}),
         };
 
+        if (!storedSeqChecked) {
+          storedSeqChecked = true;
+          nextChildSeq = Math.max(nextChildSeq, yield* storedChildSeq(ctx.runId));
+        }
         nextChildSeq += 1;
         const childRunId = `${ctx.runId}:${nextChildSeq}`;
         const childCtx: RunContext = {

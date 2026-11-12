@@ -26,10 +26,17 @@ export function createMemoryStorage(): StorageAdapter {
   return {
     id: "memory",
     createRun: (row) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
+        // Like the SQL adapters' primary key: an existing run is never replaced (#97).
+        if (runs.has(row.id)) {
+          return Effect.fail(
+            new StorageError({ runId: row.id, op: "createRun", message: "run already exists" }),
+          );
+        }
         runs.set(row.id, { ...row });
         events.set(row.id, []);
         checkpoints.set(row.id, []);
+        return Effect.void;
       }),
     updateRun: (id, patch) =>
       Effect.suspend(() => {

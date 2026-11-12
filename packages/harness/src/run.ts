@@ -19,6 +19,7 @@ import {
   type RunContext,
   type RunResult,
   type RunStatus,
+  StorageError,
   type ToolExecutionContext,
   type Usage,
 } from "@droveragent/core";
@@ -444,8 +445,22 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           ...(ctx.meta ? { meta: ctx.meta as Record<string, unknown> } : {}),
         }),
       );
-      if (createResult._tag === "Left") void createResult.left;
-      else end.row = storage;
+      if (createResult._tag === "Right") end.row = storage;
+      else {
+        // A failed insert is swallowed (a storage outage must not break the run) UNLESS the
+        // run id is already taken: then this run would write over another run's row, events
+        // and checkpoints, so it fails loudly before doing anything (#97).
+        const existing = yield* Effect.either(storage.loadRun(ctx.runId));
+        if (existing._tag === "Right" && existing.right !== null) {
+          return yield* Effect.fail(
+            new StorageError({
+              runId: ctx.runId,
+              op: "createRun",
+              message: `run ${ctx.runId} already exists; a fresh run needs a new run id`,
+            }),
+          );
+        }
+      }
     }
     if (storage && isResume) {
       // Flip status back to "running" so observers see the in-flight state.
@@ -559,7 +574,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       ...(preResolvedModels ? { preResolved: preResolvedModels } : {}),
     });
 
-    const tools = composeTools(spec, deps, plugins, safeEmit, ctx.runId);
+    // `task` calls of earlier invocations of this run: each may have spawned a child, so
+    // this invocation's children are numbered after them (#97).
+    const priorTaskCalls = resumeFrom ? resumeFrom.toolCalls.filter((t) => t === "task").length : 0;
+    const tools = composeTools(spec, deps, plugins, safeEmit, ctx.runId, priorTaskCalls);
 
     // Instruction files (AGENTS.md / CLAUDE.md ancestor chain). Loaded
     // fresh each run and seeded into memory as recall-able entries when an
@@ -1995,6 +2013,7 @@ function composeTools(
   plugins: ReadonlyArray<import("@droveragent/core").HarnessPlugin>,
   parentEmit: (event: HarnessEvent) => void,
   runId: string,
+  childSeqStart = 0,
 ): ReadonlyArray<AnyToolDef> {
   const byId = builtinsById(deps.sandbox);
   const wanted = new Set(spec.tools);
@@ -2023,6 +2042,7 @@ function composeTools(
       deps,
       parentEmit,
       parentPlugins: plugins,
+      childSeqStart,
     };
     out.push(taskTool(subagentOpts));
   }
