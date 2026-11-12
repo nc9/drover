@@ -96,7 +96,7 @@ interface RunResult<TOutput = unknown> {
   durationMs: number;
   usage: { inputTokens: number; outputTokens: number; costUsd?: number; ... };
   toolCalls: readonly string[];
-  error?: { tag: string; message: string; status?: number }; // status: ProviderError only
+  error?: { tag: string; message: string; status?: number; details?: ProviderErrorDetails }; // status, details: ProviderError only
 }
 ```
 
@@ -129,6 +129,22 @@ failed run instead of an empty success. The run ends `status: "error"` with
 and no output decode is attempted. When the provider reported an HTTP status,
 it is also a number on `error.status` and on the `error` event's `status`
 (absent when unknown).
+
+Under a provider chain the failure also carries `error.details` (on `RunResult.error` and the
+`error` event) when any of these is known for the last attempt:
+
+```ts
+interface ProviderErrorDetails {
+  code?: string; // allow-listed provider error code, e.g. "insufficient_quota"
+  type?: string; // the error body's `type`, e.g. "rate_limit_error" (a plain token)
+  retryAfterMs?: number; // the wait the provider asked for
+}
+```
+
+They come from the response tap (the error body and `Retry-After`), so they are plain tokens and
+a number, never provider text: a `type` that is not a short token is dropped, and a malformed
+`Retry-After` (read as "beyond any cap") is not reported as a wait. Without a chain pi-ai keeps
+only the status, so `details` is absent.
 
 | final assistant message                                                                                | `error.message`                                      | `status` |
 | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- | -------- |

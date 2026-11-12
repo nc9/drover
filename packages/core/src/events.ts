@@ -270,8 +270,27 @@ export type HarnessEvent =
       message: string;
       /** HTTP status of a `ProviderError`, when the provider reported one. */
       status?: number;
+      /**
+       * Structured provider fields of a `ProviderError`, when known (a provider chain's last
+       * attempt): the allow-listed error `code`, the error `type`, and the wait the provider
+       * asked for (`retryAfterMs`). Plain tokens and numbers only; never provider text.
+       */
+      details?: ProviderErrorDetails;
       ts: number;
     };
 
 /** Narrow on `kind`. */
 export type EventOfKind<K extends HarnessEvent["kind"]> = Extract<HarnessEvent, { kind: K }>;
+
+/**
+ * Structured fields of a provider error (`error.details` on the `error` event and
+ * `RunResult.error`). Every field is optional and present only when known.
+ */
+export interface ProviderErrorDetails {
+  /** Allow-listed provider error code (e.g. `insufficient_quota`). */
+  code?: string;
+  /** The provider's error type (e.g. `rate_limit_error`), as a plain token. */
+  type?: string;
+  /** The wait the provider asked for, in ms. */
+  retryAfterMs?: number;
+}

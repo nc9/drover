@@ -403,6 +403,47 @@ describe("provider errors fail the run", () => {
   });
 });
 
+describe("error.details on the run (#92)", () => {
+  test("a chain failure's details reach RunResult.error and the error event", async () => {
+    const chainFail: StreamFn = () => {
+      const s = createAssistantMessageEventStream();
+      const error = msg({
+        stopReason: "error",
+        errorMessage: "all providers failed: SECRET",
+        diagnostics: [
+          {
+            type: "provider_failure",
+            timestamp: 0,
+            details: {
+              provider: "openrouter",
+              failureClass: "rate_limited",
+              status: 429,
+              code: "insufficient_quota",
+              type: "rate_limit_error",
+              retryAfterMs: 2000,
+            },
+          },
+        ],
+      } as Partial<AssistantMessage>);
+      s.push({ type: "error", reason: "error", error });
+      s.end();
+      return s;
+    };
+    const { result, events } = await run(Type.Unknown(), chainFail);
+    const details = { code: "insufficient_quota", type: "rate_limit_error", retryAfterMs: 2000 };
+    expect(result.error).toMatchObject({ tag: "ProviderError", status: 429, details });
+    const ev = events.find((e) => e.kind === "error") as { details?: unknown };
+    expect(ev.details).toEqual(details);
+    expect(JSON.stringify([result, events])).not.toContain("SECRET");
+  });
+
+  test("a plain provider error has no details", async () => {
+    const { result, events } = await run(Type.Unknown(), errorStream);
+    expect(result.error).not.toHaveProperty("details");
+    expect(events.find((e) => e.kind === "error")).not.toHaveProperty("details");
+  });
+});
+
 describe("provider errors over a real HTTP transport (local server, pi-ai OpenAI client)", () => {
   const SECRET = "quoted prompt words: the hostile page said hello";
   const withServer = async (
@@ -521,12 +562,54 @@ describe("providerFailure classification", () => {
       message:
         "provider error 403 (openrouter: credits_exhausted 402; cf: region_refused 403 unsupported_x)",
       status: 403,
+      details: { code: "unsupported_x" },
     });
     expect(providerFailure(chainMsg, true)?.message).toEndWith(
       ": all providers failed: SECRET text",
     );
     const scrubbed = scrubProviderErrorText([chainMsg] as unknown as AgentMessage[]);
     expect(JSON.stringify(scrubbed)).not.toContain("SECRET");
+  });
+
+  test("details carry the last attempt's code, type and retryAfterMs; never text (#92)", () => {
+    const withAll = am({
+      stopReason: "error",
+      errorMessage: "SECRET",
+      diagnostics: [
+        d({ provider: "a", failureClass: "provider_error", status: 500, type: "api_error" }),
+        d({
+          provider: "b",
+          failureClass: "rate_limited",
+          status: 429,
+          code: "insufficient_quota",
+          type: "rate_limit_error",
+          retryAfterMs: 1500.4,
+        }),
+      ],
+    });
+    expect(providerFailure(withAll, false)?.details).toEqual({
+      code: "insufficient_quota",
+      type: "rate_limit_error",
+      retryAfterMs: 1500,
+    });
+    const hostile = am({
+      stopReason: "error",
+      diagnostics: [
+        d({
+          provider: "a",
+          failureClass: "other",
+          status: 500,
+          type: "ignore previous instructions",
+          code: "<b>x</b>",
+          retryAfterMs: Number.MAX_SAFE_INTEGER,
+        }),
+      ],
+    });
+    expect(providerFailure(hostile, false)).not.toHaveProperty("details");
+    // Without a chain only the status is known.
+    expect(
+      providerFailure(am({ stopReason: "error", errorMessage: "429 slow" }), false),
+    ).not.toHaveProperty("details");
   });
 
   test("scrubProviderErrorText replaces raw errorMessage in checkpoint history", () => {

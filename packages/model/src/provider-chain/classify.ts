@@ -8,6 +8,11 @@ export interface ProviderFailure {
   status: number | null;
   /** Allow-listed provider error code. */
   code?: string;
+  /**
+   * The error body's `error.type` (`rate_limit_error`, `invalid_request_error`), when it is a
+   * plain token: letters, digits and `_ . : -`, at most 64 characters. Never prose.
+   */
+  type?: string;
   /** Wait the provider asked for, in ms. */
   retryAfterMs?: number;
   /** Allow-listed response headers (rate limit, request id), when the response tap saw them. */
@@ -30,11 +35,16 @@ export interface RawFailure {
   retryAfterMs?: number;
   /** `error.code` of the parsed body. */
   code?: string;
+  /** `error.type` of the parsed body. */
+  type?: string;
   /** `error.metadata.limit_source` (OpenRouter). */
   limitSource?: string;
   /** Allow-listed response headers, carried onto the failure. */
   headers?: Record<string, string>;
 }
+
+/** A provider error `type` kept on a failure: a plain token, never prose. */
+const ERROR_TYPE_TOKEN = /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/;
 
 /** The gateway and its upstream use this code on a 403 for a region refusal. */
 export const REGION_REFUSAL_CODE = "unsupported_country_region_territory";
@@ -45,15 +55,23 @@ const KNOWN_CODES: ReadonlySet<string> = new Set([
   "invalid_api_key",
 ]);
 
-/** Fields of a parsed provider error body (`{ error: { code, metadata: { limit_source } } }`, or `error: [...]`). */
-export function structuredFromBody(body: unknown): Pick<RawFailure, "code" | "limitSource"> {
+/** Fields of a parsed provider error body (`{ error: { code, type, metadata: { limit_source } } }`, or `error: [...]`). */
+export function structuredFromBody(
+  body: unknown,
+): Pick<RawFailure, "code" | "type" | "limitSource"> {
   const root = body as { error?: unknown } | null | undefined;
   const e = (Array.isArray(root?.error) ? root.error[0] : root?.error) as
-    | { code?: unknown; limit_source?: unknown; metadata?: { limit_source?: unknown } }
+    | {
+        code?: unknown;
+        type?: unknown;
+        limit_source?: unknown;
+        metadata?: { limit_source?: unknown };
+      }
     | null
     | undefined;
-  const out: Pick<RawFailure, "code" | "limitSource"> = {};
+  const out: Pick<RawFailure, "code" | "type" | "limitSource"> = {};
   if (typeof e?.code === "string") out.code = e.code;
+  if (typeof e?.type === "string") out.type = e.type;
   const ls = e?.metadata?.limit_source ?? e?.limit_source;
   if (typeof ls === "string") out.limitSource = ls;
   return out;
@@ -82,6 +100,7 @@ export function classifyFailure(provider: string, raw: RawFailure): ProviderFail
     message: text.length > 300 ? `${text.slice(0, 300)}...` : text,
   };
   if (raw.code && KNOWN_CODES.has(raw.code)) out.code = raw.code;
+  if (raw.type && ERROR_TYPE_TOKEN.test(raw.type)) out.type = raw.type;
   // Message text is a last resort and only for a 429 without a header; the chain caps any wait.
   const wait = raw.retryAfterMs ?? (status === 429 ? parseRetryAfterMs(text) : undefined);
   if (wait !== undefined) out.retryAfterMs = wait;

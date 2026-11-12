@@ -10,6 +10,7 @@ import {
   createFence,
   type HarnessError,
   type HarnessEvent,
+  type ProviderErrorDetails,
   InputValidationError,
   type InvocationBudget,
   LifecycleError,
@@ -1525,7 +1526,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // a genuine crash is `loopError && !breach`.
     let output: AgentOutput<S> | undefined;
     let status: RunStatus = "success";
-    let errorOut: { tag: string; message: string; status?: number } | undefined;
+    let errorOut:
+      | { tag: string; message: string; status?: number; details?: ProviderErrorDetails }
+      | undefined;
 
     const finalText = lastAssistant.text;
     // A cost/token breach forgiven because the final answer validated (see below).
@@ -1833,6 +1836,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         tag: errorOut.tag,
         message: errorOut.message,
         ...(errorOut.status !== undefined ? { status: errorOut.status } : {}),
+        ...(errorOut.details ? { details: errorOut.details } : {}),
         ts: endedAt,
       });
     }

@@ -86,6 +86,9 @@ export const KNOWN_EVENT_KINDS: ReadonlyArray<Kind> = Object.keys(REQUIRED_FIELD
  * `provider_failover` is not marked: it carries no provider text. `from` / `to` are the chain's
  * configured provider names, `failureClass` and `status` are the classifier's, and `code` is set
  * only from an allow-list of known provider error codes.
+ *
+ * An `error` event's `details` (`code`, `type`, `retryAfterMs`) is not marked either: the
+ * harness keeps only allow-listed codes, plain-token types and a number, never provider text.
  */
 export const UNTRUSTED_FIELDS: Readonly<Partial<Record<Kind, ReadonlyArray<string>>>> = {
   assistant_text: ["text"],

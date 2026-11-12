@@ -1,4 +1,4 @@
-import type { Usage } from "./events.ts";
+import type { ProviderErrorDetails, Usage } from "./events.ts";
 
 /**
  * Terminal status of a finished run.
@@ -64,6 +64,11 @@ export interface RunResult<TOutput = unknown> {
     message: string;
     /** HTTP status of a `ProviderError`, when the provider reported one. */
     status?: number;
+    /**
+     * Structured provider fields of a `ProviderError`, when known: `code`, `type`,
+     * `retryAfterMs`. Never provider text.
+     */
+    details?: ProviderErrorDetails;
   };
 }
 
