@@ -43,13 +43,14 @@ const spec = defineAgent({
   `{ isError: true, content }` as a value (the convention of MCP tools, `bash` and
   others), because an error message can quote outside text such as an upstream body.
 - **Stored copies.** The truncate plugin stores oversized results with their
-  provenance (`trusted`, producing tool, run), keyed by (run, tool-use id) with a
+  provenance (`trusted`, `isError`, producing tool, run), keyed by (run, tool-use id) with a
   suffixed handle when a backend repeats an id (`call_0`, `call_0~2`).
   `show_tool_result` returns that provenance in the same result as the content,
   and the plugin returns the slice raw only if it says trusted **and** the
   producing tool is on the fence plugin's allowlist. A missing flag, another run's
-  entry or a legacy entry reads as untrusted. Two lists that disagree resolve to
-  untrusted.
+  entry or a legacy entry reads as untrusted. An error result is stored untrusted
+  even from a trusted tool, and an entry marked `isError` (`data.isError` on the read)
+  is never returned raw. Two lists that disagree resolve to untrusted.
 - **The compaction summary.** It is derived from untrusted text and re-enters the
   conversation as a user message, so it is fenced; the summariser also gets the
   fence note in its system prompt.
@@ -98,16 +99,16 @@ prompt naming one nonce and results fenced with another.
 
 ## What the fence does to text
 
-| Input | Result |
-|---|---|
-| `</untrusted-data-NONCE>` in the text | `<`, `>` and `&` escaped as `\u003c`, `\u003e`, `\u0026`; the block cannot be closed |
-| the nonce itself in the text | replaced by `[nonce]` |
-| fullwidth brackets (`＜`) | NFKC turns them into ASCII first, then escaped |
-| guillemets, math and CJK brackets, `˂˃`, `⟪⟫`, `⦉⦊`, ornaments (`LOOKALIKE_BRACKETS`) | visible `[U+XXXX]` placeholder |
-| zero-width, bidi override, control characters | space (newline and tab kept) |
-| variation selectors, Mongolian FVS, U+034F, Hangul fillers, U+2028, U+2029 (`INVISIBLE_RANGES`) | space (U+2028/2029: newline) |
-| a lone surrogate half | U+FFFD (some providers reject a request that carries one) |
-| very long strings, huge arrays, deep objects | bounded (`maxFieldChars`, default 2000; 2000 items; 500 keys; depth 12; no lone surrogate left by a cut) |
+| Input                                                                                           | Result                                                                                                   |
+| ----------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `</untrusted-data-NONCE>` in the text                                                           | `<`, `>` and `&` escaped as `\u003c`, `\u003e`, `\u0026`; the block cannot be closed                     |
+| the nonce itself in the text                                                                    | replaced by `[nonce]`                                                                                    |
+| fullwidth brackets (`＜`)                                                                       | NFKC turns them into ASCII first, then escaped                                                           |
+| guillemets, math and CJK brackets, `˂˃`, `⟪⟫`, `⦉⦊`, ornaments (`LOOKALIKE_BRACKETS`)           | visible `[U+XXXX]` placeholder                                                                           |
+| zero-width, bidi override, control characters                                                   | space (newline and tab kept)                                                                             |
+| variation selectors, Mongolian FVS, U+034F, Hangul fillers, U+2028, U+2029 (`INVISIBLE_RANGES`) | space (U+2028/2029: newline)                                                                             |
+| a lone surrogate half                                                                           | U+FFFD (some providers reject a request that carries one)                                                |
+| very long strings, huge arrays, deep objects                                                    | bounded (`maxFieldChars`, default 2000; 2000 items; 500 keys; depth 12; no lone surrogate left by a cut) |
 
 The two tables are exported and tested one code point at a time. `wrap(section, body)`
 takes a string or any JSON-able value; `wrapText` is the whole-text variant.
@@ -154,6 +155,7 @@ takes a string or any JSON-able value; `wrapText` is the whole-text variant.
   An unsafe `default` or `format` is dropped. What can still reach the tool list
   unfenced is bounded: short identifiers and tokens, plus cleaned, tag-escaped
   descriptions of at most 500 characters each.
+
 - **Resume with a fence plugin.** A resume is refused when the plugin cannot find
   the run's nonce, which includes a run that was started without the plugin and
   resumed with it. Pass a persistent `nonces` store to resume across processes.

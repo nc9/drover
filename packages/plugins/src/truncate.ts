@@ -32,6 +32,11 @@ export interface TruncateEntryMeta {
   runId?: string;
   /** Tool that produced the content. */
   toolId?: string;
+  /**
+   * The stored content is an error result (`isError`). Such an entry is never trusted, and
+   * reading it back says so (`data.isError`), so a reader never returns it raw.
+   */
+  isError?: boolean;
 }
 
 export interface TruncateEntry extends TruncateEntryMeta {
@@ -70,6 +75,7 @@ export function makeTruncateStore(): TruncateStore {
       if (meta?.trusted === true && meta.runId !== undefined) entry.trusted = true;
       if (meta?.runId !== undefined) entry.runId = meta.runId;
       if (meta?.toolId !== undefined) entry.toolId = meta.toolId;
+      if (meta?.isError) entry.isError = true;
       const scope = meta?.runId ?? "";
       let handle = id;
       for (let n = 2; map.has(`${scope}${SEP}${handle}`); n++) handle = `${id}~${n}`;
@@ -153,8 +159,10 @@ function showToolResultTool(
             end,
             total,
             remaining,
-            trusted: entry.trusted === true,
+            // An error entry is never trusted, whatever its `trusted` flag says.
+            trusted: entry.trusted === true && entry.isError !== true,
             ...(entry.toolId !== undefined ? { toolId: entry.toolId } : {}),
+            ...(entry.isError ? { isError: true } : {}),
           },
         };
       }),
@@ -210,9 +218,11 @@ export function truncatePlugin(opts: TruncateOptions = {}): TruncatePlugin {
             if (bytes <= maxBytes) return result;
             const handle =
               store.set(ctx.toolUseId, result.content, {
-                trusted: isTrusted(tool.id),
+                // An error is never trusted, even from a trusted tool: it can quote outside text.
+                trusted: isTrusted(tool.id) && !result.isError,
                 runId: ctx.runId,
                 toolId: tool.id,
+                ...(result.isError ? { isError: true } : {}),
               }) ?? ctx.toolUseId;
             const head = Buffer.from(result.content, "utf8")
               .subarray(0, headBytes)

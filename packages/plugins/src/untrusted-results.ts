@@ -261,10 +261,14 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
         execute: (input, ctx) =>
           Effect.suspend(() => tool.execute(input, ctx)).pipe(
             Effect.map((result): ToolResult => {
-              const d = result.data as { trusted?: unknown; toolId?: unknown } | undefined;
-              // An error returned as a value is never raw, whatever the data says.
+              const d = result.data as
+                | { trusted?: unknown; toolId?: unknown; isError?: unknown }
+                | undefined;
+              // An error is never raw, whatever the data says: neither an error the reader
+              // returns as a value nor a stored entry that was an error (`data.isError`).
               const raw =
-                result.isError !== true &&
+                !result.isError &&
+                !d?.isError &&
                 d?.trusted === true &&
                 typeof d.toolId === "string" &&
                 isTrusted(d.toolId);
@@ -296,10 +300,12 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
       return {
         ...tool,
         execute: (input, ctx) =>
-          Effect.map(Effect.suspend(() => tool.execute(input, ctx)), (r) =>
-            r.isError === true
-              ? { ...r, content: fenceResult(ctx, sectionOf(tool.id), r.content) }
-              : { ...r, content: remember(ctx, r.content) },
+          Effect.map(
+            Effect.suspend(() => tool.execute(input, ctx)),
+            (r) =>
+              r.isError
+                ? { ...r, content: fenceResult(ctx, sectionOf(tool.id), r.content) }
+                : { ...r, content: remember(ctx, r.content) },
           ),
       };
     }
@@ -313,7 +319,7 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
             // A self-fenced tool fenced its own SUCCESS output with this run's fence. Its errors
             // are fenced here, returned as a value (`{ isError: true, content }`) or as a
             // failure (below): an error message can quote outside text.
-            wrapSuccess || result.isError === true
+            wrapSuccess || result.isError
               ? {
                   ...result,
                   content: fenceResult(ctx, sectionOf(tool.id), result.content),
