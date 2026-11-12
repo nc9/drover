@@ -8,6 +8,6 @@ type VersionRegistry = Map<string, Set<string>>;
 const KEY = Symbol.for("droveragent.versions");
 const holder = globalThis as unknown as Record<symbol, VersionRegistry | undefined>;
 const registry = (holder[KEY] ??= new Map());
-const seen = registry.get("droveragent") ?? new Set<string>();
+const seen = registry.get("@droveragent/all") ?? new Set<string>();
 seen.add(version);
-registry.set("droveragent", seen);
+registry.set("@droveragent/all", seen);

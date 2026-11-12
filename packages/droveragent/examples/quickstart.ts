@@ -1,6 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import { defineAgent } from "@droveragent/core";
-import { runAgent } from "@droveragent/facade";
+import { defineAgent, runAgent } from "../src/index.ts";
 
 const echo = defineAgent({
   id: "echo",

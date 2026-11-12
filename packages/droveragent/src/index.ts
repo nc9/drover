@@ -2,9 +2,9 @@ import "./version.ts";
 // Umbrella entry point for the drover agent harness.
 //
 // Re-exports the public run/resume facade plus `defineAgent` so consumers can
-// reach the essentials from a single unscoped package:
+// reach the essentials from a single package:
 //
-//   import { defineAgent, runAgent } from "droveragent";
+//   import { defineAgent, runAgent } from "@droveragent/all";
 //
 // For anything beyond define + run, import the scoped packages directly
 // (e.g. `@droveragent/plugins`, `@droveragent/runtime`, `@droveragent/storage`).
