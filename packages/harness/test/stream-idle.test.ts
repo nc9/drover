@@ -9,7 +9,10 @@ import { Type } from "@sinclair/typebox";
 import { defineAgent, type HarnessEvent, type RunContext } from "@droveragent/core";
 import { createProviderChain, type ChainStreamFn, type PreResolvedModel } from "@droveragent/model";
 import { createNoneSandbox } from "@droveragent/sandbox";
-import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai/compat";
+import {
+  createAssistantMessageEventStream,
+  type AssistantMessage,
+} from "@earendil-works/pi-ai/compat";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 
 import type { HarnessDeps } from "../src/deps.ts";

@@ -20,10 +20,7 @@ import {
 } from "@earendil-works/pi-ai/compat";
 
 /** Providers the chain sends through `pinnedStream` instead of `streamSimple`. */
-export const PINNED_PROVIDERS: ReadonlySet<string> = new Set([
-  "azure",
-  "amazon-bedrock",
-]);
+export const PINNED_PROVIDERS: ReadonlySet<string> = new Set(["azure", "amazon-bedrock"]);
 
 /** Options the chain pins for a provider (`ChainCall.extra`), passed to pi-ai's full stream. */
 export type PinnedOptions = {

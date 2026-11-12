@@ -165,7 +165,11 @@ const canonical = (v: unknown, omit: ReadonlySet<string> = TIMESTAMP_ONLY): stri
 };
 const TIMESTAMP_ONLY: ReadonlySet<string> = new Set(["timestamp", "durationMs"]);
 /** Fields that differ between two otherwise identical answers (a provider's per-response id, clocks). */
-const VOLATILE_ANSWER_FIELDS: ReadonlySet<string> = new Set(["timestamp", "durationMs", "responseId"]);
+const VOLATILE_ANSWER_FIELDS: ReadonlySet<string> = new Set([
+  "timestamp",
+  "durationMs",
+  "responseId",
+]);
 /** An answer's identity for the ambiguity check: its events, without volatile fields, key order ignored. */
 const answerKey = (t: RecordedTurn): string => canonical(t.events, VOLATILE_ANSWER_FIELDS);
 

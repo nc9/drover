@@ -26,11 +26,7 @@ const header = ["alias", "resolves to", "$/Mtok in/out"];
 const w = [0, 1, 2].map((i) => Math.max(header[i]!.length, ...table.map((r) => r[i]!.length)));
 const line = (r: string[]): string => `| ${r.map((c, i) => c.padEnd(w[i]!)).join(" | ")} |`;
 console.log(
-  [
-    line(header),
-    `| ${w.map((n) => "-".repeat(n)).join(" | ")} |`,
-    ...table.map(line),
-  ].join("\n"),
+  [line(header), `| ${w.map((n) => "-".repeat(n)).join(" | ")} |`, ...table.map(line)].join("\n"),
 );
 console.log("");
 const providers = [...getProviders()].sort();
