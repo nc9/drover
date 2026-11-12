@@ -85,7 +85,7 @@ in your spec / alias.
 
 ```ts
 function createProviderChain(opts: {
-  providers: string[]; // pi-ai provider names, in order
+  providers: Array<string | ProviderEntry>; // pi-ai provider names, or entries with settings (see below)
   models?: Record<string, string>; // spec model name -> canonical id
   ids?: Record<string, Record<string, string | null>>; // canonical id -> id per provider
   overrides?: Record<string, Partial<Model>>; // per-provider pi-ai model patch
@@ -98,6 +98,11 @@ function createProviderChain(opts: {
   actions?: Partial<Record<ProviderFailureClass, "stop" | "next" | "skip">>; // per-class override of FAILOVER
 }): ProviderChain;
 ```
+
+`ProviderEntry`: `{ name, apiKey?, baseUrl?, vars?, headers?, models?, useEnv? }`. A provider's
+credential, base URL (with `{PLACEHOLDER}` values in `vars`), extra headers and models (by canonical
+id: a provider id, `null`, or a declaration for a model pi-ai does not list) as settings; the
+environment fills only what is absent, and `useEnv: false` turns it off for the entry.
 
 ## `withProviderCost`
 

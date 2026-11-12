@@ -41,6 +41,49 @@ should fail over too.
 its request headers go to every provider the chain tries for that call, in order. Patch only
 what all of them accept, or scope the patch inside `onPayload` by `model.provider`.
 
+## Providers as settings
+
+A provider can be a settings object instead of a name, so nothing has to live in process
+environment variables: a Worker's secrets arrive as bindings, a multi-tenant host has one set of
+credentials per tenant, a test sets everything explicitly.
+
+```ts
+// A Cloudflare Worker: secrets and ids from bindings, not process.env.
+export default {
+  async fetch(req: Request, env: Env) {
+    const providers = createProviderChain({
+      providers: [
+        { name: "openrouter", apiKey: env.OPENROUTER_KEY, useEnv: false },
+        {
+          name: "cloudflare-ai-gateway",
+          apiKey: env.CF_AIG_TOKEN,
+          vars: {
+            CLOUDFLARE_ACCOUNT_ID: env.CF_ACCOUNT_ID,
+            CLOUDFLARE_GATEWAY_ID: env.CF_GATEWAY_ID,
+          },
+          headers: { "cf-aig-authorization": `Bearer ${env.CF_AIG_TOKEN}` },
+          models: { "openai/gpt-5-mini": { id: "gpt-5-mini", contextWindow: 400_000 } },
+          useEnv: false,
+        },
+      ],
+      models: { "gpt-mini": "openai/gpt-5-mini" },
+    });
+    // ... runAgent(spec, input, { providers }) ...
+  },
+};
+```
+
+- `apiKey`, `baseUrl` (its `{PLACEHOLDER}`s filled from `vars`), `headers` (merged over the
+  model's) and `models` are per entry. Anything absent falls back to `apiKeys`, `overrides`,
+  `ids` / `extraModels` and then the environment; `useEnv: false` turns the environment off for
+  that entry, so a missing setting makes the provider unusable instead of reading `process.env`.
+- `models` puts a provider's model ids in one place: a provider id (`"b-mini"`), `null` (not served
+  here), or a declaration for a model pi-ai's registry does not list (`{ id, contextWindow?, ... }`).
+- Two chains with different credentials for the same provider run side by side in one process.
+- Credentials and header values given here go to the provider and nowhere else: never into
+  events, errors, the chain record, storage or traces (tested over a provider that echoes the key
+  back in its error).
+
 ## Providers and models are data
 
 - **Ids.** A canonical id is OpenRouter style. Per provider it defaults to the same
