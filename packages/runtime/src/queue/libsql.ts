@@ -63,14 +63,10 @@ export async function createLibsqlQueue(opts: LibsqlQueueOptions): Promise<Queue
 
   await runQueueMigrations(client, migTable);
 
-  const wrap = <A>(
-    op: string,
-    fn: () => Promise<A>,
-  ): Effect.Effect<A, QueueError, never> =>
+  const wrap = <A>(op: string, fn: () => Promise<A>): Effect.Effect<A, QueueError, never> =>
     Effect.tryPromise({
       try: fn,
-      catch: (err): QueueError =>
-        new QueueError({ op, message: (err as Error).message }),
+      catch: (err): QueueError => new QueueError({ op, message: (err as Error).message }),
     });
 
   return {
@@ -171,7 +167,7 @@ export async function createLibsqlQueue(opts: LibsqlQueueOptions): Promise<Queue
         return r.rowsAffected > 0;
       }),
 
-    fail: (jobId, workerId, error, retry) =>
+    fail: (jobId, workerId, error, retry, runId) =>
       wrap("fail", async (): Promise<boolean> => {
         // Read attempts/maxAttempts under the lease guard so a stale
         // worker can't bump the counter.
@@ -184,17 +180,17 @@ export async function createLibsqlQueue(opts: LibsqlQueueOptions): Promise<Queue
         if (!row) return false; // lost lease — drop result
         const attempts = Number(row.attempts) + 1;
         const maxAttempts = Number(row.max_attempts);
-        const nextStatus =
-          retry && attempts < maxAttempts ? "queued" : "failed";
+        const nextStatus = retry && attempts < maxAttempts ? "queued" : "failed";
         const u = await client.execute({
           sql: `UPDATE queue_jobs
                   SET status = ?,
                       attempts = ?,
                       lease_worker = NULL,
                       lease_expires_at = NULL,
-                      result_error = ?
+                      result_error = ?,
+                      run_id = COALESCE(?, run_id)
                   WHERE id = ? AND status = 'leased' AND lease_worker = ?`,
-          args: [nextStatus, attempts, JSON.stringify(error), jobId, workerId],
+          args: [nextStatus, attempts, JSON.stringify(error), runId ?? null, jobId, workerId],
         });
         return u.rowsAffected > 0;
       }),
@@ -338,14 +334,12 @@ function rowToJob(row: Row): QueueJob {
     scheduledFor: row.scheduled_for == null ? null : toNumber(row.scheduled_for),
     status: String(row.status) as QueueJob["status"],
     leaseWorker: row.lease_worker == null ? null : String(row.lease_worker),
-    leaseExpiresAt:
-      row.lease_expires_at == null ? null : toNumber(row.lease_expires_at),
+    leaseExpiresAt: row.lease_expires_at == null ? null : toNumber(row.lease_expires_at),
     attempts: toNumber(row.attempts),
     maxAttempts: toNumber(row.max_attempts),
     createdAt: toNumber(row.created_at),
     runId: row.run_id == null ? null : String(row.run_id),
-    resultStatus:
-      row.result_status == null ? null : (String(row.result_status) as RunStatus),
+    resultStatus: row.result_status == null ? null : (String(row.result_status) as RunStatus),
     resultError,
   };
   if (meta && typeof meta === "object") out.meta = meta as Record<string, unknown>;

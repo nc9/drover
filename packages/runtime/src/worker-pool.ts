@@ -193,9 +193,7 @@ async function executeJob(
       await sleep(opts.heartbeatIntervalMs, cancelSource.signal);
       if (!alive) break;
       try {
-        await Effect.runPromise(
-          deps.queue.heartbeat(job.id, workerId, opts.leaseDurationMs),
-        );
+        await Effect.runPromise(deps.queue.heartbeat(job.id, workerId, opts.leaseDurationMs));
       } catch {
         // Lost the lease (likely reclaimed). Abort the run so we don't
         // double-execute alongside whoever picked it up next.
@@ -221,9 +219,13 @@ async function executeJob(
 
   let result: RunResult<unknown> | null = null;
   let runError: { tag: string; message: string } | null = null;
+  // Every attempt is its own run: a retried or reclaimed job must not reuse the run id of an
+  // earlier attempt (a fresh run on a taken id fails). `job.attempts` counts the attempts that
+  // already ended (failed or reclaimed), so attempt 1 keeps the plain id.
+  const runId = attemptRunId(job);
   try {
     const handle = runAgent(spec as AgentSpec, job.input as never, {
-      runId: job.runId ?? `run_${job.id}`,
+      runId,
       storage: deps.storage,
       agentRegistry: deps.registry,
       sandbox,
@@ -259,7 +261,7 @@ async function executeJob(
   // owns the job after a reclaim).
   if (runError) {
     await Effect.runPromise(
-      Effect.either(deps.queue.fail(job.id, workerId, runError, opts.retryOnFailure)),
+      Effect.either(deps.queue.fail(job.id, workerId, runError, opts.retryOnFailure, runId)),
     );
     return;
   }
@@ -271,6 +273,7 @@ async function executeJob(
           workerId,
           { tag: "WorkerError", message: "no result returned" },
           opts.retryOnFailure,
+          runId,
         ),
       ),
     );
@@ -288,6 +291,7 @@ async function executeJob(
           workerId,
           result.error ?? { tag: "Cancelled", message: "cancelled" },
           /* retry */ false,
+          result.runId,
         ),
       ),
     );
@@ -299,10 +303,21 @@ async function executeJob(
           workerId,
           result.error ?? { tag: "Error", message: "run failed" },
           opts.retryOnFailure,
+          result.runId,
         ),
       ),
     );
   }
+}
+
+/**
+ * The run id of a job's current attempt: `run_<jobId>` for the first, `run_<jobId>_a<n>` for
+ * attempt n >= 2 (`_a`, not `:`, so it never looks like a subagent child id).
+ */
+export function attemptRunId(job: Pick<QueueJob, "id" | "attempts">): string {
+  const base = `run_${job.id}`;
+  const attempt = job.attempts + 1;
+  return attempt <= 1 ? base : `${base}_a${attempt}`;
 }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {

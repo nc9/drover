@@ -94,6 +94,11 @@ export interface RunListFilter {
  */
 export interface StorageAdapter {
   readonly id: string;
+  /**
+   * Insert a new run row. MUST fail (`StorageError`) when a run with `row.id` already exists,
+   * and leave that run's row, events and checkpoints untouched: never replace or upsert. The
+   * harness relies on it to refuse a fresh run on a taken id (#97).
+   */
   createRun(row: RunRow): Effect.Effect<void, StorageError, never>;
   updateRun(
     id: string,

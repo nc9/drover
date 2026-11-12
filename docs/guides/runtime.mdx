@@ -102,6 +102,13 @@ dies mid-job:
 `maxAttempts` (default 1, per-job) caps the recovery loop. After `attempts
 >= maxAttempts`, the job moves to `failed`.
 
+Every attempt is its own run: the first runs as `run_<jobId>`, attempt `n` (a retry after a
+failure, or the next claim after a reclaim) as `run_<jobId>_a<n>`. A crashed attempt's run row
+is left as it was, and a fresh run never reuses a taken run id. `job.runId` names the run of the
+attempt that last ended (complete or fail), so `api.get(jobId)` and `api.resume(jobId)` find the
+run that decided the job. A job that ended through a lease reclaim keeps the run id of the last
+attempt that reported.
+
 ## Cancellation
 
 ```ts

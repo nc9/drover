@@ -51,7 +51,18 @@ export interface TaskToolOptions {
    * (unless it has one with the same id), each child being its own run.
    */
   parentPlugins?: ReadonlyArray<import("@droveragent/core").HarnessPlugin>;
+  /**
+   * Child sequence numbers already used by earlier invocations of this parent run (a resume or
+   * continuation): the first child of this invocation is `childSeqStart + 1`. The harness passes
+   * the number of `task` calls in the checkpoint; with storage, the highest stored child id of the
+   * parent also counts (see `taskTool`).
+   */
+  childSeqStart?: number;
 }
+
+/** Page size and page cap when reading a parent's stored children (#97). */
+const CHILD_PAGE = 1000;
+const MAX_CHILD_PAGES = 1000;
 
 /** Default subagent nesting depth — also surfaced in the `subagents` prompt fragment. */
 export const DEFAULT_MAX_DEPTH = 2;
@@ -79,15 +90,44 @@ const TaskInputSchema = Type.Object({
  *
  * Child run id is the parent's run id with a `:<n>` suffix (n is a
  * monotonically increasing per-parent counter, so the trace ancestor
- * is unambiguous and grandchildren get e.g. `parent:2:1`).
+ * is unambiguous and grandchildren get e.g. `parent:2:1`). The counter
+ * continues across the parent's invocations (resume, continuation): it
+ * starts above `childSeqStart` and, with storage, above the highest
+ * child id the store already holds for the parent, so a later child
+ * never reuses an earlier child's id (#97).
  */
 export function taskTool(opts: TaskToolOptions): AnyToolDef {
   const maxDepth = opts.maxDepth ?? DEFAULT_MAX_DEPTH;
   const fanOut = opts.fanOut ?? DEFAULT_FAN_OUT;
   const allowed = new Set(opts.allowedAgents);
 
-  let nextChildSeq = 0;
+  let nextChildSeq = Math.max(0, Math.floor(opts.childSeqStart ?? 0));
   let inFlight = 0;
+  // With storage, the parent's stored children are read ONCE per invocation (one shared
+  // promise, so parallel `task` calls all wait for the same read) and the counter moves above
+  // the highest `${parent}:<n>` found. Paged: `listRuns` adapters default to 200 rows.
+  let storedSeq: Promise<number> | undefined;
+  const storedChildSeq = (parentRunId: string): Promise<number> => {
+    const storage = opts.deps.storage;
+    if (!storage) return Promise.resolve(0);
+    storedSeq ??= (async () => {
+      let max = 0;
+      for (let page = 0; page < MAX_CHILD_PAGES; page++) {
+        const rows = await Effect.runPromise(
+          storage.listRuns({ parentRunId, limit: CHILD_PAGE, offset: page * CHILD_PAGE }),
+        );
+        for (const r of rows) {
+          const m = r.id.startsWith(`${parentRunId}:`)
+            ? /^(\d+)$/.exec(r.id.slice(parentRunId.length + 1))
+            : null;
+          if (m) max = Math.max(max, Number(m[1]));
+        }
+        if (rows.length < CHILD_PAGE) break;
+      }
+      return max;
+    })().catch(() => 0); // a storage outage must not block spawns: the checkpoint count applies
+    return storedSeq;
+  };
 
   return defineTool({
     id: "task",
@@ -115,15 +155,6 @@ export function taskTool(opts: TaskToolOptions): AnyToolDef {
             }),
           );
         }
-        if (inFlight >= fanOut) {
-          return yield* Effect.fail(
-            new SubagentLimitError({
-              runId: ctx.runId,
-              reason: "fan_out",
-              attempted: input.agent_type,
-            }),
-          );
-        }
         const spec = opts.registry.resolve(input.agent_type);
         if (!spec) {
           // Treat unregistered as not_allowed — same outcome.
@@ -147,7 +178,21 @@ export function taskTool(opts: TaskToolOptions): AnyToolDef {
           ...(input.max_turns ? { quota: { ...spec.quota, maxTurns: input.max_turns } } : {}),
         };
 
-        nextChildSeq += 1;
+        // Every call waits for the same stored-children read. After it, the fan-out check, the
+        // sequence and the in-flight count are one synchronous step: parallel calls cannot
+        // interleave between them (no yield), so ids stay distinct and fan-out holds.
+        const stored = yield* Effect.promise(() => storedChildSeq(ctx.runId));
+        if (inFlight >= fanOut) {
+          return yield* Effect.fail(
+            new SubagentLimitError({
+              runId: ctx.runId,
+              reason: "fan_out",
+              attempted: input.agent_type,
+            }),
+          );
+        }
+        inFlight += 1;
+        nextChildSeq = Math.max(nextChildSeq, stored) + 1;
         const childRunId = `${ctx.runId}:${nextChildSeq}`;
         const childCtx: RunContext = {
           runId: childRunId,
@@ -165,7 +210,6 @@ export function taskTool(opts: TaskToolOptions): AnyToolDef {
           prompt: input.prompt,
         };
 
-        inFlight += 1;
         // Surface child lifecycle as subagent_start/end on the PARENT stream.
         // Per-event mirroring of child→parent is intentionally NOT done — the
         // parent gets boundary markers + the `task` tool_call pair. Observers
