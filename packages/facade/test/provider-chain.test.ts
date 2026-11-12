@@ -63,7 +63,11 @@ interface Seen {
 
 function server(respond: (n: number, seen: Seen) => Response) {
   const seen: Seen[] = [];
+  // Bound to the address the chain calls (not Bun's default dual-stack `*`), so a request to
+  // 127.0.0.1:<port> can only reach this server, never another process's 127.0.0.1 listener on
+  // the same port number (#78).
   const s = Bun.serve({
+    hostname: "127.0.0.1",
     port: 0,
     async fetch(req) {
       const entry: Seen = {
@@ -370,6 +374,13 @@ describe("provider chain inside a run", () => {
         ),
       );
       expect(result.status).toBe("success");
+      // Routing first, so a failure says which leg went wrong: turn 1 on OpenRouter (1 request),
+      // turn 2 refused there (402) and served by the gateway.
+      expect([a.seen.length, b.seen.length]).toEqual([2, 1]);
+      expect(Object.keys(result.usageByProvider ?? {}).toSorted()).toEqual([
+        "cloudflare-ai-gateway",
+        "openrouter",
+      ]);
       // OpenRouter: the billed figure REPLACES the list price (0.05, not 0.05 + 0.00011).
       expect(result.usageByProvider?.openrouter?.costUsd).toBeCloseTo(0.05, 10);
       // Gateway: no billed cost, pi's list price (200 in + 20 out at $1/1M).

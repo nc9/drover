@@ -66,6 +66,12 @@ const records = new Map<string, AttemptResponse>();
 const costs = new Map<string, (cost: number | undefined) => void>();
 /** The tap's reader of a 2xx body being read for its cost, per tag (cancelled on settle or dispose). */
 const costReaders = new Map<string, BodyReader>();
+/**
+ * Tags whose 2xx body the caller has read to its end. The tee then holds the whole body for the
+ * tap's reader, so the cost settles from local data alone: `cost()` waits for it with no
+ * wall-clock window.
+ */
+const costBodyEnded = new Set<string>();
 /** The part of a stream reader the tap uses (structural: runtimes type readers differently). */
 interface BodyReader {
   read(): Promise<{ done: boolean; value?: Uint8Array }>;
@@ -194,7 +200,15 @@ function install(): boolean {
       const reader = forTap.getReader() as unknown as BodyReader;
       costReaders.set(tag, reader);
       void readCost(reader).then(settle, () => settle(undefined));
-      return new Response(forCaller, {
+      // Marks the end of the caller's branch (its flush runs before the caller sees `done`).
+      const watched = forCaller.pipeThrough(
+        new TransformStream<Uint8Array, Uint8Array>({
+          flush: () => {
+            if (costs.has(tag)) costBodyEnded.add(tag);
+          },
+        }),
+      );
+      return new Response(watched, {
         status: res.status,
         statusText: res.statusText,
         headers: res.headers,
@@ -243,7 +257,9 @@ export interface AttemptTap {
   take(): AttemptResponse | undefined;
   /**
    * The provider-billed `usage.cost` of a 2xx response (attempts opened with
-   * `{ cost: true }`), or undefined when none arrives within `settleMs` of the call.
+   * `{ cost: true }`). Once the caller has read the body to its end, this waits for the
+   * tap's reader of the same (local) bytes, with no time limit beyond the reader's own
+   * deadline. Before that (a body still open), undefined when none arrives within `settleMs`.
    */
   cost(settleMs?: number): Promise<number | undefined>;
   dispose(): void;
@@ -267,6 +283,7 @@ export function startAttemptTap(opts: { cost?: boolean } = {}): AttemptTap {
     billed = new Promise((resolve) => {
       costs.set(tag, (c) => {
         costs.delete(tag);
+        costBodyEnded.delete(tag);
         const reader = costReaders.get(tag);
         costReaders.delete(tag);
         void reader?.cancel().catch(() => {});
@@ -278,6 +295,9 @@ export function startAttemptTap(opts: { cost?: boolean } = {}): AttemptTap {
     header: { [TAG_HEADER]: tag },
     take: () => records.get(tag),
     cost: async (settleMs = COST_SETTLE_MS) => {
+      // The body ended: the whole of it is buffered for the tap's reader, so the result is
+      // deterministic (no race with a timer under load).
+      if (costBodyEnded.has(tag)) return billed;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const timeout = new Promise<undefined>((r) => {
         timer = setTimeout(() => r(undefined), settleMs);
@@ -292,6 +312,7 @@ export function startAttemptTap(opts: { cost?: boolean } = {}): AttemptTap {
       live.delete(tag);
       records.delete(tag);
       costs.get(tag)?.(undefined); // also cancels the tag's body reader
+      costBodyEnded.delete(tag);
       const reader = costReaders.get(tag);
       costReaders.delete(tag);
       void reader?.cancel().catch(() => {});
@@ -300,7 +321,8 @@ export function startAttemptTap(opts: { cost?: boolean } = {}): AttemptTap {
 }
 
 /** @internal Test seam: attempts still holding tap state (0 when idle). */
-export const liveAttemptTaps = (): number => live.size + costs.size + costReaders.size;
+export const liveAttemptTaps = (): number =>
+  live.size + costs.size + costReaders.size + costBodyEnded.size;
 
 /** @internal Test seam: whether the process-wide `fetch` tap is installed. */
 export const attemptTapInstalled = (): boolean => installed;
