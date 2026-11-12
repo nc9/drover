@@ -11,6 +11,7 @@ import { runAgentEffect } from "@droveragent/harness";
 import { createProviderChain } from "@droveragent/model";
 import { createNoneSandbox } from "@droveragent/sandbox";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
+import { normalizeContext } from "@earendil-works/pi-ai/compat";
 
 import {
   FakeProviderExhaustedError,
@@ -135,10 +136,12 @@ describe("fakeProvider: plain run (no chain)", () => {
 
   test("a call past the script throws FakeProviderExhaustedError; repeatLast repeats", () => {
     const fake = fakeProvider([]);
-    expect(() => fake.streamFn(fakeModel, { messages: [] })).toThrow(FakeProviderExhaustedError);
+    expect(() => fake.streamFn(fakeModel, normalizeContext({ messages: [] }))).toThrow(
+      FakeProviderExhaustedError,
+    );
     const loop = fakeProvider([reply.text("again")], { repeatLast: true });
-    loop.streamFn(fakeModel, { messages: [] });
-    expect(() => loop.streamFn(fakeModel, { messages: [] })).not.toThrow();
+    loop.streamFn(fakeModel, normalizeContext({ messages: [] }));
+    expect(() => loop.streamFn(fakeModel, normalizeContext({ messages: [] }))).not.toThrow();
   });
 });
 
