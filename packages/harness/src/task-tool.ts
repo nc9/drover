@@ -46,6 +46,11 @@ export interface TaskToolOptions {
    * run by `childRunId` in observers.
    */
   parentEmit?: (event: import("@droveragent/core").HarnessEvent) => void;
+  /**
+   * The parent's plugins. Those with `inheritToSubagents` also run in the child
+   * (unless it has one with the same id), each child being its own run.
+   */
+  parentPlugins?: ReadonlyArray<import("@droveragent/core").HarnessPlugin>;
 }
 
 /** Default subagent nesting depth — also surfaced in the `subagents` prompt fragment. */
@@ -132,8 +137,12 @@ export function taskTool(opts: TaskToolOptions): AnyToolDef {
         }
 
         // Apply ad-hoc overrides.
+        const inherited = (opts.parentPlugins ?? []).filter(
+          (p) => p.inheritToSubagents && !(spec.plugins ?? []).some((q) => q.id === p.id),
+        );
         const childSpec: AgentSpec = {
           ...spec,
+          ...(inherited.length > 0 ? { plugins: [...(spec.plugins ?? []), ...inherited] } : {}),
           ...(input.model ? { model: input.model } : {}),
           ...(input.max_turns ? { quota: { ...spec.quota, maxTurns: input.max_turns } } : {}),
         };

@@ -47,11 +47,10 @@ export const BUILTINS: ReadonlyArray<Builtin> = [
       if (!scope.memory) return "";
       const limit = typeof hash.limit === "number" ? hash.limit : scope.memory.maxEntries;
       return await Effect.runPromise(
-        renderMemoryIndex(
-          scope.memory.adapter,
-          scope.memory.agentId,
-          limit !== undefined ? { maxEntries: limit } : {},
-        ),
+        renderMemoryIndex(scope.memory.adapter, scope.memory.agentId, {
+          ...(limit !== undefined ? { maxEntries: limit } : {}),
+          ...(scope.memory.fence ? { fence: scope.memory.fence } : {}),
+        }),
       );
     },
   },

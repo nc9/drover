@@ -11,6 +11,12 @@ import {
   parsePrefixedToolName,
   prefixedToolName,
 } from "./config.ts";
+import {
+  MAX_PREFIXED_TOOL_NAME,
+  MCP_TOOL_NAME,
+  sanitizeInputSchema,
+  sanitizeToolDescription,
+} from "./schema.ts";
 
 /**
  * Live MCP runtime. Holds connected `Client` instances and the flat
@@ -59,7 +65,17 @@ export async function createMcpRuntime(
         const transport = buildTransport(cfg);
         await client.connect(transport);
         const list = await client.listTools();
-        const tools = list.tools.map((t) => mcpToolToDroverTool(cfg.id, client, t));
+        const tools = list.tools.flatMap((t) => {
+          const tool = mcpToolToDroverTool(cfg.id, client, t);
+          if ("refused" in tool) {
+            // The name is server text too: log a cleaned, bounded copy.
+            console.error(
+              `[mcp] server ${cfg.id}: tool ${JSON.stringify(sanitizeToolDescription(String(t.name)).slice(0, 80))} refused: ${tool.refused}`,
+            );
+            return [];
+          }
+          return [tool];
+        });
         return { id: cfg.id, client, transport: cfg.transport, tools };
       } catch (err) {
         // Surface as zero-tool server; consumers see it in servers() output.
@@ -88,6 +104,11 @@ export async function createMcpRuntime(
       const server = connected.find((s) => s.id === parsed.serverId);
       if (!server || !server.client) {
         throw new Error(`mcp callTool: server '${parsed.serverId}' not connected`);
+      }
+      // Only tools the runtime offers: a tool refused for its name or schema is not
+      // callable by name either (lifecycle `mcp` steps go through here).
+      if (!server.tools.some((t) => t.id === name)) {
+        throw new Error(`mcp callTool: '${name}' is not an offered tool of '${parsed.serverId}'`);
       }
       const result = await server.client.callTool({
         name: parsed.toolName,
@@ -143,20 +164,29 @@ function mcpToolToDroverTool(
   serverId: string,
   client: Client,
   tool: McpToolDescriptor,
-): AnyToolDef {
-  // The MCP tool's JSON Schema is preserved verbatim via Type.Unsafe so the
-  // LLM sees the right arg shape; server-side enforcement is the source of
-  // truth for validation.
-  const schema: TSchema = (
-    tool.inputSchema && typeof tool.inputSchema === "object"
-      ? Type.Unsafe(tool.inputSchema)
-      : Type.Object({}, { additionalProperties: true })
-  ) as TSchema;
+): AnyToolDef | { refused: string } {
+  // Only an allowlisted subset of the server's JSON Schema reaches the model
+  // (see schema.ts); server-side enforcement stays the source of truth for
+  // validation. A tool whose name or schema cannot be made safe is refused.
+  if (typeof tool.name !== "string" || !MCP_TOOL_NAME.test(tool.name)) {
+    return { refused: `tool name must match ${MCP_TOOL_NAME}` };
+  }
+  if (prefixedToolName(serverId, tool.name).length > MAX_PREFIXED_TOOL_NAME) {
+    return { refused: `"<server>__<tool>" is longer than ${MAX_PREFIXED_TOOL_NAME} chars` };
+  }
+  let schema: TSchema = Type.Object({}, { additionalProperties: true });
+  if (tool.inputSchema !== undefined && tool.inputSchema !== null) {
+    const cleaned = sanitizeInputSchema(tool.inputSchema);
+    if (!cleaned.ok) return { refused: cleaned.reason };
+    schema = Type.Unsafe(cleaned.schema) as TSchema;
+  }
 
   const prefixed = prefixedToolName(serverId, tool.name);
   return defineTool({
     id: prefixed,
-    description: tool.description ?? `MCP tool ${tool.name} on server ${serverId}`,
+    description: sanitizeToolDescription(
+      tool.description ?? `MCP tool ${tool.name} on server ${serverId}`,
+    ),
     inputSchema: schema,
     execute: (input, ctx): Effect.Effect<ToolResult, SandboxError, never> =>
       Effect.tryPromise({

@@ -1,0 +1,172 @@
+---
+title: Untrusted data
+description: Fence everything that did not come from the operator, so outside text reaches the model as data, not instructions.
+---
+
+**Invariant: anything that did not come from the operator's own prompt or code is
+untrusted until positively marked trusted, and derived text inherits the least
+trusted input.** Drover's fence plugin is built on that, and fails closed: every
+bookkeeping miss over-fences, none can under-fence.
+
+An agent that reads outside text (web pages, emails, tickets, shell output, MCP
+results, other agents' answers) can be told what to do by that text. The **fence**
+is a tagged block with a per-run random nonce, plus cleaning that stops a value
+from closing or opening a tag. The model is told in the system prompt that
+everything inside a fence is data whatever it claims.
+
+```ts
+import { defineAgent } from "@droveragent/core";
+import { truncatePlugin, untrustedResultsPlugin } from "@droveragent/plugins";
+
+// One allowlist, owned by the fence plugin: tools whose output is the operator's own.
+const fence = untrustedResultsPlugin({ trusted: ["clock"] });
+const truncate = truncatePlugin({ isTrusted: fence.isTrusted }); // reads the same list
+
+const spec = defineAgent({
+  id: "page-reader",
+  systemPrompt: "You summarise pages.", // no fence note to remember: the plugin adds it
+  tools: ["fetch_page", "bash"],
+  plugins: [truncate.plugin, fence], // fence after truncate
+  // ...
+});
+```
+
+## What is fenced
+
+- **Every tool result**, success, error and defect alike (an upstream error can
+  echo a page title), except tools on the `trusted` allowlist. Unlisted tools,
+  MCP tools, `bash`, `recall` and `task` are all fenced by default. The plugin
+  never inspects output to decide: a result containing a fence-shaped string is
+  wrapped like any other. `selfFenced` names tools that wrap their own output
+  (`fence.fenceFor(runId)`); their errors are still wrapped.
+- **Stored copies.** The truncate plugin stores oversized results with their
+  provenance (`trusted`, producing tool, run), keyed by (run, tool-use id) with a
+  suffixed handle when a backend repeats an id (`call_0`, `call_0~2`).
+  `show_tool_result` returns that provenance in the same result as the content,
+  and the plugin returns the slice raw only if it says trusted **and** the
+  producing tool is on the fence plugin's allowlist. A missing flag, another run's
+  entry or a legacy entry reads as untrusted. Two lists that disagree resolve to
+  untrusted.
+- **The compaction summary.** It is derived from untrusted text and re-enters the
+  conversation as a user message, so it is fenced; the summariser also gets the
+  fence note in its system prompt.
+- **Memory.** Entries carry a `trusted` flag, absent by default (model-written
+  memory inherits what the model read). The untrusted entries of the memory index
+  in the system prompt are fenced; `recall` is a tool, so it is fenced too. Set
+  `trusted: true` only on entries the operator wrote.
+- **Subagents.** The plugin is inherited by every subagent run (`inheritToSubagents`)
+  with that run's own nonce, and a `task` result is fenced in the parent.
+- **Lifecycle steps.** The output of an `mcp` step and the body of a `skill` step in
+  `lifecycle.init` / `lifecycle.postSuccess` go into a user turn, so they are fenced
+  like the matching `mcp__*` and `skill_load` tools. `prompt` and `command` steps are
+  the operator's text. An `mcp` step can only call a tool the MCP runtime offers (a
+  tool refused for its name or schema cannot be called by name).
+
+Plugin order does not decide safety. The harness applies a fencing plugin's
+`wrapTool` outermost and runs its `afterToolCall` after every other plugin's. That
+`afterToolCall` keeps verbatim only the exact strings the plugin itself produced for
+the run (its fence blocks, the raw text of trusted results) and fences everything
+else. Text another plugin added or rewrote, including on a trusted tool's result, is
+fenced, and so is a block that only looks like one of ours: the model knows the nonce
+from the system prompt, so a later plugin that echoes model-chosen text could forge
+one, and a forged block is fenced again (its tags escaped, its nonce shown as
+`[nonce]`). A plugin note such as the tool-call cap's arrives as a fenced block. If
+the fencing plugin's `afterToolCall` fails, the harness fails closed: the whole result
+is fenced, or withheld if fencing itself fails. List the fence after truncate only so
+the truncated head and its marker are fenced inside one block.
+
+## Nonces and resume
+
+Each run, and each subagent run, has its own nonce, kept in a `NonceStore`
+(`untrustedResultsPlugin({ nonces })`; default: in memory). A resumed run in the
+same process keeps its nonce, so history fenced before the pause still matches the
+note. Across processes, pass a store backed by your own storage. Resuming a run
+whose nonce the plugin cannot recover is **refused** (a `PluginError` from
+`assertResumable`), because the restored history would carry fences that name the
+old nonce while the note names a new one. Every use of a live run's fence reads the
+store (refreshing the in-memory store's LRU entry, which keeps the 10,000 most
+recently used runs). If a live run's nonce goes missing from the store or changes,
+the plugin throws instead of minting a new one, so a run never ends up with a system
+prompt naming one nonce and results fenced with another.
+
+## What the fence does to text
+
+| Input | Result |
+|---|---|
+| `</untrusted-data-NONCE>` in the text | `<`, `>` and `&` escaped as `\u003c`, `\u003e`, `\u0026`; the block cannot be closed |
+| the nonce itself in the text | replaced by `[nonce]` |
+| fullwidth brackets (`＜`) | NFKC turns them into ASCII first, then escaped |
+| guillemets, math and CJK brackets, `˂˃`, `⟪⟫`, `⦉⦊`, ornaments (`LOOKALIKE_BRACKETS`) | visible `[U+XXXX]` placeholder |
+| zero-width, bidi override, control characters | space (newline and tab kept) |
+| variation selectors, Mongolian FVS, U+034F, Hangul fillers, U+2028, U+2029 (`INVISIBLE_RANGES`) | space (U+2028/2029: newline) |
+| a lone surrogate half | U+FFFD (some providers reject a request that carries one) |
+| very long strings, huge arrays, deep objects | bounded (`maxFieldChars`, default 2000; 2000 items; 500 keys; depth 12; no lone surrogate left by a cut) |
+
+The two tables are exported and tested one code point at a time. `wrap(section, body)`
+takes a string or any JSON-able value; `wrapText` is the whole-text variant.
+
+## What it does not do
+
+- **Trust is per tool, so it can launder.** A trusted `read_file`, `bash` or
+  `grep` returns raw text that the agent wrote earlier from fenced web content,
+  or that a download put on disk. "Derived stays untrusted" does not hold across
+  the filesystem. Do not trust filesystem or shell tools unless the sandbox is
+  read-only and holds only the operator's own files. `task`, `recall`,
+  `show_tool_result`, `skill_load` and `skill_resource` carry derived text, so
+  listing one in `trusted` or `selfFenced` throws at construction. The check is by
+  tool id: a custom subagent or reader tool registered under another id is not
+  caught by it, so keep such tools off both lists.
+- **Persistence channels.** Instruction files (`loadInstructionFiles`, read from
+  the working directory) and skill names and descriptions go into the system
+  prompt unfenced: they are treated as the operator's. Any tool that can write
+  under the working directory can plant text there for the next run. The markdown
+  memory adapter ignores `trusted: true` in a file's frontmatter unless it was
+  opened with `allowTrustedFrontmatter: true`, for the same reason.
+- **Tool descriptions.** MCP tool descriptions (server-supplied) are cleaned and
+  bounded to 500 characters before the model sees them, but are not fenced. Only
+  connect servers you would run code from.
+- **Tool schemas.** An MCP tool's input schema also reaches the model unfenced, so
+  only a JSON Schema keyword allowlist passes (`type`, `properties`, `required`,
+  `items`, `prefixItems`, `enum`, `const`, `anyOf`, `oneOf`, `allOf`, `not`,
+  `additionalProperties`, numeric and length bounds, `format`, `uniqueItems`,
+  `default`, `description`, `title`, local `$ref`, `$defs`, `definitions`);
+  `$comment`, `x-*`, `examples`, `pattern` (a server-supplied regex is a ReDoS
+  risk for any validator that runs it) and unknown keys are dropped.
+  `description` and `title` are cleaned like tool descriptions. Names and values
+  must match the server exactly, so they are not rewritten; the tool is refused
+  (logged, not offered) when:
+  - a property name, `required` entry or `$defs` name is not `[A-Za-z0-9_.-]{1,64}`;
+  - an `enum` / `const` string or `$ref` has control, zero-width or look-alike
+    characters, `<` or `>`, more than 128 characters, or more than 3 whitespace
+    characters (a token, not prose);
+  - the schema is over 32 KB or 32 levels deep, or has an unknown `type`;
+  - the tool name is not `[A-Za-z0-9_-]{1,64}`, or `<server>__<tool>` is longer than
+    64 characters.
+
+  An unsafe `default` or `format` is dropped. What can still reach the tool list
+  unfenced is bounded: short identifiers and tokens, plus cleaned, tag-escaped
+  descriptions of at most 500 characters each.
+- **Resume with a fence plugin.** A resume is refused when the plugin cannot find
+  the run's nonce, which includes a run that was started without the plugin and
+  resumed with it. Pass a persistent `nonces` store to resume across processes.
+- **Harness-made tool errors.** Errors produced outside a tool's `execute`
+  (argument-validation errors that echo arguments, unknown-tool text,
+  `beforeToolCall` deny reasons, output-schema retry feedback) are not fenced.
+  They are authored by the model or the operator, but may quote their input.
+- **Other plugins' text.** A plugin's `systemPromptAddendum` and its `beforeToolCall`
+  deny reasons reach the model raw: they are operator or plugin text. A plugin that
+  puts outside text into either is responsible for fencing it (`wrapUntrusted`, or
+  `plugin.fenceFor(runId)`).
+- **Trusted tools' errors.** A trusted tool's own error text is not produced by the
+  fence plugin, so it reaches the model fenced, like any other unrecognised text.
+- **Text a host adds** through `appendMessages` or builds into prompts itself.
+- **Stored overflow.** The truncate store never evicts (use a short-lived process
+  or your own store). An entry stored without run metadata (a legacy `set()`
+  call) can be read by any run, always as untrusted. If the fence plugin is listed
+  before truncate, a truncated head can cut inside a fence and leave it unclosed
+  (still data, never trusted).
+
+A fence lowers the odds that injected text steers the model. It does not make the
+text safe. Keep the tools of an agent that reads outside text unable to do harm
+(read-only, or a draft store a validator checks), set budgets, and treat everything
+the model proposes to write as untrusted too.

@@ -1,13 +1,7 @@
 import { MemoryError } from "@droveragent/core";
 import { Effect } from "effect";
 
-import type {
-  MemoryAdapter,
-  MemoryDraft,
-  MemoryEntry,
-  MemoryHit,
-  SearchOpts,
-} from "./adapter.ts";
+import type { MemoryAdapter, MemoryDraft, MemoryEntry, MemoryHit, SearchOpts } from "./adapter.ts";
 import { ID_SEGMENT_RE, ULID_RE } from "./adapter.ts";
 import { bm25, buildDoc, type Doc } from "./bm25.ts";
 import { byRecency, matches } from "./filter.ts";
@@ -45,6 +39,7 @@ export function createInMemoryMemory(): MemoryAdapter {
           summary: draft.summary,
           body: draft.body,
           ...(draft.tags && draft.tags.length > 0 ? { tags: [...draft.tags] } : {}),
+          ...(draft.trusted === true ? { trusted: true } : {}),
           createdAt: existing?.createdAt ?? now,
           ...(existing ? { updatedAt: now } : {}),
         };
@@ -52,8 +47,7 @@ export function createInMemoryMemory(): MemoryAdapter {
         return Effect.succeed(entry);
       }),
 
-    get: (id) =>
-      Effect.sync(() => entries.get(id) ?? null),
+    get: (id) => Effect.sync(() => entries.get(id) ?? null),
 
     search: (opts: SearchOpts) =>
       Effect.sync((): ReadonlyArray<MemoryHit> => {
@@ -154,8 +148,7 @@ export function validateDraft(draft: MemoryDraft): MemoryError | null {
       message: `summary must be 1-200 chars (got ${draft.summary.length})`,
     });
   }
-  const maxBody =
-    draft.kind === "reference" ? MAX_BODY_CHARS.reference : MAX_BODY_CHARS.default;
+  const maxBody = draft.kind === "reference" ? MAX_BODY_CHARS.reference : MAX_BODY_CHARS.default;
   if (draft.body.length === 0 || draft.body.length > maxBody) {
     return new MemoryError({
       op: "put",

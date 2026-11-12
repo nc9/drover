@@ -7,6 +7,12 @@ export interface IndexOptions {
   maxEntries?: number;
   /** Cap per-scope entries; default `maxEntries`. */
   maxPerScope?: number;
+  /**
+   * Fence the entries that are not `trusted` (model-written memory inherits the
+   * least trusted input it was derived from). Trusted entries stay as they are.
+   * Without it nothing is fenced.
+   */
+  fence?: (section: string, text: string) => string;
 }
 
 /**
@@ -24,9 +30,7 @@ export function renderMemoryIndex(
   const perScope = opts.maxPerScope ?? max;
 
   return Effect.gen(function* () {
-    const globalE = yield* Effect.either(
-      adapter.list({ scopes: ["global"], limit: perScope }),
-    );
+    const globalE = yield* Effect.either(adapter.list({ scopes: ["global"], limit: perScope }));
     const agentE = yield* Effect.either(
       adapter.list({ scopes: ["agent"], agentId, limit: perScope }),
     );
@@ -42,23 +46,27 @@ export function renderMemoryIndex(
     lines.push("");
     const budget = Math.min(max, total);
     let used = 0;
+    // Trusted lines raw; untrusted lines together in one fenced block.
+    const emit = (entries: ReadonlyArray<MemoryEntry>): void => {
+      const untrusted: string[] = [];
+      for (const e of entries) {
+        if (used >= budget) break;
+        const line = `- [${e.kind}] ${e.summary}`;
+        if (opts.fence && e.trusted !== true) untrusted.push(line);
+        else lines.push(line);
+        used++;
+      }
+      if (untrusted.length > 0) lines.push(opts.fence!("memory-index", untrusted.join("\n")));
+    };
 
     if (globals.length > 0 && used < budget) {
       lines.push("### Global");
-      for (const e of globals) {
-        if (used >= budget) break;
-        lines.push(`- [${e.kind}] ${e.summary}`);
-        used++;
-      }
+      emit(globals);
       lines.push("");
     }
     if (agents.length > 0 && used < budget) {
       lines.push(`### Agent (${agentId})`);
-      for (const e of agents) {
-        if (used >= budget) break;
-        lines.push(`- [${e.kind}] ${e.summary}`);
-        used++;
-      }
+      emit(agents);
       lines.push("");
     }
     return lines.join("\n").trimEnd();

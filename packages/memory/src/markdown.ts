@@ -24,6 +24,13 @@ import { ulid } from "./ulid.ts";
 export interface MarkdownMemoryOptions {
   /** Absolute or relative path to the memory root. Required. */
   root: string;
+  /**
+   * Honour `trusted: true` found in a file's frontmatter. Default false: anything
+   * able to write a file under `root` could otherwise plant "trusted" text for the
+   * next run. A `trusted` flag set through `put` in the same process is kept in
+   * memory either way; this only decides what is believed when files are read.
+   */
+  allowTrustedFrontmatter?: boolean;
 }
 
 const KINDS: ReadonlySet<MemoryKind> = new Set(["user", "feedback", "project", "reference"]);
@@ -58,7 +65,7 @@ export async function createMarkdownMemory(opts: MarkdownMemoryOptions): Promise
   };
 
   // Initial scan
-  await scanInto(root, entries, docs);
+  await scanInto(root, entries, docs, opts.allowTrustedFrontmatter === true);
 
   /** Resolve the on-disk path for an entry. Throws on path-escape attempts. */
   const pathFor = (entry: MemoryEntry): string => {
@@ -85,6 +92,7 @@ export async function createMarkdownMemory(opts: MarkdownMemoryOptions): Promise
     if (entry.runId) frontmatter.runId = entry.runId;
     if (entry.tags && entry.tags.length > 0) frontmatter.tags = [...entry.tags];
     if (entry.updatedAt) frontmatter.updatedAt = entry.updatedAt;
+    if (entry.trusted === true) frontmatter.trusted = true;
     const yaml = stringifyYaml(frontmatter).trimEnd();
     const content = `---\n${yaml}\n---\n\n${entry.body.trim()}\n`;
     await (await loadFs()).writeFile(file, content, "utf8");
@@ -116,6 +124,7 @@ export async function createMarkdownMemory(opts: MarkdownMemoryOptions): Promise
             summary: draft.summary,
             body: draft.body,
             ...(draft.tags && draft.tags.length > 0 ? { tags: [...draft.tags] } : {}),
+            ...(draft.trusted === true ? { trusted: true } : {}),
             createdAt: existing?.createdAt ?? now,
             ...(existing ? { updatedAt: now } : {}),
           };
@@ -222,10 +231,14 @@ async function scanInto(
   root: string,
   entries: Map<string, MemoryEntry>,
   docs: Map<string, Doc>,
+  allowTrusted: boolean,
 ): Promise<void> {
   const globalDir = path.join(root, "global");
   for (const id of await listMdIds(globalDir)) {
-    const entry = await loadFile(path.join(globalDir, `${id}.md`), { scope: "global" });
+    const entry = await loadFile(path.join(globalDir, `${id}.md`), {
+      scope: "global",
+      allowTrusted,
+    });
     if (entry) {
       entries.set(entry.id, entry);
       docs.set(entry.id, buildDoc(entry.id, entry.summary, entry.body, entry.tags));
@@ -237,6 +250,7 @@ async function scanInto(
     for (const id of await listMdIds(agentDir)) {
       const entry = await loadFile(path.join(agentDir, `${id}.md`), {
         scope: "agent",
+        allowTrusted,
         agentId,
       });
       if (entry) {
@@ -251,6 +265,7 @@ async function scanInto(
     for (const id of await listMdIds(runDir)) {
       const entry = await loadFile(path.join(runDir, `${id}.md`), {
         scope: "run",
+        allowTrusted,
         runId,
       });
       if (entry) {
@@ -286,7 +301,7 @@ const FRONTMATTER = /^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/;
 
 async function loadFile(
   file: string,
-  ctx: { scope: MemoryScope; agentId?: string; runId?: string },
+  ctx: { scope: MemoryScope; agentId?: string; runId?: string; allowTrusted: boolean },
 ): Promise<MemoryEntry | null> {
   let raw: string;
   try {
@@ -336,6 +351,7 @@ async function loadFile(
     summary,
     body,
     ...(tags ? { tags } : {}),
+    ...(ctx.allowTrusted && fm.trusted === true ? { trusted: true } : {}),
     createdAt,
     ...(updatedAt !== undefined ? { updatedAt } : {}),
   };

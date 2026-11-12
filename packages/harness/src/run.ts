@@ -10,6 +10,7 @@ import {
   InputValidationError,
   LifecycleError,
   OutputValidationError,
+  PluginError,
   type RunContext,
   type RunResult,
   type RunStatus,
@@ -17,6 +18,7 @@ import {
   type Usage,
 } from "@droveragent/core";
 import { resolveModel } from "@droveragent/model";
+import { fenceSummarizer, fencersLast, systemAddenda, untrustedFencer } from "./plugin-hooks.ts";
 import {
   forgetTool,
   loadInstructionFiles,
@@ -129,8 +131,11 @@ export function buildPromptScope(args: {
   modelId: string;
   toolIds: ReadonlyArray<string>;
   instructionFiles: ReadonlyArray<InstructionFile>;
+  /** Plugins of the run: a `wrapUntrusted` one fences untrusted memory-index entries. */
+  plugins?: ReadonlyArray<import("@droveragent/core").HarnessPlugin>;
 }): PromptScope {
   const { spec, ctx, deps, modelId, toolIds, instructionFiles } = args;
+  const memoryFence = untrustedFencer(args.plugins ?? [], ctx);
   return {
     agent: { id: spec.id },
     run: { runId: ctx.runId, cwd: ctx.cwd },
@@ -147,6 +152,7 @@ export function buildPromptScope(args: {
             adapter: deps.memory!,
             agentId: spec.id,
             maxEntries: spec.memory!.maxIndexEntries ?? 30,
+            ...(memoryFence ? { fence: memoryFence } : {}),
           },
         }
       : {}),
@@ -268,6 +274,22 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     const plugins: ReadonlyArray<import("@droveragent/core").HarnessPlugin> = autoMemoryPlugin
       ? [...explicitPlugins, autoMemoryPlugin]
       : explicitPlugins;
+    if (isResume) {
+      for (const p of plugins) {
+        try {
+          p.assertResumable?.(ctx);
+        } catch (e) {
+          return yield* Effect.fail(
+            new PluginError({
+              runId: ctx.runId,
+              pluginId: p.id,
+              hook: "assertResumable",
+              message: e instanceof Error ? e.message : String(e),
+            }),
+          );
+        }
+      }
+    }
     const storage = deps.storage;
     // Seq counter continues from the checkpoint to avoid collisions with the
     // events that were already persisted before pause. We add a small gap so
@@ -427,6 +449,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         modelId: resolved.model.id,
         toolIds: tools.map((t) => t.id),
         instructionFiles: instructionFilesList,
+        plugins,
       });
       const rendered = yield* Effect.promise(() =>
         promptEngine.render(tplSource, promptScope, {
@@ -462,6 +485,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         modelId: resolved.model.id,
         toolIds: tools.map((t) => t.id),
         instructionFiles: instructionFilesList,
+        plugins,
       });
       // `includeIndex: false` suppresses only the auto-injected memory
       // index, not the memory tools — drop the scope field so the
@@ -480,6 +504,13 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       });
     }
 
+    // Plugins may append to the system prompt (a fence plugin carries its fence
+    // note here, so the host cannot forget it).
+    {
+      const addenda = systemAddenda(plugins, ctx);
+      if (addenda.length > 0) systemPrompt = `${systemPrompt}\n\n${addenda.join("\n\n")}`;
+    }
+
     // Scope for deterministic lifecycle steps (commands render against it).
     const lifecycleScope = buildPromptScope({
       spec,
@@ -488,7 +519,11 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       modelId: resolved.model.id,
       toolIds: tools.map((t) => t.id),
       instructionFiles: instructionFilesList,
+      plugins,
     });
+
+    // Lifecycle `mcp` and `skill` step output is fenced like the matching tools'.
+    const lifecycleFence = untrustedFencer(plugins, ctx);
 
     // Deterministic `init` lifecycle — resolve steps to text blocks that
     // prepend to the opening user turn. Skipped on resume (the blocks are
@@ -508,6 +543,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             deps,
             engine: promptEngine,
             scope: lifecycleScope,
+            ...(lifecycleFence ? { fence: lifecycleFence } : {}),
           }),
         catch: (err): LifecycleError =>
           err instanceof LifecycleError
@@ -788,12 +824,32 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             isError: aCtx.isError,
             data: aCtx.result.details,
           };
-          for (const p of plugins) {
+          // Fencing plugins run last: they see (and fence) every other rewrite.
+          for (const p of fencersLast(plugins)) {
             if (!p.afterToolCall) continue;
-            const next = await Effect.runPromise(
-              Effect.either(p.afterToolCall(aCtx.toolCall.name, aCtx.args, current, ctx)),
+            const before = current;
+            const exit = await Effect.runPromiseExit(
+              Effect.suspend(() => p.afterToolCall!(aCtx.toolCall.name, aCtx.args, before, ctx)),
             );
-            if (next._tag === "Right") current = next.right;
+            if (exit._tag === "Success") {
+              current = exit.value;
+              continue;
+            }
+            // A failed (or throwing) plugin keeps the result as it was. A failed FENCING
+            // plugin fails closed: never pass an earlier plugin's rewrite on unfenced.
+            if (p.wrapUntrusted) {
+              try {
+                current = {
+                  ...before,
+                  content: p.wrapUntrusted("after-tool-call", before.content, ctx),
+                };
+              } catch {
+                current = {
+                  content: "[tool result withheld: the untrusted-data fence failed]",
+                  isError: true,
+                };
+              }
+            }
           }
           const out: {
             content?: Array<{ type: "text"; text: string }>;
@@ -839,14 +895,17 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       }
       // The summariser gets `deps.onPayload` too — a host that pins routing for
       // the run means the run, not just the main loop.
-      compactionSummarizer = makeSummarizer(
+      const baseSummarizer = makeSummarizer(
         summaryModel,
         summaryApiKey,
         undefined,
         deps.onPayload,
         // Only a chain reroutes the summariser; a bare `streamFn` never did.
         deps.providers ? runStreamFn : undefined,
+        // The fence plugin's note, so the summariser knows what a fence is.
+        systemAddenda(plugins, ctx).join("\n\n") || undefined,
       );
+      compactionSummarizer = fenceSummarizer(baseSummarizer, plugins, ctx);
     }
 
     // transformContext: pi calls this before each LLM call with the live
@@ -1196,6 +1255,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
               deps,
               engine: promptEngine,
               scope: lifecycleScope,
+              ...(lifecycleFence ? { fence: lifecycleFence } : {}),
             }),
           catch: (err): LifecycleError =>
             err instanceof LifecycleError
@@ -1408,6 +1468,7 @@ function composeTools(
       ...(subagents.fanOut !== undefined ? { fanOut: subagents.fanOut } : {}),
       deps,
       parentEmit,
+      parentPlugins: plugins,
     };
     out.push(taskTool(subagentOpts));
   }
@@ -1458,9 +1519,10 @@ function composeTools(
     for (const t of p.tools) out.push(t);
   }
 
-  // Apply wrapTool decorators in registration order — outermost-last so
-  // earlier plugins wrap closer to the underlying execute.
-  for (const p of plugins) {
+  // Apply wrapTool decorators in registration order, outermost-last so earlier
+  // plugins wrap closer to the underlying execute; fencing plugins always last
+  // (outermost), so no other wrapper can rewrite a result after the fence.
+  for (const p of fencersLast(plugins)) {
     if (!p.wrapTool) continue;
     out = out.map((t) => p.wrapTool!(t));
   }

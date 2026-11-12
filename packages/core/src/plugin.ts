@@ -116,5 +116,34 @@ export interface HarnessPlugin {
    */
   onRunEnd?: (result: RunResult, ctx: RunContext) => Effect.Effect<void, never, never>;
 
+  /**
+   * Text appended to the system prompt for this run (and given to the
+   * compaction summariser). A fence plugin uses it to carry its fence note, so
+   * the host cannot forget it.
+   */
+  systemPromptAddendum?: (ctx: RunContext) => string | undefined;
+
+  /**
+   * Fence text the harness itself puts in front of the model that is derived
+   * from, or may contain, untrusted input: the compaction summary and the
+   * untrusted entries of the memory index. Returns the text to use instead.
+   */
+  wrapUntrusted?: (section: string, text: string, ctx: RunContext) => string;
+
+  /**
+   * Subagents run with this plugin too (added to the child's plugins unless it
+   * already has one with the same id). The child is a separate run, so per-run
+   * state such as a fence nonce is its own.
+   */
+  inheritToSubagents?: boolean;
+
+  /**
+   * Called when a run is resumed from a checkpoint, before anything runs. Throw
+   * a message to refuse the resume (a fence plugin refuses when it cannot
+   * recover the run's nonce, because the restored history carries fences that
+   * name the old one).
+   */
+  assertResumable?: (ctx: RunContext) => void;
+
   onError?: (error: HarnessError, ctx: RunContext) => Effect.Effect<ErrorRecovery, never, never>;
 }

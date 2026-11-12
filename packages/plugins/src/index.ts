@@ -9,3 +9,4 @@ export * from "./dedup.ts";
 export * from "./output-validate.ts";
 export * from "./truncate.ts";
 export * from "./tool-call-cap.ts";
+export * from "./untrusted-results.ts";

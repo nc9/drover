@@ -82,6 +82,8 @@ export function makeSummarizer(
   streamFn?: (
     ...args: Parameters<typeof completeSimple>
   ) => ReturnType<typeof streamSimple> | Promise<ReturnType<typeof streamSimple>>,
+  /** Appended to the summariser's system prompt (a fence plugin's note). */
+  systemNote?: string,
 ): SummarizeFn {
   return async (head, summaryPrompt, signal) => {
     const transcript = renderTranscript(head);
@@ -92,7 +94,9 @@ export function makeSummarizer(
     const reply = await call(
       model,
       {
-        systemPrompt: SUMMARY_SYSTEM_PROMPT,
+        systemPrompt: systemNote
+          ? `${SUMMARY_SYSTEM_PROMPT}\n\n${systemNote}`
+          : SUMMARY_SYSTEM_PROMPT,
         messages: [{ role: "user", content: userContent, timestamp: Date.now() }],
       },
       {
