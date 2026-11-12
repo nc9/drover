@@ -322,8 +322,10 @@ put in the run's error message.
 - The refusal message is the plugin's own text. `balancePreflightPlugin` builds it from numbers
   and the configured provider name only (balance, amount needed, estimate, reserve), never from
   a balance API's response.
-- A planned wrap-up notice near a budget (#10, not merged) wraps the same seam; the intended
-  order is the guard first. This is settled when #10 lands.
+- Order with `quota.wrapUp`: before each model call the guard runs first, then the base
+  transform (compaction, checkpoint snapshot), then the wrap-up notice. A refused call stops at
+  the guard, so it never fires a `budget_warning` or adds the notice. The `postSuccess`
+  continuation runs the guard, then the base transform, with no wrap-up notice.
 - The hook sees only the call number and usage, never message content, so its order relative
   to untrusted-data fencing of tool results does not matter.
 
