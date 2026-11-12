@@ -21,7 +21,7 @@ import {
 
 /** Providers the chain sends through `pinnedStream` instead of `streamSimple`. */
 export const PINNED_PROVIDERS: ReadonlySet<string> = new Set([
-  "azure-openai-responses",
+  "azure",
   "amazon-bedrock",
 ]);
 
@@ -110,7 +110,7 @@ export function pinnedOptions(
     "bearerToken",
   ] as const)
     if (o?.[k] !== undefined) pins[k] = o[k];
-  if (model.provider === "azure-openai-responses") {
+  if (model.provider === "azure") {
     const clamped = o?.reasoning ? clampThinkingLevel(model as never, o.reasoning) : undefined;
     return { ...base, ...pins, reasoningEffort: clamped === "off" ? undefined : clamped };
   }

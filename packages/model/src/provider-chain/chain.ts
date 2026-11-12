@@ -78,7 +78,7 @@ export interface ProviderEntry {
   vars?: Readonly<Record<string, string>>;
   /**
    * Extra request headers, merged over the model's. On OpenAI-compatible providers an
-   * `Authorization` header here replaces the `apiKey` bearer. On `cloudflare-ai-gateway`, pi-ai
+   * `Authorization` header here replaces the `apiKey` bearer. On `cloudflare-ai-gateway`, the chain
    * sets `cf-aig-authorization` from `apiKey` after these, so put the gateway token in `apiKey`;
    * a `cf-aig-authorization` header here has no effect.
    */
@@ -302,7 +302,43 @@ const registryBaseUrl = (provider: string, api: string): string | undefined => {
   }
 };
 
-export function createProviderChain(options: ProviderChainOptions): ProviderChain {
+/** Options with the deprecated Azure provider name mapped to `azure` in every per-provider position. */
+function normalizeProviderNames(o: ProviderChainOptions): ProviderChainOptions {
+  const out: ProviderChainOptions = {
+    ...o,
+    providers: o.providers.map((p) =>
+      typeof p === "string" ? canonicalProvider(p) : { ...p, name: canonicalProvider(p.name) },
+    ),
+  };
+  for (const k of ["apiKeys", "overrides", "balances", "streams"] as const) {
+    const r = rekey(o[k] as Record<string, unknown> | undefined);
+    if (r !== undefined) (out as unknown as Record<string, unknown>)[k] = r;
+  }
+  if (o.ids !== undefined)
+    out.ids = Object.fromEntries(
+      Object.entries(o.ids).map(([id, byProvider]) => [id, rekey(byProvider) ?? byProvider]),
+    );
+  return out;
+}
+
+/** The pre-1.0.3 pi-ai name of the Azure provider, accepted in host configs as an alias for `azure`. */
+export const DEPRECATED_PROVIDER_ALIASES: Readonly<Record<string, string>> = {
+  "azure-openai-responses": "azure",
+};
+const canonicalProvider = (name: string): string =>
+  Object.hasOwn(DEPRECATED_PROVIDER_ALIASES, name) ? DEPRECATED_PROVIDER_ALIASES[name]! : name;
+/** Re-key a per-provider record by canonical provider name (the new name wins over the old). */
+const rekey = <V>(rec: Readonly<Record<string, V>> | undefined): Record<string, V> | undefined => {
+  if (rec === undefined) return undefined;
+  const out: Record<string, V> = {};
+  for (const [k, v] of Object.entries(rec)) if (canonicalProvider(k) === k) out[k] = v;
+  for (const [k, v] of Object.entries(rec))
+    if (canonicalProvider(k) !== k) out[canonicalProvider(k)] ??= v;
+  return out;
+};
+
+export function createProviderChain(rawOptions: ProviderChainOptions): ProviderChain {
+  const options = normalizeProviderNames(rawOptions);
   if (options.providers.length === 0) throw new Error("createProviderChain: no providers");
   const env = options.env ?? (process.env as Record<string, string | undefined>);
   // Entries by name, and the names in chain order.
@@ -410,7 +446,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       } else if (configured === undefined && typeof own(entry.models, canonicalId) === "object")
         return `amazon-bedrock: a declared model needs "region" or "baseUrl"`;
     }
-    if (provider === "azure-openai-responses" && configured === undefined && !found.baseUrl) {
+    if (provider === "azure" && configured === undefined && !found.baseUrl) {
       // pi-ai lists Azure models without a base URL and reads it from process.env; read it from
       // the entry's environment here instead (nothing with `useEnv: false`).
       const resource = entryEnv.AZURE_OPENAI_RESOURCE_NAME;
@@ -428,7 +464,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
     if (left)
       return `no usable value for ${left[0]} in the settings or environment (letters, digits, "_", "." and "-" only)`;
     if (baseUrl.trim() === "")
-      return provider === "azure-openai-responses"
+      return provider === "azure"
         ? `no base URL for provider "${provider}": set "baseUrl" (https://<resource>.openai.azure.com/openai/v1), or AZURE_OPENAI_BASE_URL / AZURE_OPENAI_RESOURCE_NAME in the environment`
         : `no base URL for provider "${provider}"`;
     if (provider === "amazon-bedrock") {
@@ -458,7 +494,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       else if (entry.useEnv === false)
         return `amazon-bedrock: set "region" (the endpoint does not name one, and useEnv: false rules out AWS_REGION)`;
     }
-    if (provider === "azure-openai-responses") {
+    if (provider === "azure") {
       extra.azureBaseUrl = baseUrl;
       // Nothing else from process.env either: pi-ai reads the API version and a deployment-name
       // map from it.
@@ -481,18 +517,32 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       readApiKey(provider, entryEnv) ??
       (provider === "amazon-bedrock" ? "aws-sdk-default-credentials" : null);
     if (!apiKey) return `no API key for provider "${provider}"`;
-    const headers = {
+    const headers: Record<string, string | null> = {
       ...found.headers,
       ...own(options.overrides, provider)?.headers,
       ...entry.headers,
     };
+    if (provider === "cloudflare-ai-gateway") {
+      // pi-ai 1.x no longer derives the gateway token from `apiKey` in the adapter (only its
+      // `Models` auth layer does), so set it here as 0.x did: `cf-aig-authorization` from
+      // `apiKey` (overwriting any such header), and no upstream bearer unless an explicit
+      // `Authorization` header was given (a null header suppresses the SDK's default one).
+      const explicit = Object.entries(headers).find(([k]) => k.toLowerCase() === "authorization");
+      for (const k of Object.keys(headers))
+        if (/^(authorization|x-api-key|cf-aig-authorization)$/i.test(k) && k !== explicit?.[0])
+          delete headers[k];
+      headers["cf-aig-authorization"] = `Bearer ${apiKey}`;
+      if (!explicit) headers.Authorization = null;
+      headers["x-api-key"] = null;
+    }
     return {
       model: {
         ...found,
         ...own(options.overrides, provider),
         baseUrl,
         id,
-        ...(Object.keys(headers).length > 0 ? { headers } : {}),
+        // null values (suppressed default headers) are legal at runtime; pi-ai's Model type is narrower.
+        ...(Object.keys(headers).length > 0 ? { headers: headers as Record<string, string> } : {}),
       },
       apiKey,
       ...(Object.keys(extra).length > 0 ? { extra } : {}),
@@ -509,7 +559,12 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       }
     };
 
-    return (canonical, context, callOptions) => {
+    return (canonicalIn, context, callOptions) => {
+      // A model still named with the deprecated Azure provider name is the `azure` one.
+      const canonical =
+        canonicalProvider(canonicalIn.provider) === canonicalIn.provider
+          ? canonicalIn
+          : { ...canonicalIn, provider: canonicalProvider(canonicalIn.provider) };
       // A model whose provider is not in the chain (a compaction `summaryModel`,
       // a subagent's own model) is not the chain's to route: it goes straight to
       // pi-ai with the key the resolver gave it. No failover, no tap.

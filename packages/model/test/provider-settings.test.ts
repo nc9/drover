@@ -381,13 +381,11 @@ describe("provider entries: Azure and Bedrock base URLs", () => {
   };
 
   test("azure: a plain entry with no base URL is refused, naming what to set", async () => {
-    const { r, got } = await run(
-      { name: "azure-openai-responses", apiKey: "k", useEnv: false },
-      "gpt-4.1",
-      { AZURE_OPENAI_RESOURCE_NAME: "ignored" },
-    );
+    const { r, got } = await run({ name: "azure", apiKey: "k", useEnv: false }, "gpt-4.1", {
+      AZURE_OPENAI_RESOURCE_NAME: "ignored",
+    });
     expect(r.stopReason).toBe("error");
-    expect(r.errorMessage).toContain('no base URL for provider "azure-openai-responses"');
+    expect(r.errorMessage).toContain('no base URL for provider "azure"');
     expect(r.errorMessage).toContain("AZURE_OPENAI_RESOURCE_NAME");
     expect(got).toEqual([]);
   });
@@ -395,7 +393,7 @@ describe("provider entries: Azure and Bedrock base URLs", () => {
   test("azure: baseUrl from the entry, or the entry's env (AZURE_OPENAI_BASE_URL, then the resource name); pinned as azureBaseUrl", async () => {
     const set = await run(
       {
-        name: "azure-openai-responses",
+        name: "azure",
         apiKey: "k",
         baseUrl: "https://acme.openai.azure.com/openai/v1",
       },
@@ -410,21 +408,48 @@ describe("provider entries: Azure and Bedrock base URLs", () => {
         }),
       },
     ]);
-    const byUrl = await run({ name: "azure-openai-responses", apiKey: "k" }, "gpt-4.1", {
+    const byUrl = await run({ name: "azure", apiKey: "k" }, "gpt-4.1", {
       AZURE_OPENAI_BASE_URL: "https://env.openai.azure.com/openai/v1",
       AZURE_OPENAI_RESOURCE_NAME: "not-used",
     });
     expect(byUrl.got[0]!.baseUrl).toBe("https://env.openai.azure.com/openai/v1");
-    const byName = await run({ name: "azure-openai-responses", apiKey: "k" }, "gpt-4.1", {
+    const byName = await run({ name: "azure", apiKey: "k" }, "gpt-4.1", {
       AZURE_OPENAI_RESOURCE_NAME: "myres",
     });
     expect(byName.got[0]!.baseUrl).toBe("https://myres.openai.azure.com/openai/v1");
     expect(byName.got[0]!.options.azureBaseUrl).toBe("https://myres.openai.azure.com/openai/v1");
-    const badName = await run({ name: "azure-openai-responses", apiKey: "k" }, "gpt-4.1", {
+    const badName = await run({ name: "azure", apiKey: "k" }, "gpt-4.1", {
       AZURE_OPENAI_RESOURCE_NAME: "evil.example.com/x",
     });
     expect(badName.r.errorMessage).toContain("no base URL");
     expect(badName.got).toEqual([]);
+  });
+
+  test("azure: the pre-1.0.3 name azure-openai-responses is a deprecated alias for azure", async () => {
+    const old = await run(
+      {
+        name: "azure-openai-responses",
+        apiKey: "k",
+        baseUrl: "https://acme.openai.azure.com/openai/v1",
+      },
+      "gpt-4.1",
+      {},
+    );
+    expect(old.got).toEqual([
+      {
+        baseUrl: "https://acme.openai.azure.com/openai/v1",
+        options: expect.objectContaining({
+          azureBaseUrl: "https://acme.openai.azure.com/openai/v1",
+        }),
+      },
+    ]);
+    // A string entry and a per-provider apiKeys record take the old name too.
+    const chain = createProviderChain({
+      providers: ["azure-openai-responses"],
+      apiKeys: { "azure-openai-responses": "k" },
+      env: { AZURE_OPENAI_BASE_URL: "https://env.openai.azure.com/openai/v1" },
+    });
+    expect(chain.providers).toEqual(["azure"]);
   });
 
   test("bedrock: the entry's region picks the endpoint and is passed as the request region", async () => {
@@ -556,14 +581,14 @@ describe("provider entries: pins survive pi-ai (real transport, decoy env)", () 
           const chain = createProviderChain({
             providers: [
               {
-                name: "azure-openai-responses",
+                name: "azure",
                 apiKey: "az-tenant-key",
                 baseUrl: `http://127.0.0.1:${server.port}/openai/v1`,
                 useEnv: false,
               },
             ],
           });
-          const r = await callOnce(chain, "azure-openai-responses", "gpt-4.1");
+          const r = await callOnce(chain, "azure", "gpt-4.1");
           expect(r.stopReason).toBe("error");
         },
       );
@@ -625,7 +650,7 @@ describe("provider entries: pins survive pi-ai (real transport, decoy env)", () 
     expect(
       pinnedOptions(nova, { apiKey: "k", region: "eu-west-1", bearerToken: "t" } as never),
     ).toMatchObject({ region: "eu-west-1", bearerToken: "t", reasoning: undefined, apiKey: "k" });
-    const az = getModel("azure-openai-responses" as never, "gpt-4.1" as never) as never;
+    const az = getModel("azure" as never, "gpt-4.1" as never) as never;
     expect(
       pinnedOptions(az, {
         apiKey: "k",
