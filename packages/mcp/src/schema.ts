@@ -199,11 +199,21 @@ function walk(node: unknown, depth: number, path: string): unknown {
       out = v;
     } else if (k === "required") {
       if (!Array.isArray(v)) refuse(`${at} is not an array`);
-      out = (v as unknown[]).map((n) =>
-        typeof n === "string"
-          ? schemaName(n, `${at} entry`)
-          : refuse(`${at} entry is not a string`),
-      );
+      // Only names of sibling `properties`, each once, at most one per property: anything else
+      // is text the model reads that names nothing, so it is dropped.
+      const props = (node as { properties?: unknown }).properties;
+      const names =
+        props !== null && typeof props === "object" && !Array.isArray(props)
+          ? Object.keys(props)
+          : [];
+      const kept = [
+        ...new Set(
+          (v as unknown[]).filter((n): n is string => typeof n === "string" && names.includes(n)),
+        ),
+      ]
+        .slice(0, names.length)
+        .map((n) => schemaName(n, `${at} entry`));
+      out = kept.length > 0 ? kept : undefined;
     } else if (k === "enum") {
       if (!Array.isArray(v)) refuse(`${at} is not an array`);
       out = exactValue(v, at, depth + 1);
@@ -250,8 +260,9 @@ function walk(node: unknown, depth: number, path: string): unknown {
  *
  * - Only {@link SCHEMA_KEYWORDS} pass; `$comment`, `x-*`, `examples` and unknown keys are dropped.
  * - `description` / `title`: cleaned, tags escaped, bounded (as tool descriptions).
- * - Property names, `required` entries, `$defs` names: {@link SCHEMA_NAME} (identifier-like,
- *   at most 64 chars), else the tool is refused.
+ * - Property names, `$defs` names: {@link SCHEMA_NAME} (identifier-like, at most 64 chars),
+ *   else the tool is refused. `required` keeps only names of sibling `properties` (deduplicated,
+ *   at most one per property); other entries are dropped.
  * - `enum` / `const` strings and `$ref`: must already be clean, at most
  *   {@link MAX_SCHEMA_TOKEN_CHARS} chars, without `<` or `>`, at most
  *   {@link MAX_TOKEN_SPACES} whitespace characters (a token, not prose); otherwise the tool is
@@ -333,8 +344,8 @@ function enumConstChars(node: unknown, inToken: boolean, namesHere = false): num
 export const MAX_TOOL_PROSE_TOTAL_CHARS = 4096;
 
 /**
- * Characters of every `description` / `title` string in a (sanitised) schema, plus every
- * property / `$defs` / `definitions` NAME. Those children are keyed by name, so a property
+ * Characters of every `description` / `title` / `$ref` string and `required` entry in a
+ * (sanitised) schema, plus every property / `$defs` / `definitions` NAME. Those children are keyed by name, so a property
  * called `description` counts as a name, not the keyword; `enum` / `const` / `default` values
  * are data, not schema nodes (they have their own budget).
  */
@@ -344,7 +355,10 @@ function schemaProseChars(node: unknown, namesHere = false): number {
   let n = 0;
   for (const [k, v] of Object.entries(node)) {
     if (namesHere) n += k.length + schemaProseChars(v);
-    else if ((k === "description" || k === "title") && typeof v === "string") n += v.length;
+    else if ((k === "description" || k === "title" || k === "$ref") && typeof v === "string")
+      n += v.length;
+    else if (k === "required" && Array.isArray(v))
+      n += v.reduce((m: number, x) => m + (typeof x === "string" ? x.length : 0), 0);
     else if (k === "enum" || k === "const" || k === "default") continue;
     else n += schemaProseChars(v, SCHEMA_MAPS.has(k));
   }
@@ -377,7 +391,7 @@ export function sanitizeToolSurface(description: string, inputSchema: unknown): 
   if (total > MAX_TOOL_PROSE_TOTAL_CHARS) {
     return {
       ok: false,
-      reason: `description, schema descriptions / titles and property names total ${total} chars, over the ${MAX_TOOL_PROSE_TOTAL_CHARS}-char cap`,
+      reason: `description, schema descriptions / titles, names, required entries and $refs total ${total} chars, over the ${MAX_TOOL_PROSE_TOTAL_CHARS}-char cap`,
     };
   }
   return { ok: true, description: desc, schema };

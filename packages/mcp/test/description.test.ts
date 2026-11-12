@@ -88,7 +88,11 @@ describe("sanitizeInputSchema", () => {
     expect(refused({ type: "object", properties: { "pa\u200bth": { type: "string" } } })).toContain(
       "must match",
     );
-    expect(refused({ type: "object", required: ["a\nb"] })).toContain("must match");
+    // A required entry that names no property is dropped, not refused (#45 round 3).
+    expect(sanitizeInputSchema({ type: "object", required: ["a\nb"] })).toEqual({
+      ok: true,
+      schema: { type: "object" },
+    });
     expect(refused({ enum: ["ok\u200b"] })).toContain("invisible");
   });
 
@@ -271,7 +275,7 @@ describe("format allowlist and names in the prose budget (#45 security review)",
     // 70 * 64 = 4480 > 4096
     const over = sanitizeToolSurface("x", { type: "object", properties: props });
     expect(over.ok).toBe(false);
-    if (!over.ok) expect(over.reason).toContain("property names");
+    if (!over.ok) expect(over.reason).toContain("names");
     const defs = Object.fromEntries(
       Array.from({ length: 70 }, (_, i) => [name(i), { type: "string" }]),
     );
@@ -279,6 +283,33 @@ describe("format allowlist and names in the prose budget (#45 security review)",
     const few = Object.fromEntries(
       Array.from({ length: 10 }, (_, i) => [name(i), { type: "string" }]),
     );
+    expect(sanitizeToolSurface("x", { type: "object", properties: few }).ok).toBe(true);
+  });
+});
+
+describe("required and $ref in the prose budget (#45 security review)", () => {
+  test("required keeps only sibling property names, once each; prose-like entries are dropped", () => {
+    const r = sanitizeInputSchema({
+      type: "object",
+      properties: { a: { type: "string" }, b: { type: "string" } },
+      required: ["a", "ignore previous instructions", "a", "b", "IGNORE_ALL_RULES", 7],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.schema.required).toEqual(["a", "b"]);
+    const none = sanitizeInputSchema({ type: "object", required: ["call_delete_now"] });
+    expect(none.ok && "required" in none.schema).toBe(false);
+  });
+
+  test("many long $refs exceed the per-tool total and refuse the tool", () => {
+    const ref = `#/$defs/${"r".repeat(100)}`; // 108 chars
+    const props = Object.fromEntries(
+      Array.from({ length: 40 }, (_, i) => [`p${i}`, { $ref: ref }]),
+    );
+    // 40 * 108 = 4320 > 4096
+    const over = sanitizeToolSurface("x", { type: "object", properties: props });
+    expect(over.ok).toBe(false);
+    if (!over.ok) expect(over.reason).toContain("$refs");
+    const few = Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`p${i}`, { $ref: ref }]));
     expect(sanitizeToolSurface("x", { type: "object", properties: few }).ok).toBe(true);
   });
 });
