@@ -1,3 +1,4 @@
+import "./version.ts";
 import type { TSchema } from "@sinclair/typebox";
 import { Effect } from "effect";
 
@@ -643,6 +644,7 @@ export type {
   InvocationBudget,
   RunResult,
 } from "@droveragent/core";
+export { droverVersions } from "@droveragent/core";
 export {
   staticRegistry,
   withProviderCost,

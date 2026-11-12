@@ -128,7 +128,18 @@ bun -e 'console.log(Bun.resolveSync("droveragent", process.cwd()))'
 grep '"@droveragent/core": \["' bun.lock                      # tarball route: @droveragent/core@../drover-tarballs/...
 ```
 
-Run the check after every `bun install` in the consumer. Drover packages do not yet expose a build identifier that tells a local build from a published one with the same version; until one exists the resolved path is the check.
+Run the check after every `bun install` in the consumer. From inside the consumer, one call prints what is actually loaded:
+
+```ts
+import { droverVersions } from "droveragent"; // also exported by @droveragent/core and @droveragent/facade
+
+console.log(droverVersions());
+// { "@droveragent/core": "0.3.0+local.1a2b3c4", "@droveragent/harness": "0.3.0+local.1a2b3c4", ... }
+```
+
+Every package registers its version when its main entry is loaded. A published release reports the plain version (`0.3.0`). Any build from a working tree reports `<version>+local.<git sha>`, with `.dirty` when the tree had uncommitted changes, so a consumer that fell back to the npm release shows plain versions where you expected `+local`. A package listed with two versions (`"0.3.0, 0.3.0+local.1a2b3c4"`) is loaded twice, a linked build next to an installed one.
+
+The stamp is written into `dist/version.js` at build time (`scripts/postbuild-version.ts`). Release builds set `DROVER_RELEASE=1` (the release workflow and `scripts/publish-all.sh` do), and `scripts/release.ts verify` refuses a release whose tarballs carry a `+local` stamp.
 
 ### 4. Go back to the published release
 

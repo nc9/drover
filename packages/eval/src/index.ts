@@ -1,3 +1,4 @@
+import "./version.ts";
 // @droveragent/eval
 // Record/replay of provider responses for evals and offline tests.
 // The formal ScenarioRunner / Scorer / Reporter library is still reserved: the

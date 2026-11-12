@@ -7,6 +7,8 @@
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { stampVersion } from "./postbuild-version.ts";
+
 const distDir = process.argv[2] ?? "dist";
 
 const walk = (dir: string): string[] => {
@@ -38,3 +40,7 @@ try {
   throw err;
 }
 if (touched) console.log(`postbuild-dts: rewrote ${touched} .d.ts file(s) in ${distDir}`);
+
+// Every package build runs this script, so it also stamps dist/version.js (see
+// postbuild-version.ts): the package version, plain for a release build, `+local.<sha>` otherwise.
+if (distDir === "dist") stampVersion(process.cwd());

@@ -95,3 +95,7 @@ export const repositoryProblem = (
 // Strictly greater, semver precedence (0.3.0-next.1 > 0.2.0, < 0.3.0).
 export const isGreaterVersion = (next: string, current: string): boolean =>
   Bun.semver.order(next, current) === 1;
+
+/** The version a built dist/version.js was stamped with (see scripts/postbuild-version.ts). */
+export const stampedVersionIn = (versionJs: string): string | undefined =>
+  /export const version = "([^"]*)";/.exec(versionJs)?.[1];

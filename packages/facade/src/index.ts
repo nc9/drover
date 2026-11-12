@@ -3,6 +3,7 @@
  * Node/Bun only. For Workers and other bundler targets use
  * `@droveragent/facade/core` (same API, `sandbox` required, no just-bash).
  */
+import "./version.ts";
 import * as path from "node:path";
 
 import type { TSchema } from "@sinclair/typebox";
@@ -99,3 +100,4 @@ export {
   type ProviderChainOptions,
 } from "@droveragent/model";
 export { createDisabledSandbox, type CoreSandbox } from "./core.ts";
+export { droverVersions } from "@droveragent/core";
