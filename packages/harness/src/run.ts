@@ -50,6 +50,7 @@ import { skillLoadTool, skillResourceTool } from "@droveragent/skills";
 import type { CheckpointRow } from "@droveragent/storage";
 import { builtinsById, type BuiltinToolId } from "@droveragent/tools";
 import { Cause, Effect, Exit, Option } from "effect";
+import { buildSystemMessage, stripLeadingSystem, withSystemMessage } from "./system-message.ts";
 import { runAgentLoop, runAgentLoopContinue, type StreamFn } from "@earendil-works/pi-agent-core";
 import { taskTool, DEFAULT_MAX_DEPTH, DEFAULT_FAN_OUT } from "./task-tool.ts";
 import {
@@ -831,7 +832,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
 
     // Used to checkpoint state for resume. Seeded from the checkpoint on resume.
     const messagesSnapshot: { value: ReadonlyArray<AgentMessage> } = {
-      value: resumeFrom ? (resumeFrom.messages as ReadonlyArray<AgentMessage>) : [],
+      value: resumeFrom
+        ? stripLeadingSystem(resumeFrom.messages as ReadonlyArray<AgentMessage>)
+        : [],
     };
 
     // Messages that ended since the last `transformContext` snapshot. The
@@ -926,7 +929,11 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             if (u.cacheRead) one.cacheReadTokens = u.cacheRead;
             if (u.cacheWrite) one.cacheWriteTokens = u.cacheWrite;
             if (u.cost?.total) one.costUsd = u.cost.total;
-            chainRecorder.onMessage(served, one, stop !== "error" && stop !== "aborted");
+            chainRecorder.onMessage(
+              served,
+              one,
+              stop !== "error" && stop !== "aborted" && stop !== "pending" && stop !== "deferred",
+            );
           }
           if (typeof served === "string" && (u.input || u.output || u.cacheRead || u.cacheWrite)) {
             const prev = Object.hasOwn(usageByProvider, served)
@@ -1237,7 +1244,8 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
               })) as AgentMessage[];
             }
             if (storage) {
-              messagesSnapshot.value = [...next];
+              // The system message is derived from the spec each invocation, never persisted.
+              messagesSnapshot.value = stripLeadingSystem(next);
               sinceSnapshot.length = 0;
             }
             return next;
@@ -1487,6 +1495,11 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // Final message list — captured so a `postSuccess` lifecycle can continue
     // the loop from exactly where the agent stopped.
     let finalMessages: AgentMessage[] = [];
+    // pi 1.x ignores `AgentContext.systemPrompt`: the prompt and the tool declarations reach
+    // the model only as a leading system message, so every loop below is handed one. Built
+    // once from the rendered prompt; `withSystemMessage` replaces any leading one in a
+    // history (a resumed or continued run), so it is never duplicated and always current.
+    const systemMessage = buildSystemMessage(systemPrompt, piTools);
     // Full message history so far. Only meaningful with storage (the snapshot
     // is only taken then); without it, fall back to what the loop returned.
     const completeMessages = (): AgentMessage[] =>
@@ -1496,8 +1509,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         if (isResume) {
           finalMessages = await runAgentLoopContinue(
             {
-              systemPrompt,
-              messages: [...(resumeFrom!.messages as ReadonlyArray<AgentMessage>)],
+              messages: withSystemMessage(
+                systemMessage,
+                resumeFrom!.messages as ReadonlyArray<AgentMessage>,
+              ),
               tools: piTools,
             },
             loopConfig,
@@ -1508,7 +1523,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         } else {
           finalMessages = await runAgentLoop(
             [initialPrompt as AgentMessage],
-            { systemPrompt, messages: [], tools: piTools },
+            { messages: withSystemMessage(systemMessage, []), tools: piTools },
             loopConfig,
             sink as (e: PiEvent) => void,
             abortController.signal,
@@ -1561,7 +1576,13 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         stopReason?: string;
       } | null;
       // A provider error (even with partial text) or an abort is never a final answer.
-      if (last?.stopReason === "error" || last?.stopReason === "aborted") return false;
+      if (
+        last?.stopReason === "error" ||
+        last?.stopReason === "aborted" ||
+        last?.stopReason === "pending" ||
+        last?.stopReason === "deferred"
+      )
+        return false;
       const content = last?.content;
       if (!Array.isArray(content) || content.some((b) => b.type === "toolCall")) return false;
       if (!finalText || finalText.trim().length === 0) return false;
@@ -1743,8 +1764,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           try {
             await runAgentLoopContinue(
               {
-                systemPrompt,
-                messages: [...completeMessages(), postMsg as AgentMessage],
+                messages: withSystemMessage(systemMessage, [
+                  ...completeMessages(),
+                  postMsg as AgentMessage,
+                ]),
                 tools: piTools,
               },
               postLoopConfig,

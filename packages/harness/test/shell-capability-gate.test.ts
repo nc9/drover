@@ -9,7 +9,11 @@ import { Type } from "@sinclair/typebox";
 import { defineAgent } from "@droveragent/core";
 import { createNoneSandbox, type SandboxAdapter } from "@droveragent/sandbox";
 import type { PreResolvedModel } from "@droveragent/model";
-import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai/compat";
+import {
+  createAssistantMessageEventStream,
+  getCurrentTools,
+  type AssistantMessage,
+} from "@earendil-works/pi-ai/compat";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 
 // Relative import: harness does not depend on the just-bash adapter.
@@ -51,7 +55,7 @@ const done: AssistantMessage = {
 const offeredTools = async (sandbox: SandboxAdapter): Promise<string[]> => {
   let names: string[] = [];
   const streamFn: StreamFn = (_m, context) => {
-    names = (context.tools ?? []).map((t) => t.name);
+    names = getCurrentTools(context.messages).map((t) => t.name);
     const s = createAssistantMessageEventStream();
     s.push({ type: "start", partial: done });
     s.push({ type: "done", reason: "stop", message: done });

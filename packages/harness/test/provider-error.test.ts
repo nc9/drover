@@ -13,6 +13,7 @@ import type { PreResolvedModel } from "@droveragent/model";
 import { createMemoryStorage } from "@droveragent/storage";
 import {
   createAssistantMessageEventStream,
+  getCurrentSystemPrompt,
   streamSimple,
   type AssistantMessage,
 } from "@earendil-works/pi-ai/compat";
@@ -327,7 +328,7 @@ describe("provider errors fail the run", () => {
     });
     let parentCalls = 0;
     const streamFn: StreamFn = (model, context, options) => {
-      if (String(context.systemPrompt).includes("child-agent"))
+      if (getCurrentSystemPrompt(context.messages).includes("child-agent"))
         return errorStream(model, context, options);
       parentCalls += 1;
       const s = createAssistantMessageEventStream();
@@ -494,7 +495,7 @@ describe("provider errors over a real HTTP transport (local server, pi-ai OpenAI
         { includeProviderErrorText: true },
         modelAt(server),
       );
-      expect(result.error?.message).toStartWith("provider error 402: 402 ");
+      expect(result.error?.message).toStartWith("provider error 402: 402: ");
       expect(result.error?.message).toContain("hostile page");
     });
   });

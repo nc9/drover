@@ -9,7 +9,11 @@ import { Type } from "@sinclair/typebox";
 import { defineAgent, type HarnessEvent, type RunContext } from "@droveragent/core";
 import { createProviderChain, type ChainStreamFn, type PreResolvedModel } from "@droveragent/model";
 import { createNoneSandbox } from "@droveragent/sandbox";
-import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai/compat";
+import {
+  createAssistantMessageEventStream,
+  getCurrentSystemPrompt,
+  type AssistantMessage,
+} from "@earendil-works/pi-ai/compat";
 
 import { runAgentEffect } from "../src/run.ts";
 
@@ -58,7 +62,7 @@ const provider = (name: string, onSummary: "fail402" | "fail503" | "never") => {
   const stream: ChainStreamFn = (_model, context) => {
     const out = createAssistantMessageEventStream();
     // The harness composes the agent's prompt; the summariser sends its own.
-    const isSummary = !String(context.systemPrompt).includes("probe");
+    const isSummary = !getCurrentSystemPrompt(context.messages).includes("probe");
     let m: AssistantMessage;
     if (isSummary) {
       summaryCalls += 1;
@@ -67,7 +71,8 @@ const provider = (name: string, onSummary: "fail402" | "fail503" | "never") => {
       m = msg(name, { stopReason: "error", errorMessage: text, usage: usage(0) });
       out.push({ type: "error", reason: "error", error: m });
     } else {
-      shared.mainContexts.push(context.messages.length);
+      // History length without the leading system message (pi 1.x carries the prompt there).
+      shared.mainContexts.push(context.messages.filter((m) => m.role !== "system").length);
       const n = shared.mainCalls++;
       m =
         n < 2

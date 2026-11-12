@@ -104,6 +104,20 @@ export function providerError(
 }
 
 /**
+ * pi 1.x added the stop reasons `"pending"` and `"deferred"` (asynchronous / batch
+ * responses that are not final). drover has no way to poll or resume them, so such a
+ * message is never a complete answer: a failure with a clear message, whatever content
+ * it carries. Null for every other stop reason.
+ */
+export function unsupportedStop(msg: ProviderMessage | null): ProviderFailure | null {
+  const stop = msg?.stopReason;
+  if (stop !== "pending" && stop !== "deferred") return null;
+  return {
+    message: `provider returned a ${stop} response (stop reason "${stop}" is not supported: drover only handles completed responses)`,
+  };
+}
+
+/**
  * Why the run's final assistant message is a provider failure, or null.
  *
  * - `stopReason: "error"`: see {@link providerError}.
@@ -124,6 +138,8 @@ export function providerFailure(
 ): ProviderFailure | null {
   if (!msg) return { message: "provider returned no assistant message" };
   if (msg.stopReason === "aborted") return null;
+  const unsupported = unsupportedStop(msg);
+  if (unsupported) return unsupported;
   const err = providerError(msg, includeText);
   if (err) return err;
   const blocks = Array.isArray(msg.content) ? msg.content : [];

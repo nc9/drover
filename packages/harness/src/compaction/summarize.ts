@@ -14,10 +14,11 @@
  * to call a tool instead of writing the summary.
  */
 import { COMPACTION_SUMMARY_MARKER } from "@droveragent/core";
-import { completeSimple, type streamSimple } from "@earendil-works/pi-ai/compat";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
+import { completeSimple, normalizeContext } from "@earendil-works/pi-ai/compat";
 import type { KnownApi, Message, Model, SimpleStreamOptions } from "@earendil-works/pi-ai/compat";
 
-import { providerError } from "../provider-failure.ts";
+import { providerError, unsupportedStop } from "../provider-failure.ts";
 
 /** Produce summary text for the head messages. Injected into the orchestrator. */
 export type SummarizeFn = (
@@ -52,6 +53,9 @@ export function renderTranscript(head: ReadonlyArray<Message>): string {
         if (c.type === "toolCall")
           lines.push(`Assistant called ${c.name}(${JSON.stringify(c.arguments)})`);
       }
+    } else if (m.role === "system") {
+      // Never part of a compactable head (selectHeadTail keeps it); skipped, not summarised.
+      continue;
     } else {
       lines.push(`Tool result (${m.toolName}): ${blockText(m.content)}`);
     }
@@ -79,39 +83,36 @@ export function makeSummarizer(
   maxTokens?: number,
   onPayload?: SimpleStreamOptions["onPayload"],
   /** Transport for the call; defaults to pi-ai's. A provider chain passes its own. */
-  streamFn?: (
-    ...args: Parameters<typeof completeSimple>
-  ) => ReturnType<typeof streamSimple> | Promise<ReturnType<typeof streamSimple>>,
+  streamFn?: StreamFn,
   /** Appended to the summariser's system prompt (a fence plugin's note). */
   systemNote?: string,
 ): SummarizeFn {
   return async (head, summaryPrompt, signal) => {
     const transcript = renderTranscript(head);
     const userContent = `${transcript}\n\n---\n\n${summaryPrompt}`;
-    const call = streamFn
-      ? async (...a: Parameters<typeof completeSimple>) => (await streamFn(...a)).result()
-      : completeSimple;
-    const reply = await call(
-      model,
-      {
-        systemPrompt: systemNote
-          ? `${SUMMARY_SYSTEM_PROMPT}\n\n${systemNote}`
-          : SUMMARY_SYSTEM_PROMPT,
-        messages: [{ role: "user", content: userContent, timestamp: Date.now() }],
-      },
-      {
-        apiKey,
-        maxTokens: maxTokens ?? SUMMARY_MAX_TOKENS,
-        ...(signal ? { signal } : {}),
-        ...(onPayload ? { onPayload } : {}),
-      },
-    );
+    // pi 1.x transports take a TranscriptContext: the summariser's own system prompt
+    // travels as the leading system message (normalizeContext), never a bare field.
+    const context = {
+      systemPrompt: systemNote
+        ? `${SUMMARY_SYSTEM_PROMPT}\n\n${systemNote}`
+        : SUMMARY_SYSTEM_PROMPT,
+      messages: [{ role: "user" as const, content: userContent, timestamp: Date.now() }],
+    };
+    const callOptions: SimpleStreamOptions = {
+      apiKey,
+      maxTokens: maxTokens ?? SUMMARY_MAX_TOKENS,
+      ...(signal ? { signal } : {}),
+      ...(onPayload ? { onPayload } : {}),
+    };
+    const reply = streamFn
+      ? await (await streamFn(model, normalizeContext(context), callOptions)).result()
+      : await completeSimple(model, context, callOptions);
     // pi reports a failed call as a reply with `stopReason: "error"` (it does
     // not throw). Committing that as "(no summary available)" would drop the
     // head of the history; throw instead so the orchestrator emits
     // `CompactionError` and the run continues uncompacted. Status-only: the
     // provider's text can quote the transcript being summarised.
-    const failed = providerError(reply, false);
+    const failed = providerError(reply, false) ?? unsupportedStop(reply);
     if (failed) throw new Error(`summary call failed: ${failed.message}`);
     // An empty reply ("length" with the budget spent on thinking, or an empty
     // "stop") would also commit "(no summary available)" and lose the head.

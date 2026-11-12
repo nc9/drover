@@ -12,7 +12,11 @@ import { createNoneSandbox } from "@droveragent/sandbox";
 import { createMemoryStorage } from "@droveragent/storage";
 import type { PreResolvedModel } from "@droveragent/model";
 import { untrustedResultsPlugin } from "@droveragent/plugins";
-import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai/compat";
+import {
+  createAssistantMessageEventStream,
+  getCurrentSystemPrompt,
+  type AssistantMessage,
+} from "@earendil-works/pi-ai/compat";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 
 import { summarizeStrategy } from "../src/compaction/index.ts";
@@ -60,10 +64,10 @@ function scripted(script: Array<(c: Call) => AssistantMessage>) {
   const calls: Call[] = [];
   const streamFn: StreamFn = (_m, context) => {
     const call: Call = {
-      systemPrompt: context.systemPrompt ?? "",
-      texts: context.messages.map((m) =>
-        typeof m.content === "string" ? m.content : JSON.stringify(m.content),
-      ),
+      systemPrompt: getCurrentSystemPrompt(context.messages),
+      texts: context.messages
+        .filter((m) => m.role !== "system")
+        .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content))),
     };
     calls.push(call);
     const final = script[Math.min(calls.length - 1, script.length - 1)]!(call);
