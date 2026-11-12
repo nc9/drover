@@ -2,6 +2,38 @@
 
 All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version together.
 
+## 0.3.0-next.3
+
+Prerelease on the `next` dist-tag; all @droveragent packages at 0.3.0-next.3, including the umbrella, which publishes for the first time as `@droveragent/all`.
+
+### Breaking
+
+- `HarnessEvent` has a new kind, `warning` (`code`, `message`, `count`); an exhaustive `switch` over `event.kind` needs a case for it. It has a row in trace format v1 (#77, #21).
+- `HarnessError` has a new member, `SpecConfigError`, for an invalid spec setting or run option: a `toolExecution.parallel` that is not an integer >= 1 (#79, #29), or a `providers` value that is not a provider chain (#83, #81). An exhaustive `switch` over the error tag needs a case for it. Both are caught at run start, before any model call.
+- Behavioural: a `providers` run option must be a chain from `createProviderChain({ providers: [...] })`. A hand-built `{ forRun, preResolvedModels }` object (accepted in 0.3.0-next.1, and hanging the run in 0.3.0-next.2) now fails with `SpecConfigError` naming the option (#83, #81).
+- Behavioural: `amazon-bedrock` chain entries pointing at a FIPS endpoint (`bedrock-runtime-fips.<region>...`) are refused, because pi-ai does not forward `useFipsEndpoint` and the call would silently go to the non-FIPS endpoint. A Bedrock entry with `useEnv: false` and no `apiKey` is refused, because IAM credentials come from the AWS SDK's environment chain; so is one with `useEnv: false` and a custom endpoint that names no region (#76, #74).
+
+### Added
+
+- Parallel tool calls: `spec.toolExecution.parallel` (an integer; default off, one call at a time) runs up to that many `concurrency: "safe"` calls of one model turn at once. Results reach the model in call order, a failure in one call does not cancel the others, and one unsafe call makes its turn sequential. Safe built-ins: `read`, `ls`, `grep`, `find`, `recall`, `skill_load`, `skill_resource`, `show_tool_result`. New `ToolDef.concurrency` and `McpServerConfig.concurrencySafe` (`true` or a list of tool names; MCP tools are sequential by default). `tool_call_end` events of a parallel turn arrive in completion order (#79, #29).
+- `outputRepair: true` (opt-in, default off): before an answer whose JSON does not parse costs a retry turn, it gets one conservative syntactic repair (byte-order mark, comments, trailing commas, typographic quotes, outside strings only; never truncation). `output_validated.repaired: true` marks a repaired answer, and `repairJson(text)` is exported from `@droveragent/harness` (#80, #29).
+- `warning` event `untrusted_unfenced`: untrusted `appendMessages` items went in as written because no fencing plugin is on the run (#77, #21).
+- `streamIdleTimeoutMs` on `RunOptions` / `HarnessDeps` and `createProviderChain`: a model call whose stream yields no event for this long (default 10 minutes; 0 turns it off) ends as a provider failure; in a chain it is a `timeout` that fails over. The compaction summariser and models outside a chain are watched too. `withStreamIdleTimeout` is exported from `@droveragent/model`. A model that reasons silently for longer than the limit times out, so raise it for such models (#83, #81).
+- `ProviderEntry.region` for `amazon-bedrock`: picks the runtime endpoint and the request region (default `AWS_REGION` / `AWS_DEFAULT_REGION` from the entry's environment) (#76, #74).
+
+### Changed
+
+- The umbrella package publishes as `@droveragent/all` (npm refused the unscoped `droveragent` name); install `@droveragent/all@next`, or the scoped `@droveragent/facade` and `@droveragent/core` (#85).
+- `amazon-bedrock` chain entries: `apiKey` is the Bedrock API key, sent as the bearer token; without one (and with the environment allowed) the AWS SDK's default credentials apply. Without a region, the region the endpoint names is pinned, never `process.env.AWS_REGION`. A model declared in `models` needs a `region` or `baseUrl` (#76, #74).
+- `azure-openai-responses` chain entries take the base URL from `baseUrl`, or from `AZURE_OPENAI_BASE_URL` / `AZURE_OPENAI_RESOURCE_NAME` in the entry's environment (not with `useEnv: false`); without one the provider is refused, naming what to set. With `useEnv: false` the API version and deployment name are pinned too (#76, #74).
+- With parallel tool calls, a call still waiting for a slot when the run is aborted is not executed, and `toolExecution: { parallel: 1 }` hashes like no setting (#84, #82).
+
+### Fixed
+
+- Azure and Bedrock chain entries in 0.3.0-next.2 could send the call somewhere other than the entry said: pi-ai's simple stream dropped the pinned Azure base URL and the Bedrock region and bearer token, then read `process.env` (`AZURE_OPENAI_BASE_URL` / `AZURE_OPENAI_RESOURCE_NAME`, `AWS_REGION`, `AWS_BEARER_TOKEN_BEDROCK`) instead, even with `useEnv: false`. An Azure entry with `baseUrl` could reach the process-wide Azure host with the entry's key. Azure and Bedrock calls now go through pi-ai's full `stream()` with the entry's settings, and the region is always pinned (#76, #74).
+- A `providers` value the facade could not use hung the run until the runtime cancelled it (seen in a Worker). It now fails at run start (see Breaking). An unexpected throw inside a run, or in `resumeAgent` before the run starts, resolves `result` with `error.tag: "InternalError"` and ends the event stream; `result` never rejects. A caller abort ends a model call at once, even if the transport ignores its signal (#83, #81).
+- A throwing `wrapUntrusted` on `appendMessages` fails with a `PluginError` naming the plugin that threw, not the first fencing plugin, and leaves the stored run, checkpoint and event log unchanged (#77, #21).
+
 ## 0.3.0-next.2
 
 Prerelease on the `next` dist-tag; all published @droveragent packages at 0.3.0-next.2. The `droveragent` umbrella stays private (unpublished).
