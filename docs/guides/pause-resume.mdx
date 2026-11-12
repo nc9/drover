@@ -7,7 +7,7 @@ drover supports durable pause and resume. The harness checkpoints the
 pi-agent-core message list at every turn boundary; calling `pause()`
 flips the run's status to `paused` and `resumeAgent` picks up from the
 saved messages. With [compaction](/guides/compaction) enabled the
-checkpoint stores the *compacted* history, so resume replays the
+checkpoint stores the _compacted_ history, so resume replays the
 shortened transcript rather than re-deriving it.
 
 ## Prerequisites
@@ -30,14 +30,14 @@ const handle = runAgent(spec, input, { storage });
 (async () => {
   for await (const e of handle.events) {
     if (e.kind === "usage" && /* some condition */ true) {
-      handle.pause();  // flips pauseFlag, aborts the inner loop
+      handle.pause(); // flips pauseFlag, aborts the inner loop
     }
   }
 })();
 
 const result = await handle.result;
-console.log(result.status);  // "paused"
-console.log(result.runId);    // record this for the resume call
+console.log(result.status); // "paused"
+console.log(result.runId); // record this for the resume call
 ```
 
 ## Resume
@@ -47,19 +47,75 @@ import { resumeAgent } from "@droveragent/facade";
 
 const handle = resumeAgent(spec, runId, { storage });
 const result = await handle.result;
-console.log(result.status);  // "success" / "error" / re-paused
+console.log(result.status); // "success" / "error" / re-paused
 ```
 
 `resumeAgent` checks four things before replaying:
 
 1. **Run exists** in storage.
-2. **Status is `paused`** — running success/error/cancelled runs would
+2. **Status is `paused`** (or `success` with `appendMessages`, see
+   below). A `running` run is refused; error/quota/cancelled runs would
    duplicate tool side effects.
 3. **Agent id matches** `spec.id`.
 4. **Spec hash matches** `runRow.specHash`.
 
 Any failure returns `RunResult.error.tag === "ResumeError"`. The Promise
 never rejects.
+
+## Continue a finished run with new input
+
+A run that ended `success` can be carried on when new input arrives: a new
+document for the same case, a follow-up question. `appendMessages` adds user
+turns to the stored history (the final checkpoint of a successful run holds
+the complete conversation, last answer and tool results included) and the
+loop runs again under the same `runId`.
+
+```ts
+import { resumeAgent } from "@droveragent/facade";
+
+// Earlier: const first = await runAgent(spec, { site }, { storage }).result;
+
+async function onNewInput(runId: string, text: string) {
+  const result = await resumeAgent(spec, runId, {
+    storage,
+    appendMessages: [text],
+    // This continuation's own allowance, counted from here:
+    budget: { maxTurns: 8, maxTokens: 200_000, maxCostUsd: 0.5, maxDurationMs: 120_000 },
+  }).result;
+
+  if (result.status === "quota") console.warn(result.error?.message); // "invocation tokens budget exceeded (...)"
+  console.log(result.finalText);
+  console.log(result.usageDelta); // this continuation only
+  console.log(result.usage); // the whole run so far
+  return result;
+}
+```
+
+- Without `appendMessages` only `paused` runs resume; with it, `success`
+  runs can be continued too. `error`, `quota` and `cancelled` runs are refused.
+- `budget` is per invocation: turns, tokens (input + output + cache), USD and
+  wall-clock ms counted from where this call starts. The spec's `quota` still
+  applies too, but only its turns and cost are cumulative over the whole run:
+  `quota.maxDurationMs` restarts with every invocation (resume or
+  continuation). The first breach wins and ends the call `status: "quota"`.
+- `usage` and `usageByProvider` are cumulative over the run (both are stored in
+  the checkpoint); `usageDelta` is this call only.
+- `appendMessages` content is untrusted when it comes from outside your
+  system: it goes into the history as a user turn and can carry prompt
+  injection.
+- Continuations are **not serialised across processes**. A run whose status is
+  `running` is refused, but that check is not atomic: two continuations of one
+  `runId` started at the same moment can both pass it and then run interleaved.
+  That **corrupts the stored run**: their events interleave under one run id
+  with clashing seqs, the checkpoints mix two histories, one message set is
+  lost, and tool side effects may run twice. The host must serialise
+  continuations per `runId`, for example by running each one as a job on
+  `@droveragent/runtime`'s `QueueAdapter` (its job lease gives one holder at a
+  time and `reclaimStale` recovers a crashed one), or with a lock or a DB
+  advisory lock. A storage-level lease is a pending decision (#21).
+- A process that crashes mid-run leaves the run row `running`; resuming it is
+  refused until the host resets the status (once sure nothing is running it).
+  Reclaiming a crashed holder automatically is part of the same lease work.
 
 ## Spec drift
 

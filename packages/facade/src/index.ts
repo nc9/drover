@@ -82,6 +82,7 @@ export type {
   AgentInput,
   AgentOutput,
   HarnessEvent,
+  InvocationBudget,
   RunResult,
 } from "@droveragent/core";
 export { staticRegistry, type AgentRegistry, type PreResolvedModel } from "@droveragent/harness";

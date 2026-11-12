@@ -49,6 +49,12 @@ export interface CheckpointRow {
   toolCalls: ReadonlyArray<string>;
   /** Cumulative output-retry counter. */
   retriesUsed: number;
+  /**
+   * Cumulative `usage` split by serving provider (`RunResult.usageByProvider`), so
+   * a resume or continuation keeps the split. Optional; SQL adapters store it in
+   * the `usage` JSON column (no migration).
+   */
+  usageByProvider?: Record<string, Usage>;
   ts: number;
 }
 
