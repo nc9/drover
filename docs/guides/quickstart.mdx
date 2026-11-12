@@ -29,16 +29,23 @@ JSON, and reports its tokens + cost.
 <CodeGroup>
 
 ```bash bun
-bun add droveragent @sinclair/typebox
+bun add @droveragent/facade @droveragent/core @sinclair/typebox
 ```
 
 </CodeGroup>
+
+<Note>
+The unscoped `droveragent` umbrella is not on npm yet (its name is pending). Install the
+scoped packages: `defineAgent` comes from `@droveragent/core`, `runAgent` from
+`@droveragent/facade`.
+</Note>
 
 ## Define + run an agent
 
 ```ts title="quickstart.ts"
 import { Type } from "@sinclair/typebox";
-import { defineAgent, runAgent } from "droveragent";
+import { defineAgent } from "@droveragent/core";
+import { runAgent } from "@droveragent/facade";
 
 const echo = defineAgent({
   id: "echo",

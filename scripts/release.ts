@@ -12,6 +12,9 @@
 //     Every packed manifest must carry repository { url, directory } matching
 //     this repo, or npm provenance fails with E422. Refuses on a tag ref.
 //
+//   Packages with `"private": true` (scripts/workspace.ts publishOrder) are
+//   left out of every step: not lockstep-checked, not packed, not published.
+//
 //   bun scripts/release.ts publish --dir <dir> [--dry-run]
 //     Publishes the tarballs from `bun scripts/ci.ts pack --out <dir>` with npm
 //     in dependency order (index.json). Skips a name@version only when the
@@ -36,7 +39,9 @@ import {
   PACK_INDEX,
   PACKAGE_ORDER,
   REPO_ROOT,
+  isPrivatePackage,
   packageDir,
+  publishOrder,
   readManifest,
   type PackEntry,
 } from "./workspace.ts";
@@ -73,7 +78,9 @@ const TAG_PREFIX = "refs/tags/v";
 const plan = (args: readonly string[]): void => {
   const ref = flag(args, "--ref") ?? fail("plan: --ref <git ref> is required");
   const isTag = ref.startsWith(TAG_PREFIX);
-  const versions = PACKAGE_ORDER.map((p) => [p, readManifest(packageDir(p)).version] as const);
+  const versions = publishOrder().map((p) => [p, readManifest(packageDir(p)).version] as const);
+  const unpublished = PACKAGE_ORDER.filter(isPrivatePackage);
+  if (unpublished.length > 0) console.log(`ℹ private, not released: ${unpublished.join(", ")}`);
   const version = isTag ? ref.slice(TAG_PREFIX.length) : (versions[0]?.[1] ?? "");
 
   // Tag runs refuse on any problem; dry runs report and continue.
@@ -126,8 +133,14 @@ const plan = (args: readonly string[]): void => {
 
 const readIndex = (dir: string): PackEntry[] => {
   const entries = JSON.parse(readFileSync(join(dir, PACK_INDEX), "utf8")) as PackEntry[];
+  const priv = entries.filter((e) => isPrivatePackage(e.pkg)).map((e) => e.pkg);
+  if (priv.length > 0) fail(`${PACK_INDEX} lists private package(s) ${priv.join(", ")}: repack`);
   const order = entries.map((e) => e.pkg).join(",");
-  if (order !== PACKAGE_ORDER.join(",")) fail(`${PACK_INDEX} order does not match PACKAGE_ORDER`);
+  if (order !== publishOrder().join(",")) {
+    fail(
+      `${PACK_INDEX} order does not match the publish order (PACKAGE_ORDER without private packages)`,
+    );
+  }
   return entries;
 };
 
@@ -182,6 +195,12 @@ const publish = (args: readonly string[]): void => {
       log: (line) => console.log(line),
       fail,
       dryRun,
+      // The packed manifest decides: a tarball marked private is never sent to npm.
+      isPrivate: (e) => {
+        const raw = exec(["tar", "-xzOf", join(dir, e.tarball), "package/package.json"], dir, true);
+        if (raw.code !== 0) return fail(`${e.pkg}: cannot read package.json from ${e.tarball}`);
+        return (JSON.parse(raw.stdout) as { private?: unknown }).private === true;
+      },
     },
     entries,
     ["--provenance"],

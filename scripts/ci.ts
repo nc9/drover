@@ -16,6 +16,8 @@ import { basename, extname, join, resolve } from "node:path";
 import {
   PACK_INDEX,
   PACKAGE_ORDER,
+  isPrivatePackage,
+  publishOrder,
   REPO_ROOT,
   orderProblems,
   packageDir,
@@ -162,7 +164,9 @@ const pack = (args: readonly string[]): void => {
   mkdirSync(out, { recursive: true });
   const versions = workspaceVersions();
   // One entry per package: the verified tarball, or undefined on failure.
-  const results = PACKAGE_ORDER.map((pkg): [string, PackEntry | undefined] => {
+  for (const pkg of PACKAGE_ORDER.filter(isPrivatePackage))
+    console.log(`↷ not packed: ${pkg} is private (never published)`);
+  const results = publishOrder().map((pkg): [string, PackEntry | undefined] => {
     const packed = exec(
       ["bun", "pm", "pack", "--quiet", "--destination", out],
       packageDir(pkg),

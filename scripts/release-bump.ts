@@ -1,5 +1,8 @@
 // Lockstep version bump: every packages/* member (and the `droveragent`
 // umbrella) gets the same version, and bun.lock's workspace versions follow.
+// Private packages (`"private": true`, such as the umbrella until it has a
+// publishable name) are bumped too, so the repo stays lockstep; they are only
+// left out of pack and publish (scripts/workspace.ts publishOrder).
 //
 //   bun scripts/release-bump.ts <version> [--dry-run]
 //
