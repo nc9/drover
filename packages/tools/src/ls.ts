@@ -11,6 +11,8 @@ const InputSchema = Type.Object({
 export function lsTool(sandbox: SandboxAdapter): ToolDef<typeof InputSchema> {
   return defineTool({
     id: "ls",
+    // Read-only: may run alongside other calls of the turn (spec.toolExecution.parallel).
+    concurrency: "safe",
     description: "List directory contents.",
     inputSchema: InputSchema,
     execute: (input, ctx) =>
@@ -19,7 +21,11 @@ export function lsTool(sandbox: SandboxAdapter): ToolDef<typeof InputSchema> {
         yield* sandbox.assertPathAllowed(target);
         const args = input.all ? ["-la"] : ["-l"];
         args.push(target);
-        const result = yield* sandbox.run("ls", args, { cwd: ctx.cwd, env: ctx.env, signal: ctx.signal });
+        const result = yield* sandbox.run("ls", args, {
+          cwd: ctx.cwd,
+          env: ctx.env,
+          signal: ctx.signal,
+        });
         return {
           content: result.stdout || result.stderr || "(empty)",
           isError: result.exitCode !== 0,

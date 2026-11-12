@@ -39,6 +39,8 @@ export function skillResourceTool(opts: SkillResourceOptions): ToolDef<typeof In
   const maxBytes = opts.maxBytes ?? 64 * 1024;
   return defineTool({
     id: "skill_resource",
+    // Read-only: may run alongside other calls of the turn (spec.toolExecution.parallel).
+    concurrency: "safe",
     description:
       "Read or list supporting files in a skill directory. Call without `resource` to list available files, with `resource` to read one. Use after `skill_load` if the skill body references additional files.",
     inputSchema: InputSchema,

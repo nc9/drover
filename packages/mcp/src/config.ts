@@ -6,7 +6,18 @@
  */
 export type McpServerConfig = McpStdioConfig | McpHttpConfig;
 
-export interface McpStdioConfig {
+/** Settings every MCP server config shares. */
+export interface McpCommonConfig {
+  /**
+   * Which of this server's tools may run alongside other calls of a model turn when the agent
+   * enables parallel tool calls (`spec.toolExecution.parallel`): `true` for all of them, or
+   * a list of the server's own tool names (unprefixed). Default: none (MCP tools are
+   * sequential), since drover cannot tell whether a server's tools share state.
+   */
+  concurrencySafe?: boolean | ReadonlyArray<string>;
+}
+
+export interface McpStdioConfig extends McpCommonConfig {
   id: string;
   transport: "stdio";
   /** Executable to spawn. Resolved against PATH. */
@@ -22,7 +33,7 @@ export interface McpStdioConfig {
   cwd?: string;
 }
 
-export interface McpHttpConfig {
+export interface McpHttpConfig extends McpCommonConfig {
   id: string;
   /** `"http"` covers both Streamable-HTTP and SSE (auto-negotiated). */
   transport: "http";

@@ -277,6 +277,14 @@ export interface AgentSpec<ISchema extends TSchema = TSchema, OSchema extends TS
   subagents?: SubagentConfig;
   /** Output-schema self-correction retry budget. Default 2. */
   outputRetries?: number;
+  /**
+   * Tool execution. `parallel`: how many tool calls of one model turn may run at the same
+   * time (an integer >= 1). Omitted or 1: one call at a time, the default. Only tools marked
+   * `concurrency: "safe"` run concurrently, and one call of an unsafe tool in a turn makes
+   * that whole turn sequential. Results reach the model in call order either way; a failure in
+   * one call does not cancel the others. `tool_call_end` events arrive in completion order.
+   */
+  toolExecution?: { parallel?: number };
   /** Plugin bundles (hooks + tools + observers) attached to this agent. */
   plugins?: readonly HarnessPlugin[];
   /** Resource budget — turns, wall-clock, cost. See {@link RunQuota}. */

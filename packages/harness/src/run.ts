@@ -6,6 +6,7 @@ import {
   CancelledError,
   type ChainRecordEntry,
   CompactionConfigError,
+  SpecConfigError,
   createFence,
   type HarnessError,
   type HarnessEvent,
@@ -486,6 +487,19 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       }
     }
 
+    // Parallel tool calls: an integer >= 1 (1 = sequential, the default).
+    const parallel = spec.toolExecution?.parallel;
+    if (parallel !== undefined && !(Number.isInteger(parallel) && parallel >= 1)) {
+      return yield* Effect.fail(
+        new SpecConfigError({
+          runId: ctx.runId,
+          agentId: spec.id,
+          message: `toolExecution.parallel must be an integer >= 1, got ${JSON.stringify(parallel)}`,
+        }),
+      );
+    }
+    const maxParallel = parallel ?? 1;
+
     // A provider chain brings its own models (explicit `preResolvedModels` win)
     // and its own transport, bound to this run's event stream.
     const preResolvedModels = deps.providers
@@ -697,7 +711,19 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       signal: signal ?? ctx.signal,
       run: ctx,
     });
-    const piTools = tools.map((t) => toPiTool(t, buildToolCtx));
+    // With parallel tool calls on, a per-run semaphore caps the calls running at once (pi runs
+    // a parallel turn's calls all at once), and only `concurrency: "safe"` tools are marked
+    // parallel for pi: one sequential tool in a turn makes pi run that turn sequentially.
+    const slots = maxParallel > 1 ? createSemaphore(maxParallel) : undefined;
+    const piTools = tools.map((t) =>
+      toPiTool(
+        t,
+        buildToolCtx,
+        slots
+          ? { executionMode: t.concurrency === "safe" ? "parallel" : "sequential", slots }
+          : undefined,
+      ),
+    );
 
     // Translation state + lastAssistantText tracking for output validation.
     // Counters (turn, usage, retries) initialise from the checkpoint on resume.
@@ -1324,7 +1350,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       model: resolved.model as never,
       convertToLlm: (messages: AgentMessage[]): Message[] => messages as Message[],
       apiKey: resolved.apiKey,
-      toolExecution: "sequential",
+      // Sequential unless the spec enables parallel calls (see `piTools`); the default stays
+      // sequential because pi's parallel mode races on filesystem-mutating tools.
+      toolExecution: maxParallel > 1 ? "parallel" : "sequential",
       ...(effectiveReasoning ? { reasoning: effectiveReasoning } : {}),
       ...(resolved.temperature !== undefined ? { temperature: resolved.temperature } : {}),
       ...(resolved.maxTokens !== undefined ? { maxTokens: resolved.maxTokens } : {}),
@@ -2137,11 +2165,41 @@ export function hashSpec(spec: AgentSpec): string {
     promptTemplate: spec.promptTemplate ?? null,
     lifecycle: spec.lifecycle ?? null,
     compaction: spec.compaction ?? null,
+    // Only when set, so specs without it keep the hash runs were stored under.
+    ...(spec.toolExecution !== undefined ? { toolExecution: spec.toolExecution } : {}),
   });
   for (let i = 0; i < s.length; i++) {
     h = (h * 31 + s.charCodeAt(i)) | 0;
   }
   return (h >>> 0).toString(16);
+}
+
+/** A counting semaphore: at most `n` holders at once, FIFO. */
+function createSemaphore(n: number): { acquire: () => Promise<() => void> } {
+  let free = n;
+  const waiting: Array<() => void> = [];
+  const release = (): void => {
+    const next = waiting.shift();
+    if (next) next();
+    else free += 1;
+  };
+  return {
+    acquire: () =>
+      new Promise<() => void>((resolve) => {
+        const grant = (): void => {
+          let done = false;
+          resolve(() => {
+            if (done) return;
+            done = true;
+            release();
+          });
+        };
+        if (free > 0) {
+          free -= 1;
+          grant();
+        } else waiting.push(grant);
+      }),
+  };
 }
 
 /** Every token the provider reported: input + output + cache read + cache write. */

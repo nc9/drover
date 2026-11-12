@@ -12,6 +12,8 @@ const InputSchema = Type.Object({
 export function readTool(sandbox: SandboxAdapter): ToolDef<typeof InputSchema> {
   return defineTool({
     id: "read",
+    // Read-only: may run alongside other calls of the turn (spec.toolExecution.parallel).
+    concurrency: "safe",
     description: "Read a file. Returns content with optional offset/limit windowing.",
     inputSchema: InputSchema,
     execute: (input, ctx) =>

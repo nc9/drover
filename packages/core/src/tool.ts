@@ -23,6 +23,14 @@ export interface ToolDef<S extends TSchema = TSchema> {
   destructive?: boolean;
   /** Per-tool timeout in milliseconds. */
   timeoutMs?: number;
+  /**
+   * `"safe"`: calls of this tool may run at the same time as other calls of the same model
+   * turn, when the agent enables parallel tool calls (`spec.toolExecution.parallel`). Only for
+   * tools with no shared mutable state: read-only, idempotent, no ordering dependence on other
+   * calls. Default (absent): one call at a time; one unsafe call in a turn makes the whole turn
+   * sequential. A `wrapTool` wrapper that drops this field makes the tool sequential.
+   */
+  concurrency?: "safe";
   execute: (
     input: Static<S>,
     ctx: ToolExecutionContext,
@@ -44,8 +52,12 @@ export interface AnyToolDef {
   inputSchema: TSchema;
   destructive?: boolean;
   timeoutMs?: number;
+  concurrency?: "safe";
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  execute: (input: any, ctx: ToolExecutionContext) => Effect.Effect<ToolResult, SandboxError, never>;
+  execute: (
+    input: any,
+    ctx: ToolExecutionContext,
+  ) => Effect.Effect<ToolResult, SandboxError, never>;
 }
 
 /**

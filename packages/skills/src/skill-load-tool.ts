@@ -1,9 +1,5 @@
 import { Type } from "@sinclair/typebox";
-import {
-  defineTool,
-  type ToolDef,
-  type ToolResult,
-} from "@droveragent/core";
+import { defineTool, type ToolDef, type ToolResult } from "@droveragent/core";
 import { Effect } from "effect";
 
 import { listSkillResources } from "./loader.ts";
@@ -45,6 +41,8 @@ export function skillLoadTool(opts: SkillLoadOptions): ToolDef<typeof InputSchem
   const hintResources = opts.hintResources ?? true;
   return defineTool({
     id: "skill_load",
+    // Read-only: may run alongside other calls of the turn (spec.toolExecution.parallel).
+    concurrency: "safe",
     description:
       "Load the full instructions for a named skill. Use after the system prompt advertises a skill's name and description.",
     inputSchema: InputSchema,

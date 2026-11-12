@@ -37,7 +37,9 @@ Every event has `runId`, `ts`. Turn-scoped events also have `turn`.
 
 Tool calls always come in pairs — `tool_call_start` followed by
 `tool_call_end`. Pair by `toolUseId`. If a run aborts mid-tool, the
-start is recorded but the end may be missing.
+start is recorded but the end may be missing. With parallel tool calls
+(`toolExecution.parallel`) a turn's `tool_call_end` events arrive in
+completion order, not call order, so never pair by position.
 
 ## Subagent observability
 

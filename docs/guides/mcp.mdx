@@ -31,6 +31,11 @@ const configs: McpServerConfig[] = [
 The discriminated union: `stdio` spawns a child process; `http` connects
 via streamable HTTP (also handles SSE).
 
+`concurrencySafe` (`true`, or a list of the server's own tool names) marks tools that may
+run alongside other calls of a turn when the agent enables parallel tool calls
+(`toolExecution.parallel`). Default: none, since drover cannot tell whether a server's tools
+share state.
+
 ## Boot the runtime
 
 ```ts

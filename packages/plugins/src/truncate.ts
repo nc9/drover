@@ -103,6 +103,8 @@ function showToolResultTool(
 ): ToolDef<typeof ShowToolResultInput> {
   return defineTool({
     id: "show_tool_result",
+    // Read-only: may run alongside other calls of the turn (spec.toolExecution.parallel).
+    concurrency: "safe",
     description:
       "Read more of a previously-truncated tool result. The harness truncates large tool outputs; this returns additional bytes from the stored full result. Pass the toolUseId that appeared in the truncation marker.",
     inputSchema: ShowToolResultInput,
