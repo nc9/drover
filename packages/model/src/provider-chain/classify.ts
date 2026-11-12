@@ -28,7 +28,7 @@ export interface ProviderFailure {
  * prompt, a page title), so text an outsider controls could otherwise bench a provider.
  */
 export interface RawFailure {
-  /** pi-ai gives the OpenAI SDK's text, `"<status> <message>"`; only its leading status is read. */
+  /** pi-ai gives the OpenAI SDK's text, `"<status>: <body>"` on pi 1.x, `"<status> <message>"` before; only its leading status is read. */
   message: string;
   status?: number | null;
   /** From `Retry-After` or a structured field, in ms. */
@@ -90,12 +90,12 @@ export function structuredFromBody(
  * 404 -> model_unavailable; 504/408 or the SDK's own transport strings -> timeout; other 5xx -> provider_error;
  * 400/413/422 -> invalid_request; anything else -> other.
  * pi-ai flattens the error and drops the body, so over the plain transport the status is read from
- * the leading code of the SDK text (`"403 ..."`, the only place pi-ai keeps it) and a 403 is
+ * the leading code of the SDK text (`"403: ..."`, the only place pi-ai keeps it) and a 403 is
  * `forbidden`; a custom stream or a response tap supplies `code`/`limitSource`.
  */
 export function classifyFailure(provider: string, raw: RawFailure): ProviderFailure {
   const text = raw.message ?? "";
-  const lead = /^\s*(\d{3})(?:\s|$)/.exec(text);
+  const lead = /^\s*(\d{3})(?::|\s|$)/.exec(text);
   const status = raw.status !== undefined ? raw.status : lead ? Number(lead[1]) : null;
   const out: ProviderFailure = {
     provider,
