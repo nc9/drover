@@ -1,3 +1,4 @@
+import "./version.ts";
 export * from "./bash.ts";
 export * from "./read.ts";
 export * from "./write.ts";

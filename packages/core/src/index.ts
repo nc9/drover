@@ -1,3 +1,4 @@
+import "./version.ts";
 export * from "./agent-spec.ts";
 export * from "./compaction.ts";
 export * from "./context.ts";
@@ -9,3 +10,4 @@ export * from "./result.ts";
 export * from "./trace.ts";
 export * from "./untrusted.ts";
 export * from "./balance.ts";
+export * from "./versions.ts";
