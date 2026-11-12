@@ -33,7 +33,7 @@ Known issue in `0.3.0-next.2`: an Azure or Bedrock chain entry can be redirected
 | #8       | #19      | untrusted-data fence, fail closed (`createFence`, `untrustedResultsPlugin`)                                                 | merged, next.1     |
 | #64      | #45      | fence hardening: live-safe nonce store, per-call result strings, MCP schema budgets, `onRunEnd` on every exit               | merged, next.2     |
 | #66      | #21      | untrusted `appendMessages` items fenced                                                                                     | merged, next.2     |
-| #77      | #21      | #66 nits: PluginError names the fence that threw, `warning` event for an unfenced untrusted item                            | draft, in review   |
+| #77      | #21      | #66 nits: PluginError names the fence that threw, `warning` event for an unfenced untrusted item                            | merged, for next.3 |
 | #9       | #25      | `toolCallCapPlugin` (caps, near-cap warning, `usage(runId)`)                                                                | merged, next.1     |
 | #57      | #37      | `repeatRefusalPlugin` and structured deny codes                                                                             | merged, next.2     |
 | #5       | #24      | `@droveragent/facade/core` Worker-friendly entry                                                                            | merged, next.1     |
@@ -183,7 +183,7 @@ What remains is the structural follow-up to the fence (#20, provenance on the da
     - exact produced strings kept per tool call;
     - `onRunEnd` on every exit, so early failures free per-run state;
     - MCP schema budgets, a `format` allowlist and `required` filtering.
-  - Untrusted `appendMessages` items fenced after `assertResumable` (#66). The nits are in #77: the error names the throwing fence, and a `warning` event fires when nothing fences.
+  - Untrusted `appendMessages` items fenced after `assertResumable` (#66). Since #77 (merged, unreleased, for next.3): the error names the fence that threw, and a `warning` event fires when nothing fences.
 - Provenance rule (the invariant to keep): **anything a tool returns is untrusted unless positively marked trusted, and the mark is stored with the data it describes. Fail closed.** Fence by provenance, never by content; "already fenced" is never inferred from text.
 - Missing:
   - provenance on the data itself, so fencing does not depend on a plugin's side tables (#20, design waiting: A1 to D1 below);
@@ -237,8 +237,9 @@ What remains is the structural follow-up to the fence (#20, provenance on the da
   - a tolerant reader, JSONL export, `summarizeTrace`, and a storage round trip for every kind;
   - rows for `provider_failover`, `budget_warning` and `chain_record`;
   - `toolCalls.repeatedFailures` in the summary (#57).
-- Missing: the `warning` row (with #77); reasoning tokens (#43); an OTel exporter (declared out of scope, kept as a clean slot).
-- Smallest next step: land #77.
+- Since #77 (merged, unreleased, for next.3): a generic `warning` event kind with a trace row (`code`, `message`, `count`).
+- Missing: reasoning tokens (#43); an OTel exporter (declared out of scope, kept as a clean slot).
+- Smallest next step: reasoning tokens (#43).
 
 ### 16. Evals with record and replay
 
@@ -274,7 +275,7 @@ What remains is the structural follow-up to the fence (#20, provenance on the da
 ## Ranked next ten changes
 
 1. Decisions from Nik: #20 provenance (A1 to D1), the #21 lease option, the #46 Miniflare dependency, and the umbrella name. Each unblocks one item below.
-2. Land #76 (Azure and Bedrock base URLs) and #77 (fence nits); release `0.3.0-next.3`.
+2. Land #76 (Azure and Bedrock base URLs, in review); release `0.3.0-next.3` with it and #77 (merged).
 3. #20 provenance on the data, as decided. D1, the harness fencing as the last step, is the structural fix for the class of bugs #8's review rounds kept finding.
 4. #21 lease on continuation (libsql and D1), with expiry, so a crashed holder is reclaimed.
 5. #29 parallel tool calls (opt-in per tool, spec limit) and syntactic output repair (opt-in), as decided overnight.
