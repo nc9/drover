@@ -98,7 +98,8 @@ function exactToken(v: string, what: string): string {
 }
 
 /**
- * Total characters of all `enum` / `const` strings one tool's schema may carry. Each token is
+ * Total characters of all `enum` / `const` / `default` strings (and object keys inside those
+ * values) one tool's schema may carry. Each token is
  * already short and word-like (at most {@link MAX_SCHEMA_TOKEN_CHARS}, few spaces), but a
  * schema can hold many: a list of `ignore_previous_instructions`-style tokens is still text the
  * model reads unfenced. Over this, the tool is refused. Real enums (units, modes, languages,
@@ -261,7 +262,7 @@ export function sanitizeInputSchema(schema: unknown): SchemaSanitizeResult {
     if (tokenChars > MAX_SCHEMA_TOKEN_TOTAL_CHARS) {
       return {
         ok: false,
-        reason: `enum / const strings total ${tokenChars} chars, over the ${MAX_SCHEMA_TOKEN_TOTAL_CHARS}-char cap`,
+        reason: `enum / const / default text totals ${tokenChars} chars, over the ${MAX_SCHEMA_TOKEN_TOTAL_CHARS}-char cap`,
       };
     }
     return { ok: true, schema: out as Record<string, unknown> };
@@ -278,9 +279,10 @@ export const MCP_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 export const MAX_PREFIXED_TOOL_NAME = 64;
 
 /**
- * Characters of every string under an `enum` or `const` keyword, anywhere in the schema.
- * Children of `properties` / `$defs` / `definitions` are keyed by NAME, so a property called
- * `enum` is not mistaken for the keyword.
+ * Characters of every string under an `enum`, `const` or `default` keyword, anywhere in the
+ * schema, object KEYS inside those values included (an object-valued enum entry can carry text
+ * in its keys). Children of `properties` / `$defs` / `definitions` are keyed by NAME, so a
+ * property called `enum` is not mistaken for the keyword.
  */
 function enumConstChars(node: unknown, inToken: boolean, namesHere = false): number {
   if (typeof node === "string") return inToken ? node.length : 0;
@@ -290,9 +292,14 @@ function enumConstChars(node: unknown, inToken: boolean, namesHere = false): num
   if (node === null || typeof node !== "object") return 0;
   let n = 0;
   for (const [k, v] of Object.entries(node)) {
+    if (inToken) n += k.length;
     if (namesHere) n += enumConstChars(v, inToken);
     else {
-      n += enumConstChars(v, inToken || k === "enum" || k === "const", SCHEMA_MAPS.has(k));
+      n += enumConstChars(
+        v,
+        inToken || k === "enum" || k === "const" || k === "default",
+        SCHEMA_MAPS.has(k),
+      );
     }
   }
   return n;
