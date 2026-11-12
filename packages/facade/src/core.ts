@@ -11,7 +11,12 @@ import type {
   RunContext,
   RunResult,
 } from "@droveragent/core";
-import { hashSpec, runAgentEffect, type HarnessDeps } from "@droveragent/harness";
+import {
+  hashSpec,
+  runAgentEffect,
+  type AppendedMessage,
+  type HarnessDeps,
+} from "@droveragent/harness";
 import { SandboxError } from "@droveragent/core";
 import type { SandboxAdapter } from "@droveragent/sandbox";
 
@@ -324,7 +329,13 @@ export interface ResumeOptionsBase extends Omit<RunOptionsBase, "runId"> {
    *
    * Content is UNTRUSTED when it comes from outside your system (a user, an
    * email, a fetched page): it goes into the model's history as a user turn,
-   * so it can carry prompt injection. Treat it like any other user input.
+   * so it can carry prompt injection. Pass such an item as
+   * `{ content, untrusted: true }`: the run's fencing plugins (for example
+   * `untrustedResultsPlugin`, via `wrapUntrusted`, section `"appended-input"`)
+   * fence it before it enters the history, after their `assertResumable`
+   * check passed. A plain string, or an item without `untrusted: true`, goes
+   * in as written. With no fencing plugin on the run, an untrusted item also
+   * goes in as written: the flag fences only when a fence is configured.
    *
    * Concurrency: a run that is `running` is refused (`ResumeError`), but the
    * storage adapter has no compare-and-set, so the check and the status flip
@@ -344,7 +355,7 @@ export interface ResumeOptionsBase extends Omit<RunOptionsBase, "runId"> {
    * continuation's own limits.
    * `RunResult.usage` is cumulative; `RunResult.usageDelta` is this call only.
    */
-  appendMessages?: ReadonlyArray<string>;
+  appendMessages?: ReadonlyArray<string | AppendedMessage>;
   /**
    * Budget for THIS resume or continuation alone: turns, tokens (input +
    * output + cache), USD and wall-clock ms counted from where it starts. The
@@ -456,9 +467,12 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
     if (appending !== undefined && appending.length === 0) {
       return resumeFailure("ResumeError", "appendMessages must contain at least one message");
     }
-    if (appending !== undefined && appending.some((m) => typeof m !== "string")) {
+    if (appending !== undefined && !appending.every(isAppendItem)) {
       // A runtime guard: callers outside TypeScript can pass anything.
-      return resumeFailure("ResumeError", "appendMessages must be strings");
+      return resumeFailure(
+        "ResumeError",
+        "appendMessages must be strings or { content: string, untrusted?: boolean } objects",
+      );
     }
     const continuable = appending !== undefined && runRow.status === "success";
     if (runRow.status !== "paused" && !continuable) {
@@ -495,16 +509,7 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
       );
     }
     const loaded = checkpointResult.right;
-    const checkpoint =
-      loaded && appending
-        ? {
-            ...loaded,
-            messages: [
-              ...(loaded.messages as ReadonlyArray<unknown>),
-              ...appending.map((content) => ({ role: "user", content, timestamp: Date.now() })),
-            ],
-          }
-        : loaded;
+    const checkpoint = loaded;
     if (!checkpoint) {
       return resumeFailure(
         "ResumeError",
@@ -520,6 +525,17 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
       emit: stream.emit,
       deps,
       resumeFrom: checkpoint,
+      // Appended in the harness, after plugins' `assertResumable` (a fence there).
+      ...(appending
+        ? {
+            appendMessages: appending.map(
+              (m): AppendedMessage =>
+                typeof m === "string"
+                  ? { content: m }
+                  : { content: m.content, ...(m.untrusted === true ? { untrusted: true } : {}) },
+            ),
+          }
+        : {}),
       ...(options.budget ? { budget: options.budget } : {}),
       pauseFlag,
       compactFlag,
@@ -557,6 +573,18 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
       if (instructions !== undefined) compactFlag.instructions = instructions;
     },
   };
+}
+
+/** A valid `appendMessages` item: a string, or `{ content: string, untrusted?: boolean }` and no other keys. */
+function isAppendItem(m: unknown): m is string | AppendedMessage {
+  if (typeof m === "string") return true;
+  if (typeof m !== "object" || m === null || Array.isArray(m)) return false;
+  const o = m as Record<string, unknown>;
+  return (
+    typeof o.content === "string" &&
+    (o.untrusted === undefined || typeof o.untrusted === "boolean") &&
+    Object.keys(o).every((k) => k === "content" || k === "untrusted")
+  );
 }
 
 /**
@@ -619,6 +647,7 @@ export {
   staticRegistry,
   withProviderCost,
   type AgentRegistry,
+  type AppendedMessage,
   type PreResolvedModel,
 } from "@droveragent/harness";
 export {

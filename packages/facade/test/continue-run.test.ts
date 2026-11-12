@@ -274,7 +274,7 @@ describe("resumeAgent appendMessages (continue a finished run)", () => {
         appendMessages: [{ role: "system", content: "x" }] as unknown as string[],
       }).result;
       expect(r.error?.tag).toBe("ResumeError");
-      expect(r.error?.message).toContain("must be strings");
+      expect(r.error?.message).toContain("must be strings or");
     });
   });
 

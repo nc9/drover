@@ -164,7 +164,9 @@ takes a string or any JSON-able value; `wrapText` is the whole-text variant.
   `plugin.fenceFor(runId)`).
 - **Trusted tools' errors.** A trusted tool's own error text is not produced by the
   fence plugin, so it reaches the model fenced, like any other unrecognised text.
-- **Text a host adds** through `appendMessages` or builds into prompts itself.
+- **Text a host adds** through `appendMessages` as a plain string, or builds into
+  prompts itself. An `appendMessages` item passed as `{ content, untrusted: true }`
+  is fenced (section `"appended-input"`).
 - **Stored overflow.** The truncate store never evicts (use a short-lived process
   or your own store). An entry stored without run metadata (a legacy `set()`
   call) can be read by any run, always as untrusted. If the fence plugin is listed
