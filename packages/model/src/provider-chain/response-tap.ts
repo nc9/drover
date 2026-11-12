@@ -21,11 +21,14 @@
  * (true for the openai version pi-ai uses). A host that injects its own fetch into
  * the client is not covered; the chain then falls back to the SDK's leading status.
  *
- * The tag is only sent while `globalThis.fetch` is still this tap: if anything
- * replaces the global afterwards (another wrapper, a test double, a second
- * installed copy of `@droveragent/model` whose own tap now sits on top), this tap
- * turns itself off for new attempts rather than send a tag nothing will strip.
- * Classification then falls back to the SDK's leading status.
+ * The tag is only sent while `globalThis.fetch` is this tap. If something replaces
+ * the global afterwards (fetch instrumentation, a test double, a second installed copy
+ * of `@droveragent/model`), the next attempt wraps the CURRENT global again, so the
+ * host's wrapper runs underneath and still sees the request (without the tag). A
+ * global that is one of this tap's own wrappers is reused. Re-wraps are bounded per
+ * process; past that, or when the global cannot be replaced, the tap stays off for new
+ * attempts (one warning per process) rather than send a tag nothing will strip, and
+ * classification falls back to the SDK's leading status.
  */
 import { structuredFromBody, type RawFailure } from "./classify.ts";
 
@@ -167,11 +170,26 @@ export async function readBoundedText(body: ReadableStream<Uint8Array>): Promise
   return text;
 }
 
-/** Patch `globalThis.fetch` once. False when the global cannot be patched (frozen, or a runtime that forbids it): the tap is then off and no tag header is sent. */
-function install(): boolean {
-  if (installed) return true;
-  const original = globalThis.fetch;
-  if (typeof original !== "function") return false;
+/** Marks this module's own fetch wrappers (module-local: another installed copy has its own). */
+const OWN_TAP = Symbol("droveragent.response-tap");
+/** Re-wraps after a host replaced the global (OTel, Sentry, a test double): bounded per process. */
+const MAX_REWRAPS = 8;
+let rewraps = 0;
+let warned = false;
+
+/** One warning per process when the tap has to stay off, naming the cause. */
+function warnOnce(cause: string): void {
+  if (warned) return;
+  warned = true;
+  console.warn(
+    `[@droveragent/model] response tap off: ${cause}. Provider error details (code, type, ` +
+      "retryAfterMs), structured classification and OpenRouter billed cost fall back to the " +
+      "SDK's status.",
+  );
+}
+
+/** A tap over `base`: strips this module's tag, records failed responses, then calls `base`. */
+function makeTapped(base: typeof fetch): typeof fetch {
   const tapped = async (
     input: Parameters<typeof fetch>[0],
     init?: RequestInit,
@@ -180,10 +198,10 @@ function install(): boolean {
       init?.headers ?? (input instanceof Request ? input.headers : undefined),
     );
     const tag = headers.get(TAG_HEADER);
-    if (!tag) return original(input, init);
+    if (!tag) return base(input, init);
     const tracked = live.has(tag);
     headers.delete(TAG_HEADER); // never leaves the process
-    const res = await original(input instanceof Request ? new Request(input, { headers }) : input, {
+    const res = await base(input instanceof Request ? new Request(input, { headers }) : input, {
       ...init,
       headers,
     });
@@ -234,19 +252,50 @@ function install(): boolean {
     if (live.has(tag)) records.set(tag, record);
     return res;
   };
-  try {
-    // Copy own properties (Bun's `fetch.preconnect` is non-enumerable) before the swap.
-    for (const key of Reflect.ownKeys(original)) {
-      if (key === "length" || key === "name" || key === "prototype") continue;
-      const d = Object.getOwnPropertyDescriptor(original, key);
-      if (d) Object.defineProperty(tapped, key, d);
-    }
-    globalThis.fetch = tapped as typeof fetch;
-    if (globalThis.fetch !== tapped) return false;
-    tappedFetch = tapped as typeof fetch;
-  } catch {
+  // Copy own properties (Bun's `fetch.preconnect` is non-enumerable) before the swap.
+  for (const key of Reflect.ownKeys(base)) {
+    if (key === "length" || key === "name" || key === "prototype" || key === OWN_TAP) continue;
+    const d = Object.getOwnPropertyDescriptor(base, key);
+    if (d) Object.defineProperty(tapped, key, d);
+  }
+  Object.defineProperty(tapped, OWN_TAP, { value: true });
+  return tapped as typeof fetch;
+}
+
+/**
+ * Make sure the global `fetch` is this tap. Installs it on first use. When a host replaced the
+ * global afterwards (fetch instrumentation, a test double), wraps the CURRENT global, so the
+ * host's wrapper still runs underneath (it sees the request without the tag); when the global
+ * is one of this tap's own earlier wrappers again (a spy removed), reuses it as is. Re-wraps are
+ * bounded per process (`MAX_REWRAPS`), so a host that keeps replacing the global cannot grow an
+ * unbounded chain; past that, or when the global cannot be replaced (frozen), the tap stays
+ * off and one warning per process says why. False when the tap is off.
+ */
+function ensureTap(): boolean {
+  const current = globalThis.fetch as typeof fetch & { [OWN_TAP]?: true };
+  if (typeof current !== "function") return false;
+  if (installed && current === tappedFetch) return true;
+  if (current[OWN_TAP]) {
+    tappedFetch = current;
+    installed = true;
+    return true;
+  }
+  if (installed && rewraps >= MAX_REWRAPS) {
+    warnOnce(`globalThis.fetch was replaced more than ${MAX_REWRAPS} times after install`);
     return false;
   }
+  const tapped = makeTapped(current);
+  try {
+    globalThis.fetch = tapped;
+  } catch {
+    /* checked below */
+  }
+  if (globalThis.fetch !== tapped) {
+    warnOnce("globalThis.fetch cannot be replaced (frozen or read-only)");
+    return false;
+  }
+  if (installed) rewraps += 1;
+  tappedFetch = tapped;
   installed = true;
   return true;
 }
@@ -270,7 +319,7 @@ const COST_SETTLE_MS = 1_000;
 
 export function startAttemptTap(opts: { cost?: boolean } = {}): AttemptTap {
   // Off when the global cannot be patched, or when it is no longer this tap.
-  if (!install() || globalThis.fetch !== tappedFetch)
+  if (!ensureTap())
     return {
       header: {},
       take: () => undefined,

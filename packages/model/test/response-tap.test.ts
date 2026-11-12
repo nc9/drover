@@ -486,24 +486,112 @@ describe("response tap: structured errors over the real transport", () => {
     expect(typeof pub.startAttemptTap).toBe("function");
   });
 
-  test("the tag is only added while globalThis.fetch is still the tap", () => {
+  test("a host that replaces globalThis.fetch after install is re-wrapped: details still arrive, the host still sees the request (#100)", async () => {
     startAttemptTap().dispose(); // installed
-    expect(attemptTapActive()).toBe(true);
-    const tapped = globalThis.fetch;
-    // Something replaces the global after install (another wrapper, a second copy of the package).
-    globalThis.fetch = Object.assign(
-      (input: Parameters<typeof fetch>[0], init?: RequestInit) => tapped(input, init),
-      tapped,
-    ) as typeof fetch;
+    const ours = globalThis.fetch;
+    const hostSaw: Array<{ url: string; tag: string | null }> = [];
+    // Host instrumentation (OTel / Sentry style): a wrapper that delegates to what it found.
+    const host = ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const h = new Headers(
+        init?.headers ?? (input instanceof Request ? input.headers : undefined),
+      );
+      hostSaw.push({
+        url: input instanceof Request ? input.url : String(input),
+        tag: h.get("x-drover-attempt"),
+      });
+      return ours(input, init);
+    }) as typeof fetch;
+    globalThis.fetch = host;
+    const a = server(() =>
+      json(
+        429,
+        { error: { message: "slow SECRET", code: "insufficient_quota", type: "rate_limit_error" } },
+        { "retry-after": "3" },
+      ),
+    );
     try {
-      expect(attemptTapActive()).toBe(false);
-      const off = startAttemptTap();
-      expect(off.header).toEqual({});
-      expect(off.take()).toBeUndefined();
+      const { result, notices } = await run(chainTo({ openrouter: `${a.base}/v1` }));
+      expect(notices.at(-1)).toMatchObject({ status: 429, code: "insufficient_quota" });
+      expect(result.diagnostics!.at(-1)!.details).toMatchObject({
+        status: 429,
+        code: "insufficient_quota",
+        retryAfterMs: 3000,
+      });
+      // The host's wrapper ran underneath the tap, and never saw the tag.
+      expect(hostSaw.length).toBeGreaterThan(0);
+      expect(hostSaw.every((x) => x.tag === null)).toBe(true);
+      // The tap sits on top of the host's wrapper now.
+      expect(globalThis.fetch).not.toBe(host);
+      expect(attemptTapActive()).toBe(true);
     } finally {
-      globalThis.fetch = tapped;
+      await a.stop();
+      globalThis.fetch = ours;
     }
-    expect(Object.keys(startAttemptTap().header)).toHaveLength(1);
+    // Back to one of the tap's own wrappers: reused as is, no new layer.
+    startAttemptTap().dispose();
+    expect(globalThis.fetch).toBe(ours);
+  });
+
+  test("re-wraps are bounded per process; past the bound the tap stays off with one warning (#100)", async () => {
+    const saved = globalThis.fetch;
+    const warnings: string[] = [];
+    const warn = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+    try {
+      // A fresh module instance: its own install and re-wrap budget.
+      const fresh = (await import(
+        `${import.meta.dir}/../src/provider-chain/response-tap.ts?rewrap-bound`
+      )) as typeof import("../src/provider-chain/response-tap.ts");
+      fresh.startAttemptTap().dispose();
+      let layers = 0;
+      const tagged: boolean[] = [];
+      for (let i = 0; i < 20; i++) {
+        const below = globalThis.fetch;
+        globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+          below(input, init)) as typeof fetch;
+        const before = globalThis.fetch;
+        const t = fresh.startAttemptTap();
+        tagged.push(Object.keys(t.header).length === 1);
+        t.dispose();
+        if (globalThis.fetch !== before) layers += 1;
+      }
+      expect(layers).toBe(8); // MAX_REWRAPS
+      expect(tagged.slice(0, 8).every(Boolean)).toBe(true);
+      expect(tagged.slice(8).some(Boolean)).toBe(false);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("replaced more than 8 times");
+    } finally {
+      console.warn = warn;
+      globalThis.fetch = saved;
+    }
+  });
+
+  test("concurrent attempts through a re-wrapped tap keep their own records (#100)", async () => {
+    startAttemptTap().dispose();
+    const ours = globalThis.fetch;
+    globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+      ours(input, init)) as typeof fetch;
+    const slow = server(() =>
+      json(429, { error: { message: "x", code: "insufficient_quota" } }, { "retry-after": "2" }),
+    );
+    const down = server(() => json(503, { error: { message: "y" } }));
+    try {
+      const [a, b] = await Promise.all([
+        run(chainTo({ openrouter: `${slow.base}/v1` })),
+        run(chainTo({ openrouter: `${down.base}/v1` })),
+      ]);
+      expect(a.result.diagnostics!.at(-1)!.details).toMatchObject({
+        status: 429,
+        code: "insufficient_quota",
+        retryAfterMs: 2000,
+      });
+      expect(b.result.diagnostics!.at(-1)!.details).toMatchObject({ status: 503 });
+      expect(b.result.diagnostics!.at(-1)!.details).not.toHaveProperty("code");
+    } finally {
+      await slow.stop();
+      await down.stop();
+      globalThis.fetch = ours;
+    }
   });
 
   test("the body cap counts bytes and slices one large chunk (5 MB in, 16 KB read)", async () => {
