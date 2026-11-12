@@ -306,10 +306,31 @@ plugins: [
 ];
 ```
 
-Balance sources are host-level (`{ provider, balance() }`); the provider chain knows nothing about
-them. `openRouterBalance` reads `GET /credits` (credits minus usage) from OpenRouter's documented shape; it is not
-verified against the live API, and nothing reads keys from the environment. The failure reason of a lookup is never
-put in the run's error message.
+Balance sources are host-level (`{ provider, balance() }`, from `@droveragent/core`). A provider
+chain can carry them too: give `createProviderChain` a `balances` map (provider name to source) and pass the
+chain as `sources: chain`; its `balanceSources()` lists them in chain order, skipping providers without one,
+and is read on each lookup. Failover never uses them.
+
+`openRouterBalance({ apiKey, mode })` picks what "balance" means:
+
+| `mode` | Endpoint | Reads | Key |
+| --- | --- | --- | --- |
+| `"credits"` (default) | `GET /credits` | account credits minus usage | OpenRouter may require a management (provisioning) key |
+| `"key"` | `GET /key` | `data.limit_remaining`, what this key may still spend | an ordinary API key; a key with no spending limit reads as unknown |
+
+List a `"credits"` source after a `"key"` one to fall back to the account balance. Both are written from
+OpenRouter's documented shapes and are not verified against the live API; nothing reads keys from the
+environment. A lookup error carries the HTTP status only, never the key or the response body, and its
+reason is never put in the run's error message.
+
+```ts
+const chain = createProviderChain({
+  providers: ["openrouter", "anthropic"],
+  balances: { openrouter: openRouterBalance({ apiKey, mode: "key" }) },
+  // ...
+});
+balancePreflightPlugin({ sources: chain, estimateUsd: 0.5 });
+```
 
 **Which calls are checked.** One check per model call of the run that carries the plugin:
 

@@ -98,6 +98,10 @@ export default {
   redundant, not wrong.
 - **Quirks.** A per-provider patch of the pi-ai model: `overrides: { "cloudflare-ai-gateway":
 { compat: { maxTokensField: "max_completion_tokens" } } }`.
+- **Balances.** Optional, per provider: `balances: { openrouter: openRouterBalance({ apiKey }) }`.
+  `chain.balanceSources()` lists them in chain order (providers without one are skipped), so
+  `balancePreflightPlugin({ sources: chain })` checks the providers configured here. Failover
+  ignores them; see [plugins](/guides/plugins) for the OpenRouter `credits` and `key` modes.
 
 ## What fails over
 
