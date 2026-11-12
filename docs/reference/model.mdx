@@ -100,14 +100,16 @@ function createProviderChain(opts: {
 }): ProviderChain;
 ```
 
-`ProviderEntry`: `{ name, apiKey?, baseUrl?, vars?, headers?, models?, useEnv? }`. A provider's
+`ProviderEntry`: `{ name, apiKey?, baseUrl?, vars?, headers?, models?, region?, useEnv? }`
+(`region`: `amazon-bedrock` only). A provider's
 credential, base URL (with `{PLACEHOLDER}` values in `vars`), extra headers and models (by canonical
 id: a provider id, `null`, or a declaration for a model pi-ai does not list) as settings; the
 environment fills only what is absent, and `useEnv: false` turns it off for the entry.
 Placeholders are `{[A-Z0-9_]+}` with values of letters, digits, `_`, `.` or `-`. The base URL
 falls back to `overrides`, then pi-ai's registry URL for the provider and model API; with none,
 the provider is refused, never sent with an empty base URL. See the provider-chain guide for
-header precedence (`Authorization`, `cf-aig-authorization`).
+header precedence (`Authorization`, `cf-aig-authorization`) and the Azure and Bedrock rules
+(Azure needs `baseUrl` or its env vars; Bedrock picks its endpoint from `region`).
 
 ## `withProviderCost`
 

@@ -82,6 +82,16 @@ export default {
   provider and the model's API, also for a model declared in `models`. When none is known the
   provider is refused (`no base URL for provider "..."`): a request is never sent with an empty
   base URL, which the OpenAI SDK would turn into `api.openai.com`.
+- Azure (`azure-openai-responses`): pi-ai lists Azure models without a base URL, so an Azure
+  entry needs `baseUrl` (`https://<resource>.openai.azure.com/openai/v1`), or
+  `AZURE_OPENAI_BASE_URL` / `AZURE_OPENAI_RESOURCE_NAME` in the entry's environment (not read
+  with `useEnv: false`); otherwise the provider is refused. The URL chosen is also passed to
+  pi-ai as `azureBaseUrl`, so its own `process.env` lookup cannot replace it.
+- Bedrock (`amazon-bedrock`): `region` (or `AWS_REGION` / `AWS_DEFAULT_REGION` in the entry's
+  environment) picks `https://bedrock-runtime.<region>.amazonaws.com` and is passed as the
+  request's region; `baseUrl` (a VPC endpoint, a proxy) wins over the derived URL. Without a
+  region a registry model keeps its own catalog URL, and a model declared in `models` is
+  refused (`a declared model needs "region" or "baseUrl"`).
 - Headers: on OpenAI-compatible providers an `Authorization` header in `headers` replaces the
   `apiKey` bearer. On `cloudflare-ai-gateway`, pi-ai sets `cf-aig-authorization` from `apiKey`
   after `headers`, so a `cf-aig-authorization` header has no effect: put the gateway token in

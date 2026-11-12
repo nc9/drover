@@ -7,7 +7,7 @@ import {
   type Model,
 } from "@mariozechner/pi-ai";
 
-import { createProviderChain, type ChainStreamFn } from "../src/index.ts";
+import { createProviderChain, type ChainStreamFn, type ProviderEntry } from "../src/index.ts";
 
 type Seen = { apiKey?: string; baseUrl: string; headers?: Record<string, string>; id: string };
 
@@ -349,5 +349,142 @@ describe("provider entries: base URL and placeholder safety", () => {
       }
       expect(urls).toEqual([]);
     });
+  });
+});
+
+/** #74: Azure (registry lists no base URL) and Bedrock (one URL per region). */
+describe("provider entries: Azure and Bedrock base URLs", () => {
+  type Got = { baseUrl: string; options: Record<string, unknown> };
+  const capture =
+    (got: Got[]): ChainStreamFn =>
+    (model, c, options) => {
+      got.push({ baseUrl: model.baseUrl, options: { ...(options as Record<string, unknown>) } });
+      return recording(model.provider, [])(model, c, options);
+    };
+  const run = async (entry: ProviderEntry, id: string, env: Record<string, string> = {}) => {
+    const got: Got[] = [];
+    const chain = createProviderChain({
+      providers: [entry],
+      env,
+      streams: { [entry.name]: capture(got) },
+    });
+    const r = await callOnce(chain, entry.name, id);
+    return { r, got };
+  };
+
+  test("azure: a plain entry with no base URL is refused, naming what to set", async () => {
+    const { r, got } = await run(
+      { name: "azure-openai-responses", apiKey: "k", useEnv: false },
+      "gpt-4.1",
+      { AZURE_OPENAI_RESOURCE_NAME: "ignored" },
+    );
+    expect(r.stopReason).toBe("error");
+    expect(r.errorMessage).toContain('no base URL for provider "azure-openai-responses"');
+    expect(r.errorMessage).toContain("AZURE_OPENAI_RESOURCE_NAME");
+    expect(got).toEqual([]);
+  });
+
+  test("azure: baseUrl from the entry, or the entry's env (AZURE_OPENAI_BASE_URL, then the resource name); pinned as azureBaseUrl", async () => {
+    const set = await run(
+      {
+        name: "azure-openai-responses",
+        apiKey: "k",
+        baseUrl: "https://acme.openai.azure.com/openai/v1",
+      },
+      "gpt-4.1",
+      { AZURE_OPENAI_BASE_URL: "https://other.openai.azure.com/openai/v1" },
+    );
+    expect(set.got).toEqual([
+      {
+        baseUrl: "https://acme.openai.azure.com/openai/v1",
+        options: expect.objectContaining({
+          azureBaseUrl: "https://acme.openai.azure.com/openai/v1",
+        }),
+      },
+    ]);
+    const byUrl = await run({ name: "azure-openai-responses", apiKey: "k" }, "gpt-4.1", {
+      AZURE_OPENAI_BASE_URL: "https://env.openai.azure.com/openai/v1",
+      AZURE_OPENAI_RESOURCE_NAME: "not-used",
+    });
+    expect(byUrl.got[0]!.baseUrl).toBe("https://env.openai.azure.com/openai/v1");
+    const byName = await run({ name: "azure-openai-responses", apiKey: "k" }, "gpt-4.1", {
+      AZURE_OPENAI_RESOURCE_NAME: "myres",
+    });
+    expect(byName.got[0]!.baseUrl).toBe("https://myres.openai.azure.com/openai/v1");
+    expect(byName.got[0]!.options.azureBaseUrl).toBe("https://myres.openai.azure.com/openai/v1");
+    const badName = await run({ name: "azure-openai-responses", apiKey: "k" }, "gpt-4.1", {
+      AZURE_OPENAI_RESOURCE_NAME: "evil.example.com/x",
+    });
+    expect(badName.r.errorMessage).toContain("no base URL");
+    expect(badName.got).toEqual([]);
+  });
+
+  test("bedrock: the entry's region picks the endpoint and is passed as the request region", async () => {
+    const { got } = await run(
+      { name: "amazon-bedrock", apiKey: "k", region: "eu-west-1", useEnv: false },
+      "amazon.nova-lite-v1:0",
+    );
+    expect(got).toEqual([
+      {
+        baseUrl: "https://bedrock-runtime.eu-west-1.amazonaws.com",
+        options: expect.objectContaining({ region: "eu-west-1" }),
+      },
+    ]);
+  });
+
+  test("bedrock: region from the entry's env; a baseUrl wins over it; a registry model without a region keeps its own URL", async () => {
+    const env = await run({ name: "amazon-bedrock", apiKey: "k" }, "amazon.nova-lite-v1:0", {
+      AWS_REGION: "ap-southeast-2",
+    });
+    expect(env.got[0]!.baseUrl).toBe("https://bedrock-runtime.ap-southeast-2.amazonaws.com");
+    expect(env.got[0]!.options.region).toBe("ap-southeast-2");
+    const custom = await run(
+      {
+        name: "amazon-bedrock",
+        apiKey: "k",
+        region: "eu-west-1",
+        baseUrl: "https://vpce.example/bedrock",
+      },
+      "amazon.nova-lite-v1:0",
+    );
+    expect(custom.got[0]!.baseUrl).toBe("https://vpce.example/bedrock");
+    expect(custom.got[0]!.options.region).toBe("eu-west-1");
+    const plain = await run(
+      { name: "amazon-bedrock", apiKey: "k", useEnv: false },
+      "amazon.nova-lite-v1:0",
+    );
+    expect(plain.got[0]!.baseUrl).toBe("https://bedrock-runtime.us-east-1.amazonaws.com");
+    expect(plain.got[0]!.options.region).toBeUndefined();
+  });
+
+  test("bedrock: a declared model needs a region or baseUrl; a bad region is refused", async () => {
+    const declared = await run(
+      {
+        name: "amazon-bedrock",
+        apiKey: "k",
+        models: { "my/model": { id: "my.model-v1:0", api: "bedrock-converse-stream" } },
+        useEnv: false,
+      },
+      "my/model",
+    );
+    expect(declared.r.errorMessage).toContain('a declared model needs "region" or "baseUrl"');
+    expect(declared.got).toEqual([]);
+    const withRegion = await run(
+      {
+        name: "amazon-bedrock",
+        apiKey: "k",
+        region: "eu-central-1",
+        models: { "my/model": { id: "my.model-v1:0", api: "bedrock-converse-stream" } },
+      },
+      "my/model",
+    );
+    expect(withRegion.got[0]!.baseUrl).toBe("https://bedrock-runtime.eu-central-1.amazonaws.com");
+    const bad = await run(
+      { name: "amazon-bedrock", apiKey: "k", region: "eu-west-1.evil.com" },
+      "amazon.nova-lite-v1:0",
+    );
+    expect(bad.r.errorMessage).toContain("not an AWS region name");
+    expect(bad.r.errorMessage).not.toContain("evil");
+    expect(bad.got).toEqual([]);
   });
 });
