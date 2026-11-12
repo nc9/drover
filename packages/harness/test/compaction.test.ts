@@ -1,7 +1,12 @@
 import { describe, test, expect } from "bun:test";
 import type { CompactionPolicy, HarnessEvent } from "@droveragent/core";
 import { COMPACTION_SUMMARY_MARKER } from "@droveragent/core";
-import type { AssistantMessage, Message, ToolResultMessage, Usage } from "@earendil-works/pi-ai/compat";
+import type {
+  AssistantMessage,
+  Message,
+  ToolResultMessage,
+  Usage,
+} from "@earendil-works/pi-ai/compat";
 
 import {
   buildSummaryMessage,
@@ -571,5 +576,100 @@ describe("maybeCompact", () => {
       },
     });
     expect(seenPrompt).toBe("focus on the error");
+  });
+});
+
+// ── system message (pi 1.x carries the prompt and tools as a leading message) ──
+describe("system message handling", () => {
+  const SYS_TEXT = "SYS-PROMPT ".repeat(40);
+  const sys = (): Message =>
+    ({
+      role: "system",
+      content: SYS_TEXT,
+      toolsAdded: [
+        { name: "search", description: "d".repeat(200), parameters: { type: "object" } },
+      ],
+      timestamp: 0,
+    }) as Message;
+
+  test("estimateTokens counts the prompt and the tool declarations", () => {
+    const without = estimateTokens(convo());
+    const withSys = estimateTokens([sys(), ...convo()]);
+    const promptOnly = SYS_TEXT.length / 4;
+    expect(withSys - without).toBeGreaterThan(promptOnly); // tools add on top of the prompt text
+    expect(withSys - without).toBeGreaterThan(0);
+  });
+
+  test("selectHeadTail never puts the system message in the head, with or without the first user turn", () => {
+    const msgs = [sys(), ...convo()];
+    const kept = selectHeadTail(msgs, PRESERVE);
+    expect(kept.prefixEnd).toBe(2); // system + first user
+    expect(kept.headStart).toBe(2);
+    const bare = selectHeadTail(msgs, { firstUserTurn: false, recentTurns: 2 });
+    expect(bare.prefixEnd).toBe(1);
+    expect(bare.headStart).toBe(1);
+  });
+
+  for (const strategy of [["drop-tool-results"], ["sliding-window"], ["summarize"]] as const) {
+    test(`maybeCompact (${strategy[0]}) keeps the system message first and verbatim`, async () => {
+      const { emit } = collector();
+      const system = sys();
+      const msgs = [system, ...convo()];
+      const out = await maybeCompact({
+        messages: msgs,
+        policy: {
+          strategy: [...strategy],
+          preserve: PRESERVE,
+          summaryPrompt: "go",
+          trigger: { kind: "context_fraction", value: 0.5 },
+        },
+        contextWindow: 1000,
+        currentTurn: 3,
+        state: initCompactionState(),
+        runId: "r",
+        emit,
+        summarize: async (head) => {
+          // The summariser is handed only the compactable head: never the system message.
+          expect(head.some((m) => m.role === "system")).toBe(false);
+          return "SUMMARY";
+        },
+      });
+      expect(out[0]).toBe(system);
+      expect(out.filter((m) => m.role === "system")).toHaveLength(1);
+      expect(out[1]).toMatchObject({ role: "user", content: "the original task" });
+    });
+  }
+
+  test("renderTranscript skips a system message", () => {
+    expect(renderTranscript([sys(), user("hi")])).toBe("User: hi");
+  });
+
+  test("makeSummarizer sends its own system prompt through a TranscriptContext transport", async () => {
+    const { createAssistantMessageEventStream, getCurrentSystemPrompt } =
+      await import("@earendil-works/pi-ai/compat");
+    let seenPrompt = "";
+    let seenRoles: string[] = [];
+    const model = { id: "m", provider: "p", api: "openai-completions" } as never;
+    const summarize = makeSummarizer(
+      model,
+      "k",
+      undefined,
+      undefined,
+      (_m, context) => {
+        seenPrompt = getCurrentSystemPrompt(context.messages);
+        seenRoles = context.messages.map((m) => m.role);
+        const s = createAssistantMessageEventStream();
+        const reply = asstText("the summary");
+        s.push({ type: "start", partial: reply });
+        s.push({ type: "done", reason: "stop", message: reply });
+        s.end();
+        return s;
+      },
+      "FENCE-NOTE",
+    );
+    expect(await summarize([user("a"), asstText("b")], "summarise")).toBe("the summary");
+    expect(seenPrompt).toContain("summarization assistant");
+    expect(seenPrompt).toContain("FENCE-NOTE");
+    expect(seenRoles).toEqual(["system", "user"]);
   });
 });
