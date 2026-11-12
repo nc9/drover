@@ -30,11 +30,23 @@
  * (only the request hash and the response events are), and a failed call's raw
  * provider text is replaced by its status-only form unless `keepProviderText`.
  */
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
+import {
+  createAssistantMessageEventStream,
+  getCurrentSystemPrompt,
+  getCurrentTools,
+} from "@earendil-works/pi-ai/compat";
 import type { AssistantMessage, AssistantMessageEvent } from "@earendil-works/pi-ai/compat";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 
-export const RECORDING_VERSION = 1;
+/**
+ * Recording format version.
+ *
+ * 2: the request key reads the transcript's system messages (pi 1.x carries the system
+ * prompt and tool declarations there, not in `Context.systemPrompt` / `Context.tools`).
+ * A version 1 recording was keyed on the old fields and cannot match any request, so
+ * `replayStream` rejects it with a re-record error.
+ */
+export const RECORDING_VERSION = 2;
 
 /** One model call: the request fingerprint and the full event stream it produced. */
 export interface RecordedTurn {
@@ -135,7 +147,10 @@ export class ReplayExhaustedError extends Error {
   }
 }
 
-/** Canonical JSON: sorted keys, `timestamp` dropped (it differs on every run). */
+/**
+ * Canonical JSON: sorted keys, wall-clock fields dropped. `timestamp` differs on every run;
+ * pi 1.x also stamps `durationMs` (measured tool and call time) on tool results and replies.
+ */
 const canonical = (v: unknown, omit: ReadonlySet<string> = TIMESTAMP_ONLY): string => {
   if (Array.isArray(v)) return `[${v.map((x) => canonical(x, omit)).join(",")}]`;
   if (v !== null && typeof v === "object") {
@@ -148,9 +163,9 @@ const canonical = (v: unknown, omit: ReadonlySet<string> = TIMESTAMP_ONLY): stri
   }
   return JSON.stringify(v) ?? "null";
 };
-const TIMESTAMP_ONLY: ReadonlySet<string> = new Set(["timestamp"]);
+const TIMESTAMP_ONLY: ReadonlySet<string> = new Set(["timestamp", "durationMs"]);
 /** Fields that differ between two otherwise identical answers (a provider's per-response id, clocks). */
-const VOLATILE_ANSWER_FIELDS: ReadonlySet<string> = new Set(["timestamp", "responseId"]);
+const VOLATILE_ANSWER_FIELDS: ReadonlySet<string> = new Set(["timestamp", "durationMs", "responseId"]);
 /** An answer's identity for the ambiguity check: its events, without volatile fields, key order ignored. */
 const answerKey = (t: RecordedTurn): string => canonical(t.events, VOLATILE_ANSWER_FIELDS);
 
@@ -168,19 +183,25 @@ const hashString = (s: string): string => {
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, "0");
 };
 
+/**
+ * What a request is keyed on, read from the transcript: the current system prompt and tool
+ * names (every system message replayed), and the conversation without its system messages.
+ */
+const requestParts = (context: StreamArgs[1]) => ({
+  systemPrompt: getCurrentSystemPrompt(context.messages),
+  tools: getCurrentTools(context.messages).map((t) => t.name),
+  messages: context.messages.filter((m) => m.role !== "system"),
+});
+
 /** Fingerprint of a model request: system prompt, messages and tool names. */
 export const hashRequest = (context: StreamArgs[1]): string =>
-  hashString(
-    canonical({
-      systemPrompt: context.systemPrompt,
-      messages: context.messages,
-      tools: (context.tools ?? []).map((t) => t.name),
-    }),
-  );
+  hashString(canonical(requestParts(context)));
 
 /** Conversation key: the system prompt and the first message identify one agent run. */
-export const threadKey = (context: StreamArgs[1]): string =>
-  hashString(canonical({ systemPrompt: context.systemPrompt, first: context.messages[0] ?? null }));
+export const threadKey = (context: StreamArgs[1]): string => {
+  const { systemPrompt, messages } = requestParts(context);
+  return hashString(canonical({ systemPrompt, first: messages[0] ?? null }));
+};
 
 /** `<status> ...` -> `provider error <status>`; anything else -> `provider error`. Same rule as the harness. */
 const statusOnly = (text: string | undefined): string => {
@@ -381,7 +402,11 @@ export interface ReplayOptions {
  */
 export const replayStream = (recording: StreamRecording, options: ReplayOptions = {}): StreamFn => {
   if (recording.version !== RECORDING_VERSION) {
-    throw new Error(`unsupported recording version ${String(recording.version)}`);
+    throw new Error(
+      `unsupported recording version ${String(recording.version)} (this build reads ${RECORDING_VERSION}): ` +
+        `re-record it. Version 1 recordings were keyed on the pre-pi-1.x request shape (system prompt as a ` +
+        `context field) and cannot match a request made now.`,
+    );
   }
   const threads = new Map<string, RecordedTurn[]>();
   for (const t of [...recording.turns].sort((a, b) => a.threadIndex - b.threadIndex)) {

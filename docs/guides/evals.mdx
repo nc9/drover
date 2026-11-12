@@ -149,12 +149,18 @@ message (a task id) and record again. A sequential repeat of the same request (a
 not ambiguous: it is served in recorded order.
 
 **Drift.** Each turn stores a hash of its request (system prompt, messages, tool names;
-`timestamp` fields excluded). A request that matches no recorded turn fails the call with
+`timestamp` and `durationMs` fields excluded). With pi 1.x the system prompt and the tool
+declarations live in the transcript's leading system message, so that is where the hash
+reads them from. A request that matches no recorded turn fails the call with
 `ReplayDriftError`, naming the call (`replay drift at call 1 of thread 3f... (recorded turn
 1)`), so a changed prompt or tool result fails loudly. `onDrift: "ignore"` or a callback
 replays the thread's next turn anyway (or, for an unknown thread, the next turn in recording
 order). More calls than recorded: `ReplayExhaustedError`. The hashes are a 53-bit change
 detector, not an integrity check: never use them to authenticate a recording.
+
+**Format version.** `RECORDING_VERSION` is `2`. Version 1 recordings were keyed on the
+pre-pi-1.x request shape and cannot match any request made now, so `replayStream` rejects
+them with an error telling you to re-record.
 
 **Determinism.** Replay returns the recorded events verbatim (deep copies): content,
 tool-call ids and usage are the recorded ones, so events and output match the recorded run
@@ -212,8 +218,8 @@ const fake = fakeProvider([
 | `faults.empty()`                                  | a completion with no content and zero usage                                 |
 | `reply.text(text)` / `reply.toolCall(name, args)` | a normal answer; tool-call ids are `call_<n>`                               |
 
-Failures are pi-shaped by default: an `error` event with `errorMessage` `"<status> <text>"`,
-which is what pi-ai produces over the real transport. `structured: true` throws an error
+Failures are pi-shaped by default: an `error` event with `errorMessage` `"<status>: <text>"`,
+the shape pi-ai 1.x produces over the real transport. `structured: true` throws an error
 carrying `status`, `error.code` and `retryAfterMs` instead: that is what a provider chain
 reads from a custom transport (a region refusal is then `region_refused`), but outside a
 chain a thrown error fails the loop, so use it only as a chain `streams` entry.

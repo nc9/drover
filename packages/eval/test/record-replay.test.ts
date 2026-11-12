@@ -4,12 +4,18 @@ import { Type } from "@sinclair/typebox";
 import { defineAgent, type HarnessEvent, type RunContext } from "@droveragent/core";
 import { runAgentEffect, type HarnessDeps } from "@droveragent/harness";
 import { createNoneSandbox } from "@droveragent/sandbox";
-import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai/compat";
+import {
+  createAssistantMessageEventStream,
+  getCurrentSystemPrompt,
+  normalizeContext,
+  type AssistantMessage,
+} from "@earendil-works/pi-ai/compat";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 
 import {
   ReplayAmbiguousError,
   ReplayDriftError,
+  RECORDING_VERSION,
   ReplayExhaustedError,
   createRecorder,
   hashRequest,
@@ -191,8 +197,56 @@ describe("record / replay", () => {
   });
 
   test("exhausted: more calls than recorded throws ReplayExhaustedError", () => {
-    const { fn } = { fn: replayStream({ version: 1, turns: [] }) };
-    expect(() => fn(fakeModel, { messages: [] })).toThrow(ReplayExhaustedError);
+    const { fn } = { fn: replayStream({ version: RECORDING_VERSION, turns: [] }) };
+    expect(() => fn(fakeModel, normalizeContext(normalizeContext({ messages: [] })))).toThrow(
+      ReplayExhaustedError,
+    );
+  });
+
+  test("an old (version 1) recording is rejected with a re-record error", () => {
+    expect(() => replayStream({ version: 1 as never, turns: [] })).toThrow(/re-record/);
+  });
+
+  test("the request key reads the transcript's system message: prompt and tool names", () => {
+    const user = { role: "user" as const, content: "q", timestamp: 1 };
+    const tool = (name: string) => ({ name, description: "d", parameters: { type: "object" } });
+    const base = normalizeContext({ systemPrompt: "one", messages: [user], tools: [tool("a")] });
+    const same = normalizeContext({ systemPrompt: "one", messages: [user], tools: [tool("a")] });
+    const otherPrompt = normalizeContext({
+      systemPrompt: "two",
+      messages: [user],
+      tools: [tool("a")],
+    });
+    const otherTools = normalizeContext({
+      systemPrompt: "one",
+      messages: [user],
+      tools: [tool("a"), tool("b")],
+    });
+    expect(hashRequest(base)).toBe(hashRequest(same));
+    expect(hashRequest(base)).not.toBe(hashRequest(otherPrompt));
+    expect(hashRequest(base)).not.toBe(hashRequest(otherTools));
+    expect(threadKey(base)).not.toBe(threadKey(otherPrompt));
+    expect(threadKey(base)).toBe(threadKey(otherTools)); // tools are not part of the thread
+  });
+
+  test("wall-clock durationMs (pi 1.x) does not change the request key", () => {
+    const call = (ms: number) =>
+      normalizeContext({
+        systemPrompt: "s",
+        messages: [
+          { role: "user" as const, content: "q", timestamp: 1 },
+          {
+            role: "toolResult" as const,
+            toolCallId: "c",
+            toolName: "read",
+            content: [{ type: "text" as const, text: "x" }],
+            isError: false,
+            timestamp: 2,
+            durationMs: ms,
+          },
+        ],
+      });
+    expect(hashRequest(call(3))).toBe(hashRequest(call(900)));
   });
 
   test("a real stream that throws is recorded as an error turn and replays as one", async () => {
@@ -201,17 +255,21 @@ describe("record / replay", () => {
       throw new Error("provider down");
     };
     const wrapped = recordStream(boom, rec.sink);
-    const s = await wrapped(fakeModel, { messages: [] });
+    const s = await wrapped(fakeModel, normalizeContext({ messages: [] }));
     const result = await s.result();
     expect(result.stopReason).toBe("error");
     // The live run sees the real error; the recording keeps only its status-only form.
     expect(result.errorMessage).toBe("provider down");
-    const replayed = await replayStream(rec.recording())(fakeModel, { messages: [] });
+    const replayed = await replayStream(rec.recording())(
+      fakeModel,
+      normalizeContext({ messages: [] }),
+    );
     expect((await replayed.result()).errorMessage).toBe("provider error");
     const kept = createRecorder();
-    const s2 = await recordStream(boom, kept.sink, { keepProviderText: true })(fakeModel, {
-      messages: [],
-    });
+    const s2 = await recordStream(boom, kept.sink, { keepProviderText: true })(
+      fakeModel,
+      normalizeContext({ messages: [] }),
+    );
     await s2.result();
     expect(JSON.stringify(kept.recording())).toContain("provider down");
   });
@@ -240,19 +298,29 @@ describe("record / replay", () => {
 
   test("parallel subagents: calls keyed by thread replay correctly in any interleaving", async () => {
     // Two conversations (two subagents), two calls each; the reply names the thread and call.
-    const ctxFor = (who: string, turn: number) => ({
-      systemPrompt: `agent ${who}`,
-      messages: [
-        { role: "user" as const, content: `task for ${who}`, timestamp: 1 },
-        ...(turn > 0
-          ? [{ role: "user" as const, content: `follow-up ${turn}`, timestamp: 2 }]
-          : []),
-      ],
-    });
+    const ctxFor = (who: string, turn: number) =>
+      normalizeContext({
+        systemPrompt: `agent ${who}`,
+        messages: [
+          { role: "user" as const, content: `task for ${who}`, timestamp: 1 },
+          ...(turn > 0
+            ? [{ role: "user" as const, content: `follow-up ${turn}`, timestamp: 2 }]
+            : []),
+        ],
+      });
     const real: StreamFn = (_m, context) => {
       const s = createAssistantMessageEventStream();
-      const who = String(context.systemPrompt);
-      const msg = base([{ type: "text", text: `${who} #${context.messages.length}` }], "stop", 1);
+      const who = getCurrentSystemPrompt(context.messages);
+      const msg = base(
+        [
+          {
+            type: "text",
+            text: `${who} #${context.messages.filter((m) => m.role !== "system").length}`,
+          },
+        ],
+        "stop",
+        1,
+      );
       s.push({ type: "done", reason: "stop", message: msg });
       s.end();
       return s;
@@ -324,11 +392,10 @@ describe("record / replay", () => {
     };
     const fn = recordStream(failing, rec.sink);
     await (
-      await fn(
-        fakeModel,
-        { messages: [] },
-        { apiKey: "sk-or-SECRET-KEY", headers: { authorization: "Bearer SECRET-BEARER" } },
-      )
+      await fn(fakeModel, normalizeContext({ messages: [] }), {
+        apiKey: "sk-or-SECRET-KEY",
+        headers: { authorization: "Bearer SECRET-BEARER" },
+      })
     ).result();
     const json = JSON.stringify(rec.recording());
     expect(json).not.toContain("SECRET");
@@ -390,10 +457,10 @@ describe("record / replay", () => {
     };
     const rec = createRecorder();
     const fn = recordStream(slow, rec.sink);
-    const same = {
+    const same = normalizeContext({
       systemPrompt: "child",
       messages: [{ role: "user" as const, content: "task", timestamp: 1 }],
-    };
+    });
     await Promise.all([
       (async () => (await fn(fakeModel, same)).result())(),
       (async () => (await fn(fakeModel, same)).result())(),
@@ -429,10 +496,10 @@ describe("record / replay", () => {
     };
     const rec = createRecorder();
     const fn = recordStream(retrying, rec.sink);
-    const ctxSame = {
+    const ctxSame = normalizeContext({
       systemPrompt: "s",
       messages: [{ role: "user" as const, content: "q", timestamp: 1 }],
-    };
+    });
     await (await fn(fakeModel, ctxSame)).result();
     await (await fn(fakeModel, ctxSame)).result();
     const replay = replayStream(rec.recording());
@@ -441,13 +508,14 @@ describe("record / replay", () => {
   });
 
   describe("ambiguity check details", () => {
-    const ctxOf = (second?: string) => ({
-      systemPrompt: "child",
-      messages: [
-        { role: "user" as const, content: "task", timestamp: 1 },
-        ...(second ? [{ role: "user" as const, content: second, timestamp: 2 }] : []),
-      ],
-    });
+    const ctxOf = (second?: string) =>
+      normalizeContext({
+        systemPrompt: "child",
+        messages: [
+          { role: "user" as const, content: "task", timestamp: 1 },
+          ...(second ? [{ role: "user" as const, content: second, timestamp: 2 }] : []),
+        ],
+      });
     const turn = (
       index: number,
       threadIndex: number,
@@ -479,7 +547,7 @@ describe("record / replay", () => {
     test("concurrent answers that differ only in timestamp or responseId are not ambiguous", async () => {
       const c = ctxOf();
       const recording: StreamRecording = {
-        version: 1,
+        version: RECORDING_VERSION,
         turns: [
           turn(0, 0, c, "same", { concurrent: true }, "gen-1", 100),
           turn(1, 1, c, "same", { concurrent: true }, "gen-2", 200),
@@ -494,7 +562,7 @@ describe("record / replay", () => {
       const first = ctxOf();
       const later = ctxOf("follow-up");
       const recording: StreamRecording = {
-        version: 1,
+        version: RECORDING_VERSION,
         turns: [
           // Two concurrent calls with the same answer earlier in the thread.
           turn(0, 0, first, "same", { concurrent: true }),
@@ -530,13 +598,13 @@ describe("record / replay", () => {
       };
       const fn = recordStream(fast, rec.sink);
       // A BigInt in the history makes the request hash throw (the thread key only reads the first message).
-      const unhashable = {
+      const unhashable = normalizeContext({
         systemPrompt: "child",
         messages: [
           { role: "user" as const, content: "task", timestamp: 1 },
-          { role: "user" as const, content: "x", timestamp: 2, extra: 1n },
+          { role: "user" as const, content: "x", timestamp: 2, extra: 1n } as never,
         ],
-      };
+      });
       expect(() => fn(fakeModel, unhashable as never)).toThrow();
       await (await fn(fakeModel, ctxOf())).result();
       expect(rec.recording().turns.every((t) => !t.concurrent)).toBe(true);

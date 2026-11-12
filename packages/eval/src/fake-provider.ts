@@ -8,8 +8,8 @@
  *   createProviderChain({ providers: ["openrouter", "x"], streams: { openrouter: fake.streamFn, ... } });
  *
  * Failures are pi-shaped by default: an `error` event whose `errorMessage` is
- * `"<status> <text>"`, exactly what pi-ai produces over the real transport
- * (no response body, no headers), so the harness ends the run `ProviderError`
+ * `"<status>: <text>"`, the shape pi-ai 1.x produces over the real transport
+ * (the status, then the response body; no headers), so the harness ends the run `ProviderError`
  * and a chain classifies from the leading status. `structured: true` THROWS an
  * error carrying `status`, `error.code` and `retryAfterMs` instead, which is
  * what a provider chain reads from a custom transport (a region refusal is then
@@ -17,7 +17,11 @@
  * fails the loop (`LoopError`), so use `structured` only under a chain.
  */
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
-import type { AssistantMessage, AssistantMessageEvent } from "@earendil-works/pi-ai/compat";
+import type {
+  AssistantMessage,
+  AssistantMessageEvent,
+  JsonObject,
+} from "@earendil-works/pi-ai/compat";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 
 type StreamArgs = Parameters<StreamFn>;
@@ -185,7 +189,8 @@ export function fakeProvider(
               type: "toolCall",
               id: step.id ?? `call_${n}`,
               name: step.name,
-              arguments: step.arguments,
+              // pi 1.x tool-call arguments are JSON-only; a round trip enforces that.
+              arguments: JSON.parse(JSON.stringify(step.arguments)) as JsonObject,
             },
           ],
           usage: usageOf(step.usage),
@@ -215,7 +220,7 @@ export function fakeProvider(
           step.status === 429 && step.retryAfterMs !== undefined && !step.structured
             ? ` Retry-After: ${step.retryAfterMs / 1000}`
             : "";
-        const text = `${step.status} ${step.message ?? "error"}${hint}`;
+        const text = `${step.status}: ${step.message ?? "error"}${hint}`;
         if (step.structured) {
           throw Object.assign(new Error(text), {
             status: step.status,
