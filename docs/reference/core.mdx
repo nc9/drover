@@ -13,31 +13,46 @@ import {
   defineAgent,
   defineTool,
   // types
-  type AgentSpec, type AgentInput, type AgentOutput,
-  type ModelSpec, type ReasoningLevel, type SubagentConfig,
+  type AgentSpec,
+  type AgentInput,
+  type AgentOutput,
+  type ModelSpec,
+  type ReasoningLevel,
+  type SubagentConfig,
   type SystemPromptFn,
   type RunContext,
-  type RunResult, type RunStatus,
-  type HarnessEvent, type EventOfKind,
-  type ToolResult, type Usage,
-  type HarnessPlugin, type ToolDecision, type ErrorRecovery,
+  type RunResult,
+  type RunStatus,
+  type HarnessEvent,
+  type EventOfKind,
+  type ToolResult,
+  type Usage,
+  type HarnessPlugin,
+  type ToolDecision,
+  type ErrorRecovery,
   type HistoryMessage,
-  type ToolDef, type AnyToolDef, type ToolExecutionContext,
+  type ToolDef,
+  type AnyToolDef,
+  type ToolExecutionContext,
   // errors
   type HarnessError,
-  InputValidationError, OutputValidationError,
-  SubagentLimitError, QuotaExceededError,
-  CancelledError, PausedForConfirmationError,
-  ModelError, SandboxError, StorageError, PluginError,
+  InputValidationError,
+  OutputValidationError,
+  SubagentLimitError,
+  QuotaExceededError,
+  CancelledError,
+  PausedForConfirmationError,
+  ModelError,
+  SandboxError,
+  StorageError,
+  PluginError,
 } from "@droveragent/core";
 ```
 
 ## `defineAgent`
 
 ```ts
-function defineAgent<I extends TSchema, O extends TSchema>(
-  spec: AgentSpec<I, O>
-): AgentSpec<I, O>;
+function defineAgent<I extends TSchema, O extends TSchema>(spec: AgentSpec<I, O>): AgentSpec<I, O>;
 ```
 
 Identity builder. Returns the spec unchanged; exists so TypeScript
@@ -91,19 +106,19 @@ called. The Promise resolution NEVER rejects — typed errors fold into
 
 ## Tagged errors quick reference
 
-| `_tag` | when |
-| --- | --- |
-| `InputValidationError` | input failed `inputSchema` |
-| `OutputValidationError` | output failed `outputSchema` after retry budget |
-| `SubagentLimitError` | depth/fan-out/allowed limit hit |
-| `QuotaExceededError` | a run budget (turns / duration / cost) was exhausted |
-| `CancelledError` | caller aborted |
-| `PausedForConfirmationError` | confirm-gate triggered (reserved for runtime) |
-| `ModelError` | model resolution failed (routing miss / circuit open) |
-| `ProviderError` | a model call failed (HTTP 4xx/5xx) or returned an empty completion; `RunResult.error` only, see below |
-| `SandboxError` | sandbox refused or failed an exec/read/write |
-| `StorageError` | storage adapter failure |
-| `PluginError` | plugin hook threw |
+| `_tag`                       | when                                                                                                                                |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `InputValidationError`       | input failed `inputSchema`                                                                                                          |
+| `OutputValidationError`      | output failed `outputSchema` after retry budget                                                                                     |
+| `SubagentLimitError`         | depth/fan-out/allowed limit hit                                                                                                     |
+| `QuotaExceededError`         | a run budget (turns / duration / cost) was exhausted (a validated final answer on the last allowed turn is a success, not a breach) |
+| `CancelledError`             | caller aborted                                                                                                                      |
+| `PausedForConfirmationError` | confirm-gate triggered (reserved for runtime)                                                                                       |
+| `ModelError`                 | model resolution failed (routing miss / circuit open)                                                                               |
+| `ProviderError`              | a model call failed (HTTP 4xx/5xx) or returned an empty completion; `RunResult.error` only, see below                               |
+| `SandboxError`               | sandbox refused or failed an exec/read/write                                                                                        |
+| `StorageError`               | storage adapter failure                                                                                                             |
+| `PluginError`                | plugin hook threw                                                                                                                   |
 
 ## Provider failures (`ProviderError`)
 
@@ -115,13 +130,13 @@ and no output decode is attempted. When the provider reported an HTTP status,
 it is also a number on `error.status` and on the `error` event's `status`
 (absent when unknown).
 
-| final assistant message | `error.message` | `status` |
-| --- | --- | --- |
-| `stopReason: "error"` with an HTTP status (402, 401, 503, ...) | `provider error 402` | `402` |
-| `stopReason: "error"` with no leading status | `provider error` | absent |
-| `stopReason: "length"`, no tool call and no non-blank text | `model hit max tokens before answering` | absent |
-| no tool call and no non-blank text, and either zero output tokens or the run's first assistant message | `provider returned an empty completion (no content)` | absent |
-| none at all | `provider returned no assistant message` | absent |
+| final assistant message                                                                                | `error.message`                                      | `status` |
+| ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- | -------- |
+| `stopReason: "error"` with an HTTP status (402, 401, 503, ...)                                         | `provider error 402`                                 | `402`    |
+| `stopReason: "error"` with no leading status                                                           | `provider error`                                     | absent   |
+| `stopReason: "length"`, no tool call and no non-blank text                                             | `model hit max tokens before answering`              | absent   |
+| no tool call and no non-blank text, and either zero output tokens or the run's first assistant message | `provider returned an empty completion (no content)` | absent   |
+| none at all                                                                                            | `provider returned no assistant message`             | absent   |
 
 An answer is a tool call or non-blank text; thinking alone is not. A message
 with only tool calls is not an empty completion. An empty end that follows

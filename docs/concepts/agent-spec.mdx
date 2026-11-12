@@ -106,15 +106,19 @@ is emitted once. `wrapUp.message` replaces the default text.
 - **Bounded.** The wrap-up turns run inside the same hard limits: a model that ignores the
   notice, or keeps calling tools, is cut off as before (`cut_off`). Set `at` low enough that
   one more call fits in the remainder.
-- **The answer wins over its own breach.** Once the warning fired, if the run's final answer
-  (the call that ends the run, with no tool call) passes the output contract, it wins over a
-  budget breach caused by that same call: the run is `success` with `outcome: "wrapped_up"`.
-  For `maxTokens` and `maxCostUsd` this is an overshoot and `wrapUp.overshoot` (`dimension`,
-  `limit`, `observed`) records the excess; reaching `maxTurns` on the answer turn is not an
-  overshoot (that turn was allowed). The `postSuccess` lifecycle is skipped in that case (the
-  budget is spent). An answer that fails the output schema, or a breaching call that asked for
-  tools, still ends `quota`. This forgiveness applies only when wrap-up fired: without
-  `quota.wrapUp` any breach ends the run `quota`, as before.
+- **The answer wins over its own breach.** If the run's final answer (the call that ends the
+  run, with no tool call) passes the output contract, it wins over a budget breach caused by
+  that same call: the run is `success` (with `outcome: "wrapped_up"` once the warning fired).
+  - `maxTurns`, for every run: reaching the cap on the answer turn is not a breach (that turn
+    was allowed; `maxTurns` is a budget, not a tripwire) and records no overshoot.
+  - `maxTokens` and `maxCostUsd`, only once the wrap-up warning fired: this is an overshoot and
+    `wrapUp.overshoot` (`dimension`, `limit`, `observed`) records the excess. Without
+    `quota.wrapUp` a cost or token breach ends the run `quota`.
+
+  The `postSuccess` lifecycle is skipped in both cases (the budget is spent). An answer that
+  fails the output schema, or a breaching call that asked for tools, still ends `quota`; a
+  wall-clock breach always does.
+
 - **Output schema.** The wrap-up answer is decoded and validated like any other; output
   retries still apply and still count against the budgets.
 - **Operator text.** The notice is the spec's `wrapUp.message` or the built-in default, never
