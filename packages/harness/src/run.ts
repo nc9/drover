@@ -2192,7 +2192,10 @@ export function hashSpec(spec: AgentSpec): string {
     lifecycle: spec.lifecycle ?? null,
     compaction: spec.compaction ?? null,
     // Each only when set, so specs without them keep the hash runs were stored under.
-    ...(spec.toolExecution !== undefined ? { toolExecution: spec.toolExecution } : {}),
+    // `{ parallel: 1 }` (or `{}`) behaves exactly like no setting, so it hashes like none too.
+    ...(spec.toolExecution?.parallel !== undefined && spec.toolExecution.parallel !== 1
+      ? { toolExecution: spec.toolExecution }
+      : {}),
     ...(spec.outputRepair !== undefined ? { outputRepair: spec.outputRepair } : {}),
   });
   for (let i = 0; i < s.length; i++) {
@@ -2201,8 +2204,12 @@ export function hashSpec(spec: AgentSpec): string {
   return (h >>> 0).toString(16);
 }
 
-/** A counting semaphore: at most `n` holders at once, FIFO. */
-function createSemaphore(n: number): { acquire: () => Promise<() => void> } {
+/**
+ * A counting semaphore: at most `n` holders at once, FIFO. `acquire(signal)` rejects when the
+ * signal is (or becomes) aborted before a slot is granted, and leaves the queue, so a call
+ * still waiting when the run is aborted never executes.
+ */
+function createSemaphore(n: number): { acquire: (signal?: AbortSignal) => Promise<() => void> } {
   let free = n;
   const waiting: Array<() => void> = [];
   const release = (): void => {
@@ -2211,9 +2218,19 @@ function createSemaphore(n: number): { acquire: () => Promise<() => void> } {
     else free += 1;
   };
   return {
-    acquire: () =>
-      new Promise<() => void>((resolve) => {
+    acquire: (signal) =>
+      new Promise<() => void>((resolve, reject) => {
+        if (signal?.aborted) {
+          reject(new Error("aborted before the tool call started"));
+          return;
+        }
+        const onAbort = (): void => {
+          const i = waiting.indexOf(grant);
+          if (i !== -1) waiting.splice(i, 1);
+          reject(new Error("aborted before the tool call started"));
+        };
         const grant = (): void => {
+          signal?.removeEventListener("abort", onAbort);
           let done = false;
           resolve(() => {
             if (done) return;
@@ -2224,7 +2241,10 @@ function createSemaphore(n: number): { acquire: () => Promise<() => void> } {
         if (free > 0) {
           free -= 1;
           grant();
-        } else waiting.push(grant);
+        } else {
+          waiting.push(grant);
+          signal?.addEventListener("abort", onAbort, { once: true });
+        }
       }),
   };
 }

@@ -27,7 +27,7 @@ import type { StreamFn } from "@mariozechner/pi-agent-core";
 // Relative imports: harness does not depend on plugins (no cycle, no new devDependency).
 import { toolCallCapPlugin } from "../../plugins/src/tool-call-cap.ts";
 import { untrustedResultsPlugin } from "../../plugins/src/untrusted-results.ts";
-import { runAgentEffect } from "../src/run.ts";
+import { hashSpec, runAgentEffect } from "../src/run.ts";
 
 const MODEL_NAME = "par-model";
 const fakeModel = {
@@ -123,6 +123,7 @@ const run = async (opts: {
   tools: AnyToolDef[];
   parallel?: number;
   plugins?: HarnessPlugin[];
+  signal?: AbortSignal;
 }) => {
   const { streamFn, seen } = scripted(opts.calls);
   const spec = defineAgent({
@@ -141,7 +142,7 @@ const run = async (opts: {
     depth: 0,
     cwd: process.cwd(),
     env: {},
-    signal: new AbortController().signal,
+    signal: opts.signal ?? new AbortController().signal,
   };
   const either = await Effect.runPromise(
     Effect.either(
@@ -295,5 +296,34 @@ describe("parallel tool calls", () => {
       if (either._tag === "Left")
         expect((either.left as { _tag: string })._tag).toBe("SpecConfigError");
     }
+  });
+
+  test("an abort while calls wait for a slot: the waiting calls never execute", async () => {
+    const g = gauge();
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 20);
+    await run({
+      calls: [80, 80, 80, 80].map((n) => ({ name: "look", n })),
+      tools: [g.tool("look", true)],
+      parallel: 2,
+      signal: ac.signal,
+    });
+    // The first two held the slots when the abort came; the two waiting never started.
+    expect(g.state.order).toHaveLength(2);
+  });
+
+  test("{ parallel: 1 } and {} hash like no toolExecution (same behaviour, same hash)", () => {
+    const base = {
+      id: "h",
+      systemPrompt: "x",
+      inputSchema: Type.Object({}),
+      outputSchema: Type.Unknown(),
+      model: "m",
+      tools: [] as string[],
+    };
+    const h = hashSpec(base);
+    expect(hashSpec({ ...base, toolExecution: { parallel: 1 } })).toBe(h);
+    expect(hashSpec({ ...base, toolExecution: {} })).toBe(h);
+    expect(hashSpec({ ...base, toolExecution: { parallel: 2 } })).not.toBe(h);
   });
 });

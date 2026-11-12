@@ -162,7 +162,8 @@ output-retry before the quota stops the loop. See
 `outputRepair: true` (off by default) gives an answer whose JSON does not parse one
 conservative, syntactic repair before it costs a retry turn. Outside strings, it removes a
 byte-order mark, `//` and `/* */` comments and trailing commas, and turns typographic quotes
-used as delimiters into `"`. It never closes a truncated answer, and never fixes single
+used as delimiters into `"`. Text inside typographic quotes is taken literally: a backslash
+there is escaped, so `“a\nb”` becomes the four characters `a\nb`, not a newline. It never closes a truncated answer, and never fixes single
 quotes, unquoted keys or missing commas, so a cut-off answer still spends a retry instead of
 validating as partial data. A repaired answer is still checked against the schema; when the
 repair is what made it parse, `output_validated` carries `repaired: true`. The repair is

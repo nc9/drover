@@ -36,6 +36,11 @@ run alongside other calls of a turn when the agent enables parallel tool calls
 (`toolExecution.parallel`). Default: none, since drover cannot tell whether a server's tools
 share state.
 
+<Warning>
+  `concurrencySafe: true` trusts EVERY tool the server offers, destructive ones included, and tools
+  the server adds later. Prefer the list form with the read-only tools you have checked.
+</Warning>
+
 ## Boot the runtime
 
 ```ts

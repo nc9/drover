@@ -7,7 +7,9 @@
  * - `//` line comments and `/* *\/` block comments;
  * - a trailing comma before `}` or `]`;
  * - typographic quotes (`“ ” „ ‟`, and `‘ ’` around keys or values) used as string
- *   delimiters, turned into `"` (a `"` inside such a string is escaped).
+ *   delimiters, turned into `"`. The content between them is taken literally: a `"` is
+ *   escaped, and so is a backslash, so `“a\nb”` becomes the four characters `a\nb`, not a
+ *   newline (it was never a JSON escape there).
  *
  * Never repaired: truncation (an unclosed string, object or array is left as it is, so
  * `JSON.parse` still fails and the run spends a retry turn instead of accepting partial

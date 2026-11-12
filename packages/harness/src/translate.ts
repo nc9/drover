@@ -24,7 +24,7 @@ export function toPiTool(
     /** pi's per-tool mode: `"parallel"` only for `concurrency: "safe"` tools. */
     executionMode: "parallel" | "sequential";
     /** The run's semaphore: a slot is held while the tool executes. */
-    slots: { acquire: () => Promise<() => void> };
+    slots: { acquire: (signal?: AbortSignal) => Promise<() => void> };
   },
 ): AgentTool<TSchema> {
   return {
@@ -51,7 +51,8 @@ export function toPiTool(
         signal: base.signal,
         run: base.run,
       };
-      const release = exec ? await exec.slots.acquire() : undefined;
+      // A call still waiting for a slot when the run is aborted is not executed.
+      const release = exec ? await exec.slots.acquire(ctx.signal) : undefined;
       let result: ToolResult;
       try {
         result = await Effect.runPromise(

@@ -28,7 +28,11 @@ export interface ToolDef<S extends TSchema = TSchema> {
    * turn, when the agent enables parallel tool calls (`spec.toolExecution.parallel`). Only for
    * tools with no shared mutable state: read-only, idempotent, no ordering dependence on other
    * calls. Default (absent): one call at a time; one unsafe call in a turn makes the whole turn
-   * sequential. A `wrapTool` wrapper that drops this field makes the tool sequential.
+   * sequential. A `wrapTool` wrapper that spreads the tool (`{ ...tool, execute }`) keeps
+   * `concurrency: "safe"`; a wrapper that adds shared mutable state (a cache, a counter, a
+   * store written per call) must drop it (`{ ...tool, concurrency: undefined }`) unless that
+   * state is safe under concurrent calls. A wrapper that builds a new object without the field
+   * makes the tool sequential.
    */
   concurrency?: "safe";
   execute: (
