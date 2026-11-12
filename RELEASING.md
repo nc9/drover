@@ -36,7 +36,7 @@ Do these before pushing the first release tag.
    maintainers (bypass list). Pushing a `v*` tag starts a release, so only the
    people who may approve one may create one.
 
-3. **npm auth: `NPM_TOKEN` (required for `0.3.0-next.1`).** Create an npm
+3. **npm auth: `NPM_TOKEN` (required for any package's first publish).** Create an npm
    granular access token with read and write access to the `@droveragent`
    scope, allowed to bypass 2FA for publishing.
    Store it as the `NPM_TOKEN` secret **on the `npm-publish` environment**
@@ -53,6 +53,10 @@ Do these before pushing the first release tag.
    - Repository: `drover`
    - Workflow filename: `release.yml`
    - Environment name: `npm-publish`
+
+   A package published for the first time later needs the same step once it
+   exists: after `0.3.0-next.3`, add the trusted publisher for
+   `@droveragent/all` (its first publish goes out with `NPM_TOKEN`).
 
    The workflow pins npm 11.18.0 (trusted publishing needs npm 11.5.1 or later)
    and grants `id-token: write` to the publish job only; npm uses OIDC where a

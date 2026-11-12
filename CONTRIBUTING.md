@@ -143,7 +143,7 @@ The stamp is written into `dist/version.js` at build time (`scripts/postbuild-ve
 
 ### 4. Go back to the published release
 
-Remove the `file:` entries and overrides (tarballs) or run `bun unlink` in each linked package and `bun remove` the links in the consumer, then `bun add droveragent@<version>` and repeat step 3.
+Remove the `file:` entries and overrides (tarballs) or run `bun unlink` in each linked package and `bun remove` the links in the consumer, then `bun add @droveragent/all@<version>` and repeat step 3.
 
 ## Releases
 
