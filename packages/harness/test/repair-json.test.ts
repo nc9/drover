@@ -35,8 +35,22 @@ describe("repairJson", () => {
       const fixed = repairJson(bad);
       expect(() => JSON.parse(fixed ?? bad)).toThrow();
     }
-    // A trailing comma is fixed, but the truncation after it is not.
-    expect(() => JSON.parse(repairJson('{"a": [1, 2,') ?? "")).toThrow();
+    // A trailing comma is fixed (so the result is not null), but the truncation after it is not.
+    const partial = repairJson('{"a": [1, 2,], "b": {"c": 1');
+    expect(partial).not.toBeNull();
+    expect(partial).toBe('{"a": [1, 2], "b": {"c": 1');
+    expect(() => JSON.parse(partial!)).toThrow();
+  });
+
+  test("string contents are untouched when a repair happens elsewhere", () => {
+    const fixed = repairJson('{"u": "a//b", "v": "x, ]", "w": "/* no */", } // c');
+    expect(fixed).not.toBeNull();
+    expect(JSON.parse(fixed!)).toEqual({ u: "a//b", v: "x, ]", w: "/* no */" });
+  });
+
+  test("a backslash inside typographic quotes is kept literally (escaped), not read as an escape", () => {
+    const fixed = repairJson("{\u201Cp\u201D: \u201Ca\\nb\u201D}");
+    expect(JSON.parse(fixed!)).toEqual({ p: "a\\nb" });
   });
 
   test("returns null when nothing changes", () => {
