@@ -52,7 +52,7 @@ console.log(result.status, result.output, result.usage);
 
 <!-- quickstart:end -->
 
-The same program, written against the umbrella's single import, lives at [`packages/droveragent/examples/quickstart.ts`](packages/droveragent/examples/quickstart.ts) and is typechecked in CI. For a full walkthrough see the [quickstart guide](https://nc9.github.io/drover/guides/quickstart).
+The same file lives at [`packages/droveragent/examples/quickstart.ts`](packages/droveragent/examples/quickstart.ts) and is typechecked in CI. For a full walkthrough see the [quickstart guide](https://nc9.github.io/drover/guides/quickstart).
 
 ## What you get
 

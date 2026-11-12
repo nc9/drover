@@ -43,6 +43,7 @@
   },
   "scripts": {
     "typecheck": "tsgo --noEmit",
+    "test": "bun test",
     "build": "tsc -p tsconfig.build.json && bun run ../../scripts/postbuild-dts.ts",
     "prepublishOnly": "tsc -p tsconfig.build.json && bun run ../../scripts/postbuild-dts.ts"
   },
