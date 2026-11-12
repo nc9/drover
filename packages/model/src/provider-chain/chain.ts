@@ -30,9 +30,17 @@ export type ChainStreamFn = (
   options?: SimpleStreamOptions,
 ) => AssistantMessageEventStream | Promise<AssistantMessageEventStream>;
 
+/** What the chain does after a failure of a class: see `ProviderChainOptions.actions`. */
+export type FailoverAction = "stop" | "next" | "skip";
+
 /** What the harness turns into a `provider_failover` event. */
 export interface ProviderFailoverNotice {
   action: "retry" | "failover" | "exhausted";
+  /**
+   * On `failover` and `exhausted`: whether `from` is now skipped (tried last) for the rest
+   * of the run (`true`), or was only passed over for this call (`false`).
+   */
+  benched?: boolean;
   from: string;
   to: string | null;
   failureClass: ProviderFailureClass;
@@ -74,6 +82,17 @@ export interface ProviderChainOptions {
    * structured errors. Default off.
    */
   billedCost?: boolean;
+  /**
+   * The action per failure class, overriding the defaults (`FAILOVER`):
+   * - `"stop"`: end the call here; no other provider is tried.
+   * - `"next"`: try the next provider for THIS call only; this provider is asked first again
+   *   on the next call.
+   * - `"skip"`: try the next provider and skip this one (try it last) for the rest of the run.
+   * E.g. `{ invalid_request: "next" }` when providers differ in the model aliases or request
+   * fields they accept. Omitted classes keep the default. A rate limit keeps its one in-place
+   * retry under `"next"` and `"skip"`.
+   */
+  actions?: Readonly<Partial<Record<ProviderFailureClass, FailoverAction>>>;
   /** Put the providers' own text in the final error message. Off: it can quote the prompt. */
   includeProviderText?: boolean;
   /** Replace a provider's transport (tests, proxies), by provider name. */
@@ -137,6 +156,7 @@ function describeFailure(x: ProviderFailure, includeText: boolean): string {
 /** Class, status and allow-listed code per failure: the fields the harness builds its error from. */
 function failureDiagnostics(
   failures: readonly ProviderFailure[],
+  benchedBy: ReadonlySet<ProviderFailure> = new Set(),
 ): NonNullable<AssistantMessage["diagnostics"]> {
   return failures.map((x) => ({
     type: "provider_failure",
@@ -145,6 +165,7 @@ function failureDiagnostics(
       provider: x.provider,
       failureClass: x.failureClass,
       status: x.status,
+      benched: benchedBy.has(x),
       ...(x.code ? { code: x.code } : {}),
       ...(x.retryAfterMs !== undefined ? { retryAfterMs: x.retryAfterMs } : {}),
       ...(x.headers ? { headers: x.headers } : {}),
@@ -181,6 +202,27 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
   const env = options.env ?? (process.env as Record<string, string | undefined>);
   const sleep = options.sleep ?? defaultSleep;
   const maxWait = options.maxRateLimitWaitMs ?? 10_000;
+  const ACTIONS: ReadonlySet<string> = new Set(["stop", "next", "skip"]);
+  for (const [cls, action] of Object.entries(options.actions ?? {})) {
+    if (!Object.hasOwn(FAILOVER, cls))
+      throw new Error(`createProviderChain: unknown failure class "${cls}" in actions`);
+    if (!ACTIONS.has(action as string))
+      throw new Error(
+        `createProviderChain: action for "${cls}" must be "stop", "next" or "skip", not "${String(action)}"`,
+      );
+  }
+  /** The rule for a class: the default table, unless `actions` overrides it. */
+  const ruleFor = (cls: ProviderFailureClass): (typeof FAILOVER)[ProviderFailureClass] => {
+    const action = own(options.actions, cls);
+    const base = FAILOVER[cls];
+    if (action === undefined) return base;
+    if (action === "stop") return { failover: false };
+    return {
+      failover: true,
+      ...(action === "skip" ? { bench: true as const } : {}),
+      ...(base.retrySame ? { retrySame: true as const } : {}),
+    };
+  };
 
   const idFor = (provider: string, canonicalId: string): string | null => {
     const mapped = own(options.ids, canonicalId);
@@ -385,6 +427,8 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
           ...servable.filter((s) => benched.has(s.provider)),
         ];
         const failures: ProviderFailure[] = [];
+        // The failures that benched their provider, for the chain record.
+        const benchedBy = new Set<ProviderFailure>();
         let last: AssistantMessage | null = null;
         for (let i = 0; i < order.length; i++) {
           const { provider, call } = order[i]!;
@@ -401,7 +445,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
               return end(errorMessage(canonical, provider, "aborted", "aborted"));
             const f = res.failure;
             last = res.message ?? last;
-            const rule = FAILOVER[f.failureClass];
+            const rule = ruleFor(f.failureClass);
             const base = {
               from: provider,
               failureClass: f.failureClass,
@@ -424,12 +468,16 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
               continue;
             }
             failures.push(f);
-            if (rule.bench) benched.add(provider);
+            if (rule.bench) {
+              benched.add(provider);
+              benchedBy.add(f);
+            }
+            const scope = { benched: rule.bench === true };
             if (rule.failover && next !== null) {
-              notify({ ...base, action: "failover", to: next });
+              notify({ ...base, ...scope, action: "failover", to: next });
               break;
             }
-            notify({ ...base, action: "exhausted", to: null });
+            notify({ ...base, ...scope, action: "exhausted", to: null });
             const show = (x: ProviderFailure): string =>
               describeFailure(x, options.includeProviderText === true);
             const text =
@@ -440,7 +488,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
               ...(last ?? errorMessage(canonical, provider, "")),
               stopReason: "error",
               errorMessage: text,
-              diagnostics: failureDiagnostics(failures),
+              diagnostics: failureDiagnostics(failures, benchedBy),
             });
           }
         }

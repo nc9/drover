@@ -127,6 +127,7 @@ describe("response tap: structured errors over the real transport", () => {
           failureClass: "region_refused",
           status: 403,
           code: REGION,
+          benched: true, // a region refusal skips the provider for the run
         },
       ]);
       expect(JSON.stringify(notices)).not.toContain("SECRET");
