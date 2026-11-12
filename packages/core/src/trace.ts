@@ -55,6 +55,7 @@ export const REQUIRED_FIELDS: Readonly<Record<Kind, Readonly<Record<string, Fiel
   provider_failover: { action: "string", from: "string", failureClass: "string" },
   budget_warning: { dimension: "string", limit: "number", used: "number" },
   chain_record: { providers: "array" },
+  warning: { code: "string", message: "string", count: "number" },
   output_validated: {},
   output_retry: { attempt: "number", reason: "string" },
   run_end: { status: "string" },

@@ -203,6 +203,21 @@ export type HarnessEvent =
       providers: ChainRecordEntry[];
       ts: number;
     }
+  /**
+   * Something the host should fix, that did not stop the run. `code` names it;
+   * `message` is the harness's own text (never model, tool or user text).
+   * - `untrusted_unfenced`: an `appendMessages` item marked `untrusted: true`
+   *   went into the history as written because no plugin on the run fences
+   *   (`wrapUntrusted`); `count` is how many.
+   */
+  | {
+      kind: "warning";
+      runId: string;
+      code: "untrusted_unfenced";
+      message: string;
+      count: number;
+      ts: number;
+    }
   | { kind: "output_validated"; runId: string; ts: number }
   | { kind: "output_retry"; runId: string; attempt: number; reason: string; ts: number }
   | {

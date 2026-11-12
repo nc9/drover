@@ -39,6 +39,13 @@ export const SAMPLES: Record<Kind, HarnessEvent> = {
     code: "unsupported_country_region_territory",
   },
   budget_warning: { ...base, kind: "budget_warning", dimension: "turns", limit: 10, used: 8 },
+  warning: {
+    ...base,
+    kind: "warning",
+    code: "untrusted_unfenced",
+    message: "1 appended message(s) marked untrusted went in unfenced",
+    count: 1,
+  },
   input_validated: { ...base, kind: "input_validated" },
   turn_start: { ...base, kind: "turn_start", turn: 1 },
   llm_call: { ...base, kind: "llm_call", turn: 1, modelName: "m", reasoning: "low" },

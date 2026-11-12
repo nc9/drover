@@ -119,8 +119,11 @@ async function onNewInput(runId: string, text: string) {
   refused before anything is appended. A plain string, or an item without
   `untrusted: true`, goes in as written. With **no** fencing plugin on the run
   an untrusted item also goes in as written: the flag only fences when a fence
-  is configured. A fence that throws ends the call `PluginError`; nothing is
-  appended. See [Untrusted data](/guides/untrusted-data).
+  is configured. The run then emits one `warning` event (`code:
+  "untrusted_unfenced"`, `count`) right after `run_start`, so the host can see
+  it. A fence that throws ends the call `PluginError` naming that plugin;
+  nothing is appended or stored (the run row, checkpoint and events stay as
+  they were). See [Untrusted data](/guides/untrusted-data).
 - Continuations are **not serialised across processes**. A run whose status is
   `running` is refused, but that check is not atomic: two continuations of one
   `runId` started at the same moment can both pass it and then run interleaved.
