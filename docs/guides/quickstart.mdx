@@ -29,7 +29,7 @@ JSON, and reports its tokens + cost.
 <CodeGroup>
 
 ```bash bun
-bun add @droveragent/facade @droveragent/core @sinclair/typebox
+bun add @droveragent/facade@next @droveragent/core@next @sinclair/typebox
 ```
 
 </CodeGroup>
@@ -37,7 +37,8 @@ bun add @droveragent/facade @droveragent/core @sinclair/typebox
 <Note>
 The unscoped `droveragent` umbrella is not on npm yet (its name is pending). Install the
 scoped packages: `defineAgent` comes from `@droveragent/core`, `runAgent` from
-`@droveragent/facade`.
+`@droveragent/facade`. Until 0.3.0 is stable, `@next` is needed: `latest` still points at
+the older 0.1 / 0.2 releases.
 </Note>
 
 ## Define + run an agent
