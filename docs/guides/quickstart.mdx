@@ -55,7 +55,7 @@ const echo = defineAgent({
     upper: Type.String(),
     length: Type.Integer(),
   }),
-  model: "cheap", // alias for gemini-3.1-flash-lite-preview
+  model: "cheap", // alias for gemini-3.1-flash-lite
   tools: [],
   quota: { maxTurns: 2 },
 });
@@ -95,7 +95,7 @@ tokens: 179/24
   </Step>
   <Step title="Model dispatch">
     `"cheap"` resolved through the alias map to
-    `google/gemini-3.1-flash-lite-preview` on OpenRouter. The harness
+    `google/gemini-3.1-flash-lite` on OpenRouter. The harness
     wrapped pi-agent-core's `runAgentLoop` and streamed events as they
     fired.
   </Step>

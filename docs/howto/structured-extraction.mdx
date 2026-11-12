@@ -56,7 +56,7 @@ assumes only [the quickstart](/guides/quickstart): a Bun runtime and
   <Step title="Define the agent">
     `defineAgent` is an identity builder — no runtime work, just TS inference.
     `model: "cheap"` resolves through the default alias map to
-    `google/gemini-3.1-flash-lite-preview`. `tools: []` means a pure
+    `google/gemini-3.1-flash-lite`. `tools: []` means a pure
     text-to-JSON turn. `quota.maxTurns: 2` caps the loop — one turn to answer,
     one spare for an output-retry.
 
@@ -206,11 +206,11 @@ for a billing total.
 The `model` field takes a single alias string. Bump it when the cheap model
 mislabels:
 
-| Alias   | Routes to                       | Use when                         |
-| ------- | ------------------------------- | -------------------------------- |
-| `cheap` | `gemini-3.1-flash-lite-preview` | High volume, simple labels       |
-| `mini`  | `openai/gpt-5-mini`             | Trickier categories, more nuance |
-| `haiku` | `anthropic/claude-haiku-4.5`    | Sentiment subtleties matter      |
+| Alias   | Routes to                    | Use when                         |
+| ------- | ---------------------------- | -------------------------------- |
+| `cheap` | `gemini-3.1-flash-lite`      | High volume, simple labels       |
+| `mini`  | `openai/gpt-5-mini`          | Trickier categories, more nuance |
+| `haiku` | `anthropic/claude-haiku-5.5` | Sentiment subtleties matter      |
 
 Append a `:reasoning` suffix for a thinking budget — `"mini:high"` — or use the
 object form for full control:
