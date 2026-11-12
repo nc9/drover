@@ -1,18 +1,41 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { builtinModules, isBuiltin } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Type } from "@sinclair/typebox";
 import { Effect } from "effect";
 import { defineAgent } from "@droveragent/core";
 
 import { createDisabledSandbox, runAgent, type PreResolvedModel } from "../src/core.ts";
 
-const bundleInputs = async (entry: string): Promise<string[]> => {
+/**
+ * Bundle `entry` the way a Worker bundler does (browser target, workerd conditions), with
+ * NOTHING external but Node built-ins: every other bare import must resolve from what the
+ * packages install, or the build fails. An optional peer that nothing installs (#69:
+ * `@opentelemetry/api`, imported by a provider SDK inside pi-ai) fails here as it fails
+ * under wrangler. `minify` is for the size budget.
+ */
+const workerBuild = async (entryPath: string, minify = false) => {
   const r = await Bun.build({
-    entrypoints: [new URL(entry, import.meta.url).pathname],
+    entrypoints: [entryPath],
     target: "browser",
-    external: ["node:*", "@opentelemetry/api"],
+    conditions: ["workerd", "worker", "browser"],
+    // Bare builtin names stay imports too (not browser stubs), so the guard sees them.
+    external: ["node:*", ...builtinModules],
     metafile: true,
+    minify,
+    throw: false,
   });
+  return {
+    r,
+    errors: r.logs.filter((l) => l.level === "error").map((l) => l.message),
+  };
+};
+
+const bundleInputs = async (entry: string): Promise<string[]> => {
+  const { r, errors } = await workerBuild(new URL(entry, import.meta.url).pathname);
+  expect(errors).toEqual([]);
   expect(r.success).toBe(true);
   return Object.keys(
     (r as unknown as { metafile: { inputs: Record<string, unknown> } }).metafile.inputs,
@@ -137,8 +160,13 @@ const WORKERS_STATIC_NODE = new Set(["path", "crypto"]);
 const ALLOWED_REQUIRE_SITES: ReadonlyArray<{ file: RegExp; module: string }> = [
   { file: /@mariozechner\/pi-ai\/dist\/env-api-keys\.js$/, module: "fs" },
 ];
-/** Minified browser bundle of `src/core.ts`, all pi-ai providers included. Measured: ~2.09 MB. */
-const CORE_BUNDLE_BUDGET_BYTES = 2_400_000;
+/**
+ * Minified browser bundle of `src/core.ts`, all pi-ai providers included. Measured: ~2.27 MB
+ * (2026-11, mistral 2.7 + @opentelemetry/api since #69; was ~2.09 MB). The budget leaves
+ * ~0.3 MB for provider-SDK minor bumps inside pi-ai's ranges, which drover does not pin for
+ * consumers; a jump past it means a new SDK or a static import, and is worth a look.
+ */
+const CORE_BUNDLE_BUDGET_BYTES = 2_600_000;
 
 type MetaInputs = Record<string, { imports?: Array<{ path: string; kind: string }> }>;
 
@@ -217,14 +245,11 @@ describe("Workers guard classifier", () => {
 
 describe("@droveragent/facade/core: Workers bundle guard", () => {
   test("static node:* imports are only those Workers provide; the rest are lazy", async () => {
-    const r = await Bun.build({
-      entrypoints: [new URL("../src/core.ts", import.meta.url).pathname],
-      target: "browser",
-      // Bare builtin names stay imports too (not browser stubs), so the guard sees them.
-      external: ["node:*", ...builtinModules, "@opentelemetry/api"],
-      metafile: true,
-      minify: true,
-    });
+    const { r, errors } = await workerBuild(
+      new URL("../src/core.ts", import.meta.url).pathname,
+      true,
+    );
+    expect(errors).toEqual([]);
     expect(r.success).toBe(true);
     const inputs = (r as unknown as { metafile: { inputs: MetaInputs } }).metafile.inputs;
     expect(nodeImportViolations(inputs)).toEqual([]);
@@ -237,6 +262,33 @@ describe("@droveragent/facade/core: Workers bundle guard", () => {
     expect(lazyNode.has("node:fs/promises")).toBe(true);
     const bytes = r.outputs.reduce((n, o) => n + o.size, 0);
     expect(bytes).toBeLessThan(CORE_BUNDLE_BUDGET_BYTES);
+  });
+});
+
+describe("@droveragent/facade/core: every bare import resolves (#69)", () => {
+  test("the core entry bundles with no externals but Node built-ins", async () => {
+    const { r, errors } = await workerBuild(new URL("../src/core.ts", import.meta.url).pathname);
+    expect(errors).toEqual([]);
+    expect(r.success).toBe(true);
+    const inputs = Object.keys(
+      (r as unknown as { metafile: { inputs: Record<string, unknown> } }).metafile.inputs,
+    );
+    // The import that broke Workers: a provider SDK's optional OpenTelemetry peer, now
+    // installed by @droveragent/model. Its SDK stays behind pi-ai's lazy provider import.
+    expect(inputs.some((f) => f.includes("@opentelemetry/api"))).toBe(true);
+  });
+
+  test("control: an import nothing installs fails the build", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "drover-69-"));
+    try {
+      const entry = join(dir, "entry.ts");
+      writeFileSync(entry, 'import "drover-no-such-package-69";\nexport const x = 1;\n');
+      const { r, errors } = await workerBuild(entry);
+      expect(r.success).toBe(false);
+      expect(errors.join("\n")).toContain("drover-no-such-package-69");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
