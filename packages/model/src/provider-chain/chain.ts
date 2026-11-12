@@ -214,6 +214,11 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
     };
 
     return (canonical, context, callOptions) => {
+      // A model whose provider is not in the chain (a compaction `summaryModel`,
+      // a subagent's own model) is not the chain's to route: it goes straight to
+      // pi-ai with the key the resolver gave it. No failover, no tap.
+      if (!options.providers.includes(canonical.provider))
+        return streamSimple(canonical, context, callOptions);
       const out = createAssistantMessageEventStream();
       const signal = callOptions?.signal;
       const end = (msg: AssistantMessage): void => {
@@ -224,6 +229,13 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
         });
         out.end();
       };
+
+      /** The message as a caller abort: partial content kept, no provider text. */
+      const abortedMessage = (msg: AssistantMessage): AssistantMessage => ({
+        ...msg,
+        stopReason: "aborted",
+        errorMessage: "aborted",
+      });
 
       /** A failure after content was delivered: the message keeps its partial content, the text is class-only. */
       const failedAfterContent = (msg: AssistantMessage, f: ProviderFailure): AssistantMessage => ({
@@ -286,6 +298,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
               // A caller abort passes through unchanged. A failure after content was
               // delivered is not replayed elsewhere; its text is replaced like any other.
               if (ev.reason === "aborted") return (send(ev), out.end(), null);
+              if (signal?.aborted) return (end(abortedMessage(ev.error)), null);
               if (committed) {
                 const f = classifyFailure(provider, {
                   message: ev.error.errorMessage ?? "provider error",
@@ -304,6 +317,8 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
             } else send(ev);
           }
         } catch (err) {
+          if (committed && signal?.aborted)
+            return (end(abortedMessage(errorMessage(call.model, provider, ""))), null);
           if (committed)
             return (
               end(
@@ -364,6 +379,10 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
               return end(errorMessage(canonical, provider, "aborted", "aborted"));
             const res = await attempt(provider, call);
             if (res === null) return; // the stream is finished
+            // A caller abort mid-attempt can surface as a transport error ("Connection
+            // error."): it is a cancel, never a provider failure to classify or fail over on.
+            if (signal?.aborted)
+              return end(errorMessage(canonical, provider, "aborted", "aborted"));
             const f = res.failure;
             last = res.message ?? last;
             const rule = FAILOVER[f.failureClass];

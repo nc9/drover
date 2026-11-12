@@ -27,8 +27,19 @@ console.log((await handle.result).usageByProvider);
 There is no adapter to learn. Each provider is pi-ai's own registry entry (base URL,
 API, request quirks), the key comes from the resolver's env vars (`OPENROUTER_API_KEY`,
 `CLOUDFLARE_API_KEY`), and the gateway's `{CLOUDFLARE_ACCOUNT_ID}` /
-`{CLOUDFLARE_GATEWAY_ID}` come from `env`. The chain covers every model call of the
+`{CLOUDFLARE_GATEWAY_ID}` come from `env`. The chain sees every model call of the
 run: the main loop, subagents and the compaction summariser.
+
+**Models outside the chain.** The chain routes a call whose model's provider is one of
+its `providers`. A model that resolves to any other provider (a compaction
+`summaryModel: "haiku"`, a subagent's own model) goes straight to pi-ai with the key the
+resolver gave it: no failover, no `provider_failover` event, no response tap. So a cheaper
+summary model on another provider keeps working; put its provider in the chain if it
+should fail over too.
+
+**What every provider receives.** A call's `onPayload` (the host's request-body patch) and
+its request headers go to every provider the chain tries for that call, in order. Patch only
+what all of them accept, or scope the patch inside `onPayload` by `model.provider`.
 
 ## Providers and models are data
 
@@ -141,6 +152,11 @@ on a thrown error. Without a tap record the chain falls back to the SDK's leadin
 - Without a tap record (a custom `streams` entry, or a runtime where `fetch` cannot be patched) only the
   SDK's leading status survives: a region refusal is then a bare 403, classed `forbidden` (it fails over,
   is not retried in place and is not benched).
+- A caller abort is a cancel even when the transport reports it as an error ("Connection
+  error."): the call ends `aborted`, nothing is classified, nothing fails over.
 - The OpenAI client's own retries are off (`maxRetries: 0`): failing over is the retry.
-- A failed attempt the provider still billed is not counted.
+- Usage of failed attempts is not counted, except the last one. An attempt that fails before
+  its first content event is dropped with its usage (even if the provider billed it) and the
+  call moves on; only the attempt that ends the call (its answer, a failure after content, or
+  the final failure when every provider failed) reaches `usage` and `usageByProvider`.
 - Not verified against live OpenRouter or Cloudflare endpoints: tests use local servers.
