@@ -29,7 +29,10 @@ export interface QueueJob {
   attempts: number;
   maxAttempts: number;
   createdAt: number;
-  /** Run row id once the worker creates it. */
+  /**
+   * Run row id of the attempt that last ended (complete or fail). Every attempt runs
+   * under its own id: `run_<jobId>` for the first, `run_<jobId>_a<n>` for attempt n.
+   */
   runId: string | null;
   /** Final `RunResult.status` once execution finishes. */
   resultStatus: RunStatus | null;
@@ -127,13 +130,16 @@ export interface QueueAdapter {
    * `attempts < maxAttempts` AND `retry === true`, implementations
    * re-queue (status="queued", clear lease) with incremented attempts;
    * otherwise mark "failed". Returns `true` when the write landed,
-   * `false` on lost lease.
+   * `false` on lost lease. `runId`, when given, is the failed attempt's
+   * run id and is recorded as `job.runId` (each attempt has its own run),
+   * so a job that ends failed points at its last attempt's run.
    */
   fail(
     jobId: string,
     workerId: string,
     error: { tag: string; message: string },
     retry: boolean,
+    runId?: string,
   ): Effect.Effect<boolean, QueueError, never>;
   /**
    * Caller-initiated cancellation. Cancels queued + leased jobs; the
@@ -145,9 +151,7 @@ export interface QueueAdapter {
   /** Worker-side: detach a stuck job after lease expiry. */
   reclaimStale(now: number): Effect.Effect<number, QueueError, never>;
   get(jobId: string): Effect.Effect<QueueJob | null, QueueError, never>;
-  list(
-    filter?: QueueListFilter,
-  ): Effect.Effect<ReadonlyArray<QueueJob>, QueueError, never>;
+  list(filter?: QueueListFilter): Effect.Effect<ReadonlyArray<QueueJob>, QueueError, never>;
   /** Optional dispose for adapters holding native resources. */
   close(): Effect.Effect<void, QueueError, never>;
 }

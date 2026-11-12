@@ -34,6 +34,35 @@ for (const [name, factory] of impls) {
       await Effect.runPromise(s.close());
     });
 
+    test("createRun on an existing id fails and leaves the stored run alone (#97)", async () => {
+      const s = await factory();
+      const row = {
+        id: "dup",
+        agentId: "a",
+        specHash: "h",
+        status: "running" as const,
+        input: { first: true },
+        startedAt: 1,
+        tokensIn: 0,
+        tokensOut: 0,
+        costUsd: 0,
+      };
+      await Effect.runPromise(s.createRun(row));
+      await Effect.runPromise(
+        s.appendEvent({ runId: "dup", seq: 0, ts: 1, kind: "run_start", payload: {} }),
+      );
+      const again = await Effect.runPromise(
+        Effect.either(s.createRun({ ...row, input: { first: false }, startedAt: 2 })),
+      );
+      expect(again._tag).toBe("Left");
+      if (again._tag === "Left") expect(again.left._tag).toBe("StorageError");
+      const loaded = await Effect.runPromise(s.loadRun("dup"));
+      expect(loaded?.input).toEqual({ first: true });
+      expect(loaded?.startedAt).toBe(1);
+      expect(await Effect.runPromise(s.listEvents("dup"))).toHaveLength(1);
+      await Effect.runPromise(s.close());
+    });
+
     test("appendEvent + listEvents preserves order", async () => {
       const s = await factory();
       const now = Date.now();

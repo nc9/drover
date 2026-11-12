@@ -102,7 +102,7 @@ export function createMemoryQueue(): QueueAdapter {
         j.leaseExpiresAt = null;
         return Effect.succeed(true);
       }),
-    fail: (jobId, workerId, error, retry) =>
+    fail: (jobId, workerId, error, retry, runId) =>
       Effect.suspend(() => {
         const j = jobs.get(jobId);
         if (!j) return Effect.fail(new QueueError({ op: "fail", message: "not found" }));
@@ -114,6 +114,7 @@ export function createMemoryQueue(): QueueAdapter {
         j.leaseWorker = null;
         j.leaseExpiresAt = null;
         j.resultError = error;
+        if (runId !== undefined) j.runId = runId;
         if (retry && j.attempts < j.maxAttempts) {
           j.status = "queued";
         } else {

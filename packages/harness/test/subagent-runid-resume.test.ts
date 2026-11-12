@@ -12,7 +12,7 @@ import { createAssistantMessageEventStream, type AssistantMessage } from "@mario
 import type { StreamFn } from "@mariozechner/pi-agent-core";
 
 import { runAgentEffect } from "../src/run.ts";
-import { staticRegistry } from "../src/task-tool.ts";
+import { staticRegistry, taskTool } from "../src/task-tool.ts";
 import type { HarnessDeps } from "../src/deps.ts";
 
 const MODEL = "sub-model";
@@ -205,6 +205,71 @@ describe("subagent run ids across parent invocations (#97)", () => {
     }
     expect(await Effect.runPromise(storage.loadRun("p97c"))).toEqual(before);
     expect(await Effect.runPromise(storage.listEvents("p97c"))).toEqual(eventsBefore);
+  });
+
+  test("parallel task calls on a continued parent: one stored read, distinct ids above it, fan-out held (#101 review)", async () => {
+    const storage = createMemoryStorage();
+    // Stored children up to :7, above the checkpoint seed (2); :3 is taken too.
+    for (const n of [1, 2, 3, 7]) {
+      // oxlint-disable-next-line no-await-in-loop
+      await Effect.runPromise(
+        storage.createRun({
+          id: `pp:${n}`,
+          parentRunId: "pp",
+          agentId: "child",
+          specHash: "h",
+          status: "success",
+          input: {},
+          startedAt: n,
+          tokensIn: 0,
+          tokensOut: 0,
+          costUsd: 0,
+        }),
+      );
+    }
+    let reads = 0;
+    const counting = {
+      ...storage,
+      // A real store answers asynchronously: the read is where parallel calls interleave.
+      listRuns: (f?: Parameters<typeof storage.listRuns>[0]) => {
+        reads += 1;
+        return Effect.promise(() => new Promise((r) => setTimeout(r, 5))).pipe(
+          Effect.zipRight(storage.listRuns(f)),
+        );
+      },
+    };
+    const run: RunContext = { ...ctx("pp"), depth: 0 };
+    const call = (tool: ReturnType<typeof taskTool>, i: number) =>
+      Effect.either(
+        tool.execute({ agent_type: "child", prompt: `p${i}` } as never, {
+          runId: "pp",
+          toolUseId: `u${i}`,
+          cwd: run.cwd,
+          env: run.env,
+          signal: run.signal,
+          run,
+        }),
+      );
+    const spawned = (r: { _tag: string; right?: unknown }) =>
+      r._tag === "Right" ? (r.right as { data?: { childRunId?: string } }).data?.childRunId : null;
+
+    // Fan-out 2, three calls at once: two spawn (:8, :9), the third is refused.
+    const tool = taskTool({
+      registry: staticRegistry({ child }),
+      allowedAgents: ["child"],
+      fanOut: 2,
+      deps: { ...deps(counting), storage: counting },
+      childSeqStart: 2,
+    });
+    const results = await Effect.runPromise(
+      Effect.all([call(tool, 1), call(tool, 2), call(tool, 3)], { concurrency: "unbounded" }),
+    );
+    const ids = results.map(spawned).filter(Boolean).toSorted();
+    expect(ids).toEqual(["pp:8", "pp:9"]);
+    const refused = results.filter((r) => r._tag === "Left");
+    expect(refused).toHaveLength(1);
+    expect(refused[0]).toMatchObject({ left: { _tag: "SubagentLimitError", reason: "fan_out" } });
+    expect(reads).toBe(1); // one shared read, not one per call
   });
 
   test("createRun on an existing run id fails loudly", async () => {

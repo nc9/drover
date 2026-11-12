@@ -449,7 +449,8 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       else {
         // A failed insert is swallowed (a storage outage must not break the run) UNLESS the
         // run id is already taken: then this run would write over another run's row, events
-        // and checkpoints, so it fails loudly before doing anything (#97).
+        // and checkpoints, so it fails loudly before doing anything (#97). An outage that also
+        // fails this `loadRun` (or finds no row) is still swallowed: the old behaviour.
         const existing = yield* Effect.either(storage.loadRun(ctx.runId));
         if (existing._tag === "Right" && existing.right !== null) {
           return yield* Effect.fail(

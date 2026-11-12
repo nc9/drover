@@ -154,6 +154,19 @@ describe("createD1Storage", () => {
     expect(shim.batches).toBe(afterFirst);
   });
 
+  test("createRun on an existing id fails and leaves the stored run alone (#97)", async () => {
+    const s = createD1Storage({ db: makeD1().db });
+    await Effect.runPromise(s.createRun({ ...baseRun("dup", 1), input: { first: true } }));
+    const again = await Effect.runPromise(
+      Effect.either(s.createRun({ ...baseRun("dup", 2), input: { first: false } })),
+    );
+    expect(again._tag).toBe("Left");
+    if (again._tag === "Left") expect(again.left._tag).toBe("StorageError");
+    const loaded = await Effect.runPromise(s.loadRun("dup"));
+    expect(loaded?.input).toEqual({ first: true });
+    expect(loaded?.startedAt).toBe(1);
+  });
+
   test("concurrent first ops share one migration", async () => {
     const shim = makeD1();
     const s = createD1Storage({ db: shim.db });
