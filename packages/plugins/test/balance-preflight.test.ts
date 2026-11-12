@@ -177,4 +177,55 @@ describe("openRouterBalance", () => {
       openRouterBalance({ apiKey: "k", fetch: fetchOf(200, { data: {} }) }).balance(),
     ).rejects.toThrow("unexpected shape");
   });
+
+  test("an error never carries the key", async () => {
+    const err = await openRouterBalance({
+      apiKey: "sk-or-SECRETKEY",
+      mode: "key",
+      fetch: fetchOf(403, { error: "sk-or-SECRETKEY" }),
+    })
+      .balance()
+      .catch((e: Error) => e);
+    expect(String((err as Error).message)).not.toContain("SECRETKEY");
+  });
+
+  test('mode "key": GET /key, remaining = data.limit_remaining', async () => {
+    const seen: { url?: string; auth?: string } = {};
+    const s = openRouterBalance({
+      apiKey: "k",
+      mode: "key",
+      baseUrl: "https://or.test/api/v1",
+      fetch: fetchOf(200, { data: { limit: 20, limit_remaining: 7.25 } }, seen),
+    });
+    expect(await s.balance()).toEqual({ remainingUsd: 7.25 });
+    expect(seen).toEqual({ url: "https://or.test/api/v1/key", auth: "Bearer k" });
+  });
+
+  test('mode "key": a key without a spending limit (null) reads as unknown', async () => {
+    await expect(
+      openRouterBalance({
+        apiKey: "k",
+        mode: "key",
+        fetch: fetchOf(200, { data: { limit: null, limit_remaining: null } }),
+      }).balance(),
+    ).rejects.toThrow("no spending limit");
+  });
+});
+
+describe("balancePreflightPlugin with a chain-like source provider (#49)", () => {
+  test("reads sources from balanceSources() on each lookup, in order", async () => {
+    let lists = 0;
+    const chain = {
+      balanceSources: () => (lists++, [failing("x"), src("y", 0.5)]),
+    };
+    const p = balancePreflightPlugin({ sources: chain, estimateUsd: 1, cacheMs: 0 });
+    expect(await check(p, 1)).toMatchObject({ tag: "InsufficientBalance" });
+    expect(lists).toBe(1);
+    const empty = balancePreflightPlugin({
+      sources: { balanceSources: () => [] },
+      estimateUsd: 1,
+      onUnknown: "refuse",
+    });
+    expect(await check(empty, 1)).toMatchObject({ tag: "BalanceUnknown" });
+  });
 });

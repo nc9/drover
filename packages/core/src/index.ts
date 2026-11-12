@@ -8,3 +8,4 @@ export * from "./plugin.ts";
 export * from "./result.ts";
 export * from "./trace.ts";
 export * from "./untrusted.ts";
+export * from "./balance.ts";
