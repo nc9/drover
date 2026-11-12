@@ -1,4 +1,5 @@
 import type { CompactionStrategy } from "./compaction.ts";
+import type { ChainRecordEntry } from "./result.ts";
 
 /**
  * Token + cost accounting for a single LLM call. Cumulative aggregation
@@ -190,6 +191,16 @@ export type HarnessEvent =
       dimension: "turns" | "duration" | "cost" | "tokens";
       limit: number;
       used: number;
+      ts: number;
+    }
+  /**
+   * The run's provider chain record, emitted once before `run_end` when the run uses a
+   * provider chain (the same as `RunResult.chainRecord`). No provider text.
+   */
+  | {
+      kind: "chain_record";
+      runId: string;
+      providers: ChainRecordEntry[];
       ts: number;
     }
   | { kind: "output_validated"; runId: string; ts: number }

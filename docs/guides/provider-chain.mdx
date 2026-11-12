@@ -143,6 +143,44 @@ failure. `usage` events and `RunResult.usageByProvider` name the serving provide
 from the checkpoint (for checkpoints written by this version; an older checkpoint has no split, so
 it restarts from that invocation).
 
+## Chain record
+
+`RunResult.chainRecord` (and the `chain_record` trace event, emitted once before `run_end`) has
+one entry per configured provider, in chain order, including providers that were tried and only
+failed:
+
+```ts
+[
+  {
+    provider: "openrouter",
+    answered: 0,
+    failed: 1,
+    failures: { key_refused: 1 },
+    benchedAtTurn: 1,
+    usage: { inputTokens: 0, outputTokens: 0 },
+  },
+  {
+    provider: "cloudflare-ai-gateway",
+    answered: 6,
+    failed: 0,
+    failures: {},
+    benchedAtTurn: null,
+    usage: { inputTokens: 5200, outputTokens: 610, costUsd: 0.004 },
+  },
+];
+```
+
+- `answered` counts calls the provider served; `failed` counts failed attempts (each in-place
+  retry, failover or final failure), by class in `failures`.
+- `benchedAtTurn` is the turn at which the chain first skipped the provider for the rest of an
+  invocation (null if never).
+- `usage` is the tokens and cost of the calls the provider served: the billed cost when the chain
+  reports it (`billedCost`), pi-ai's list price otherwise.
+- No provider text: classes, counts and numbers only.
+- A resume or continuation of the run appends to the record of its previous invocation, read
+  from the run's stored `chain_record` event (needs storage; without it a new invocation starts
+  a fresh record).
+
 ## Structured provider errors
 
 pi-ai flattens a failed call to the OpenAI SDK's text (`"403 <message>"`) and drops the response body
