@@ -89,6 +89,7 @@ export {
   staticRegistry,
   withProviderCost,
   type AgentRegistry,
+  type AppendedMessage,
   type PreResolvedModel,
 } from "@droveragent/harness";
 export {
