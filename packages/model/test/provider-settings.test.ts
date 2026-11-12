@@ -454,7 +454,8 @@ describe("provider entries: Azure and Bedrock base URLs", () => {
       "amazon.nova-lite-v1:0",
     );
     expect(plain.got[0]!.baseUrl).toBe("https://bedrock-runtime.us-east-1.amazonaws.com");
-    expect(plain.got[0]!.options.region).toBeUndefined();
+    // The region is taken from the catalog endpoint and pinned (never left to process.env).
+    expect(plain.got[0]!.options.region).toBe("us-east-1");
   });
 
   test("bedrock: a declared model needs a region or baseUrl; a bad region is refused", async () => {
@@ -622,6 +623,88 @@ describe("provider entries: pins survive pi-ai (real transport, decoy env)", () 
     ).toMatchObject({
       azureBaseUrl: "https://x.openai.azure.com/openai/v1",
       reasoningEffort: undefined,
+    });
+  });
+});
+
+/** #76 round 2: with no region set, the endpoint's region is pinned; a decoy AWS_REGION never wins. */
+describe("provider entries: Bedrock region from the endpoint", () => {
+  type Got = { baseUrl: string; options: Record<string, unknown> };
+  const capture =
+    (got: Got[]): ChainStreamFn =>
+    (model, c, options) => {
+      got.push({ baseUrl: model.baseUrl, options: { ...(options as Record<string, unknown>) } });
+      return recording(model.provider, [])(model, c, options);
+    };
+  const withDecoy = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const before = process.env.AWS_REGION;
+    process.env.AWS_REGION = "ap-southeast-2";
+    try {
+      return await fn();
+    } finally {
+      if (before === undefined) delete process.env.AWS_REGION;
+      else process.env.AWS_REGION = before;
+    }
+  };
+  const callWith = (entry: ProviderEntry, id: string) =>
+    withDecoy(async () => {
+      const got: Got[] = [];
+      const chain = createProviderChain({
+        providers: [entry],
+        streams: { [entry.name]: capture(got) },
+      });
+      const r = await callOnce(chain, entry.name, id);
+      return { r, got };
+    });
+
+  test("no region, useEnv: false: the catalog endpoint's region is pinned, not the decoy AWS_REGION", async () => {
+    const us = await callWith(
+      { name: "amazon-bedrock", apiKey: "k", useEnv: false },
+      "amazon.nova-lite-v1:0",
+    );
+    expect(us.got[0]).toEqual({
+      baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
+      options: expect.objectContaining({ region: "us-east-1" }),
+    });
+    const eu = await callWith(
+      { name: "amazon-bedrock", apiKey: "k", useEnv: false },
+      "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+    );
+    expect(eu.got[0]!.options.region).toBe("eu-central-1");
+  });
+
+  test("a standard baseUrl names its region; a custom endpoint without region is refused under useEnv: false", async () => {
+    const std = await callWith(
+      {
+        name: "amazon-bedrock",
+        apiKey: "k",
+        baseUrl: "https://bedrock-runtime-fips.us-west-2.amazonaws.com",
+        useEnv: false,
+      },
+      "amazon.nova-lite-v1:0",
+    );
+    expect(std.got[0]!.options.region).toBe("us-west-2");
+    const custom = await callWith(
+      {
+        name: "amazon-bedrock",
+        apiKey: "k",
+        baseUrl: "https://vpce.example/bedrock",
+        useEnv: false,
+      },
+      "amazon.nova-lite-v1:0",
+    );
+    expect(custom.r.errorMessage).toContain('amazon-bedrock: set "region"');
+    expect(custom.got).toEqual([]);
+  });
+
+  test("pi-ai's full stream gets the pinned region, which it prefers over process.env.AWS_REGION", async () => {
+    const { pinnedOptions } = await import("../src/provider-chain/pinned-stream.ts");
+    const { getModel } = await import("@mariozechner/pi-ai");
+    const nova = getModel("amazon-bedrock" as never, "amazon.nova-lite-v1:0" as never) as never;
+    await withDecoy(async () => {
+      expect(pinnedOptions(nova, { apiKey: "k", region: "us-east-1" } as never).region).toBe(
+        "us-east-1",
+      );
     });
   });
 });

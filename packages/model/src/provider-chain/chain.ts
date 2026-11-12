@@ -271,6 +271,8 @@ type ChainCall = { model: Model<Api>; apiKey: string; extra?: Record<string, unk
 
 /** An AWS region name (`us-east-1`, `eu-central-2`, `us-gov-west-1`, `ap-southeast-5`). */
 const AWS_REGION_NAME = /^[a-z]{2}(-gov|-iso[a-z]?)?-[a-z]+-\d{1,2}$/;
+/** A standard Bedrock runtime host; group 1 is its region (as pi-ai matches it). */
+const BEDROCK_RUNTIME_HOST = /^bedrock-runtime(?:-fips)?\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?$/;
 /** An Azure OpenAI resource name: letters, digits and hyphens. */
 const AZURE_RESOURCE_NAME = /^[A-Za-z0-9][A-Za-z0-9-]{1,62}$/;
 
@@ -419,6 +421,21 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       return provider === "azure-openai-responses"
         ? `no base URL for provider "${provider}": set "baseUrl" (https://<resource>.openai.azure.com/openai/v1), or AZURE_OPENAI_BASE_URL / AZURE_OPENAI_RESOURCE_NAME in the environment`
         : `no base URL for provider "${provider}"`;
+    if (provider === "amazon-bedrock" && extra.region === undefined) {
+      // No region given: take it from the endpoint (pi-ai's catalog URL, or a standard
+      // `baseUrl`). Unpinned, pi-ai would read process.env.AWS_REGION, which also turns off its
+      // endpoint pin and sends the call to that region instead.
+      let host = "";
+      try {
+        host = new URL(baseUrl).hostname.toLowerCase();
+      } catch {
+        /* not a URL: no region from it */
+      }
+      const fromHost = BEDROCK_RUNTIME_HOST.exec(host)?.[1];
+      if (fromHost !== undefined && AWS_REGION_NAME.test(fromHost)) extra.region = fromHost;
+      else if (entry.useEnv === false)
+        return `amazon-bedrock: set "region" (the endpoint does not name one, and useEnv: false rules out AWS_REGION)`;
+    }
     if (provider === "azure-openai-responses") {
       extra.azureBaseUrl = baseUrl;
       // Nothing else from process.env either: pi-ai reads the API version and a deployment-name
