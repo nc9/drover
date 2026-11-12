@@ -85,7 +85,12 @@ export type {
   InvocationBudget,
   RunResult,
 } from "@droveragent/core";
-export { staticRegistry, type AgentRegistry, type PreResolvedModel } from "@droveragent/harness";
+export {
+  staticRegistry,
+  withProviderCost,
+  type AgentRegistry,
+  type PreResolvedModel,
+} from "@droveragent/harness";
 export {
   createProviderChain,
   FAILOVER,

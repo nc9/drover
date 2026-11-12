@@ -93,7 +93,19 @@ function createProviderChain(opts: {
   apiKeys?: Record<string, string>; env?: Record<string, string | undefined>;
   maxRateLimitWaitMs?: number;                      // default 10_000
   includeProviderText?: boolean;                    // default false
+  billedCost?: boolean;                             // OpenRouter billed usage.cost as the call's cost
 }): ProviderChain;
 ```
+
+## `withProviderCost`
+
+```ts
+function withProviderCost(base?: StreamFn): StreamFn; // default base: pi-ai streamSimple
+```
+
+A `streamFn` that reports OpenRouter's billed `usage.cost` as the call's cost
+(replacing the list-price total). Other providers pass through untouched. Under a
+provider chain use `billedCost` instead. Re-exported by `@droveragent/harness` and
+`@droveragent/facade`.
 
 See the [provider chain guide](/guides/provider-chain).

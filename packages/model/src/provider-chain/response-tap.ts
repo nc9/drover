@@ -12,6 +12,11 @@
  * body and records the status, an allow-list of headers and the parsed error fields.
  * The chain then classifies from those fields, never from message text.
  *
+ * The same tag also carries provider-billed cost (`withProviderCost`, the chain's
+ * `billedCost`): pi-ai drops OpenRouter's `usage.cost`, so for an attempt opened
+ * with `{ cost: true }` a 2xx body is teed and its `usage.cost` read. One
+ * mechanism, one header, one `fetch` patch for both.
+ *
  * Relies on the OpenAI SDK resolving `globalThis.fetch` when its client is created
  * (true for the openai version pi-ai uses). A host that injects its own fetch into
  * the client is not covered; the chain then falls back to the SDK's leading status.
@@ -52,6 +57,19 @@ export interface AttemptResponse {
 }
 
 const records = new Map<string, AttemptResponse>();
+/** Billed-cost waiters, for attempts opened with `{ cost: true }`. */
+const costs = new Map<string, (cost: number | undefined) => void>();
+/** The tap's reader of a 2xx body being read for its cost, per tag (cancelled on settle or dispose). */
+const costReaders = new Map<string, BodyReader>();
+/** The part of a stream reader the tap uses (structural: runtimes type readers differently). */
+interface BodyReader {
+  read(): Promise<{ done: boolean; value?: Uint8Array }>;
+  cancel(): Promise<void>;
+}
+/** Longest the tap reads a 2xx body for its cost: a streamed answer, so generous. */
+const COST_BODY_TIMEOUT_MS = 10 * 60_000;
+/** A line longer than this cannot be a usage chunk worth parsing: dropped, not buffered. */
+const MAX_COST_LINE_CHARS = 64 * 1024;
 /** Tags of attempts still running. A response for any other tag is ignored, so nothing is stored after `dispose()`. */
 const live = new Set<string>();
 let installed = false;
@@ -128,7 +146,26 @@ function install(): boolean {
       ...init,
       headers,
     });
-    if (res.ok || !tracked) return res;
+    if (!tracked) return res;
+    if (res.ok) {
+      const settle = costs.get(tag);
+      if (!settle || !res.body) {
+        settle?.(undefined);
+        return res;
+      }
+      // Tee: the SDK reads one branch untouched, the tap reads `usage.cost` from the other.
+      // The tap's reader is kept per tag, so dispose (or settling) cancels it and the tee
+      // stops buffering for a branch nobody reads.
+      const [forCaller, forTap] = res.body.tee();
+      const reader = forTap.getReader() as unknown as BodyReader;
+      costReaders.set(tag, reader);
+      void readCost(reader).then(settle, () => settle(undefined));
+      return new Response(forCaller, {
+        status: res.status,
+        statusText: res.statusText,
+        headers: res.headers,
+      });
+    }
     const kept: Record<string, string> = {};
     for (const name of KEPT_HEADERS) {
       const v = res.headers.get(name);
@@ -161,25 +198,136 @@ function install(): boolean {
 
 /** One attempt's tap: add `header` to the request, `take()` the failed response afterwards. */
 export interface AttemptTap {
+  /** Empty when the tap is off (`fetch` could not be patched): send nothing. */
   header: Record<string, string>;
   take(): AttemptResponse | undefined;
+  /**
+   * The provider-billed `usage.cost` of a 2xx response (attempts opened with
+   * `{ cost: true }`), or undefined when none arrives within `settleMs` of the call.
+   */
+  cost(settleMs?: number): Promise<number | undefined>;
   dispose(): void;
 }
 
-export function startAttemptTap(): AttemptTap {
+const COST_SETTLE_MS = 1_000;
+
+export function startAttemptTap(opts: { cost?: boolean } = {}): AttemptTap {
   // Off when the global cannot be patched, or when it is no longer this tap.
   if (!install() || globalThis.fetch !== tappedFetch)
-    return { header: {}, take: () => undefined, dispose: () => {} };
+    return {
+      header: {},
+      take: () => undefined,
+      cost: async () => undefined,
+      dispose: () => {},
+    };
   const tag = newTag();
   live.add(tag);
+  let billed: Promise<number | undefined> = Promise.resolve(undefined);
+  if (opts.cost) {
+    billed = new Promise((resolve) => {
+      costs.set(tag, (c) => {
+        costs.delete(tag);
+        const reader = costReaders.get(tag);
+        costReaders.delete(tag);
+        void reader?.cancel().catch(() => {});
+        resolve(c);
+      });
+    });
+  }
   return {
     header: { [TAG_HEADER]: tag },
     take: () => records.get(tag),
+    cost: async (settleMs = COST_SETTLE_MS) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<undefined>((r) => {
+        timer = setTimeout(() => r(undefined), settleMs);
+      });
+      try {
+        return await Promise.race([billed, timeout]);
+      } finally {
+        clearTimeout(timer);
+      }
+    },
     dispose: () => {
       live.delete(tag);
       records.delete(tag);
+      costs.get(tag)?.(undefined); // also cancels the tag's body reader
+      const reader = costReaders.get(tag);
+      costReaders.delete(tag);
+      void reader?.cancel().catch(() => {});
     },
   };
+}
+
+/** @internal Test seam: attempts still holding tap state (0 when idle). */
+export const liveAttemptTaps = (): number => live.size + costs.size + costReaders.size;
+
+/** @internal Test seam: whether the process-wide `fetch` tap is installed. */
+export const attemptTapInstalled = (): boolean => installed;
+
+const costFromObject = (o: unknown): number | undefined => {
+  const usage = (o as { usage?: { cost?: unknown } } | null)?.usage;
+  return typeof usage?.cost === "number" && Number.isFinite(usage.cost) && usage.cost >= 0
+    ? usage.cost
+    : undefined;
+};
+
+/**
+ * `usage.cost` from an SSE or JSON 2xx body, read to the end or until `COST_BODY_TIMEOUT_MS`
+ * (the last value wins). Lines are scanned from a moving offset and the buffer is compacted
+ * once per chunk; a line over `MAX_COST_LINE_CHARS` is dropped unread; only lines that mention
+ * `"cost"` are parsed. @internal (exported for tests).
+ */
+export async function readCost(
+  reader: BodyReader,
+  timeoutMs = COST_BODY_TIMEOUT_MS,
+): Promise<number | undefined> {
+  const decoder = new TextDecoder();
+  let buf = "";
+  let skipping = false; // inside an oversized line: drop until its newline
+  let found: number | undefined;
+  const scan = (line: string): void => {
+    if (!line.includes('"cost"')) return;
+    const t = line.trim();
+    const json = t.startsWith("data:") ? t.slice(5).trim() : t;
+    if (!json.startsWith("{")) return;
+    try {
+      found = costFromObject(JSON.parse(json)) ?? found;
+    } catch {
+      /* partial or non-JSON line */
+    }
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"timeout">((r) => {
+    timer = setTimeout(() => r("timeout"), timeoutMs);
+  });
+  try {
+    for (;;) {
+      const step = await Promise.race([reader.read(), deadline]);
+      if (step === "timeout" || step.done || !step.value) break;
+      buf += decoder.decode(step.value, { stream: true });
+      let start = 0;
+      let nl = buf.indexOf("\n", start);
+      while (nl >= 0) {
+        if (skipping) skipping = false;
+        else if (nl - start <= MAX_COST_LINE_CHARS) scan(buf.slice(start, nl));
+        start = nl + 1;
+        nl = buf.indexOf("\n", start);
+      }
+      buf = buf.slice(start); // compact once per chunk
+      if (buf.length > MAX_COST_LINE_CHARS) {
+        buf = "";
+        skipping = true;
+      }
+    }
+    if (!skipping) scan(buf);
+  } catch {
+    /* aborted or cancelled: whatever was found stands */
+  } finally {
+    clearTimeout(timer);
+    void reader.cancel().catch(() => {});
+  }
+  return found;
 }
 
 /** `Retry-After` in ms from the kept headers: `retry-after-ms`, or seconds, or an HTTP date. */

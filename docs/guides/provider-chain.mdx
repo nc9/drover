@@ -148,6 +148,34 @@ The tap needs the OpenAI SDK to resolve `globalThis.fetch` when its client is cr
 pi-ai uses); a `streams` entry (custom transport) is not tapped and supplies its own `status` / `error: { code }`
 on a thrown error. Without a tap record the chain falls back to the SDK's leading status.
 
+## Billed cost
+
+pi-ai prices every call from the model's list rates and drops the cost the provider
+reports. OpenRouter reports the amount actually billed (`usage.cost`, with routing,
+discounts and cache pricing folded in) when the request asks for it. With
+`billedCost: true` the chain asks OpenRouter for it and, through the same response tap,
+reads it from the response and makes it the call's cost:
+
+```ts
+const providers = createProviderChain({
+  providers: ["openrouter", "cloudflare-ai-gateway"],
+  models: { "gpt-mini": "openai/gpt-4o-mini" },
+  billedCost: true,
+});
+```
+
+- The billed figure **replaces** pi-ai's list-price total for that call; it is never
+  added to it, so nothing is counted twice. The per-component fields stay list-price.
+- Only OpenRouter requests change (by provider name, or a base URL on `openrouter.ai`).
+  Other providers (the gateway included) get no body key and keep pi-ai's list price, so
+  `usageByProvider` mixes billed and list-price figures by provider, and `usage.costUsd`
+  is their sum.
+- `quota.maxCostUsd` (and a continuation's own `budget.maxCostUsd`, where that lands) runs
+  on the same per-call figures.
+- Without a chain, wrap the transport instead: `runAgent(spec, input, { streamFn:
+  withProviderCost() })`. A chain does not use `streamFn`, so under a chain use
+  `billedCost`.
+
 ## Limits
 
 - Without a tap record (a custom `streams` entry, or a runtime where `fetch` cannot be patched) only the
@@ -159,5 +187,7 @@ on a thrown error. Without a tap record the chain falls back to the SDK's leadin
 - Usage of failed attempts is not counted, except the last one. An attempt that fails before
   its first content event is dropped with its usage (even if the provider billed it) and the
   call moves on; only the attempt that ends the call (its answer, a failure after content, or
-  the final failure when every provider failed) reaches `usage` and `usageByProvider`.
+  the final failure when every provider failed) reaches `usage` and `usageByProvider`. A
+  failure after content keeps pi-ai's list-price usage, not a billed figure (no billed figure
+  arrives without a final usage chunk).
 - Not verified against live OpenRouter or Cloudflare endpoints: tests use local servers.

@@ -20,6 +20,7 @@ import {
   type ProviderFailure,
   type RawFailure,
 } from "./classify.ts";
+import { applyBilledCost, isOpenRouter, withUsageInclude } from "./provider-cost.ts";
 import { rawFromResponse, startAttemptTap, type AttemptTap } from "./response-tap.ts";
 
 /** pi-agent-core's `StreamFn`. */
@@ -65,6 +66,14 @@ export interface ProviderChainOptions {
   env?: Readonly<Record<string, string | undefined>>;
   /** Longest `Retry-After` (ms) waited out before one retry on the same provider. Default 10 000. */
   maxRateLimitWaitMs?: number;
+  /**
+   * Report the provider-billed cost (OpenRouter's `usage.cost`) as each call's
+   * `usage.cost.total`, so `Usage.costUsd`, `usageByProvider` and `quota.maxCostUsd`
+   * run on billed cost. Adds `usage: { include: true }` to OpenRouter requests only;
+   * other providers keep pi-ai's list-price cost. Uses the same response tap as the
+   * structured errors. Default off.
+   */
+  billedCost?: boolean;
   /** Put the providers' own text in the final error message. Off: it can quote the prompt. */
   includeProviderText?: boolean;
   /** Replace a provider's transport (tests, proxies), by provider name. */
@@ -249,9 +258,12 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       const attempt = async (provider: string, call: { model: Model<Api>; apiKey: string }) => {
         // The response tap restores what pi-ai drops (status, body code, Retry-After) for the real
         // transport; a custom `streams` entry never touches fetch, so it is not tapped.
-        const tap = own(options.streams, provider) ? undefined : startAttemptTap();
+        const billed = options.billedCost === true && isOpenRouter(call.model);
+        const tap = own(options.streams, provider)
+          ? undefined
+          : startAttemptTap(billed ? { cost: true } : {});
         try {
-          return await attemptOnce(provider, call, tap);
+          return await attemptOnce(provider, call, tap, billed);
         } finally {
           tap?.dispose();
         }
@@ -260,6 +272,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
         provider: string,
         call: { model: Model<Api>; apiKey: string },
         tap?: AttemptTap,
+        billed = false,
       ): Promise<{ failure: ProviderFailure; message: AssistantMessage | null } | null> => {
         const failed = (raw: RawFailure, message: AssistantMessage | null = null) => {
           const seen = tap?.take();
@@ -277,6 +290,9 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
             apiKey: call.apiKey,
             maxRetries: callOptions?.maxRetries ?? 0,
             ...(tap ? { headers: { ...callOptions?.headers, ...tap.header } } : {}),
+            ...(billed && tap && Object.keys(tap.header).length > 0
+              ? { onPayload: withUsageInclude(callOptions?.onPayload) }
+              : {}),
           });
         } catch (err) {
           return failed(rawFromThrown(err));
@@ -313,7 +329,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
                   { message: "provider returned an empty completion (malformed response)" },
                   ev.message,
                 );
-              return (send(ev), out.end(), null);
+              return (send(billed && tap ? await applyBilledCost(ev, tap) : ev), out.end(), null);
             } else send(ev);
           }
         } catch (err) {

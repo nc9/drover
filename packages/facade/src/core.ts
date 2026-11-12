@@ -107,6 +107,12 @@ export interface RunOptionsBase {
    * `docs/guides/provider-chain.mdx`.
    */
   providers?: HarnessDeps["providers"];
+  /**
+   * Replace the model transport (default: pi's `streamSimple`). The seam for
+   * wrappers such as `withProviderCost` (provider-billed cost) or test fakes.
+   * A provider chain (`providers`) does not use it.
+   */
+  streamFn?: HarnessDeps["streamFn"];
 }
 
 /**
@@ -231,6 +237,7 @@ export function runAgent<S extends AgentSpec<TSchema, TSchema>>(
     ...(options.commands ? { commands: options.commands } : {}),
     ...(options.memory ? { memory: options.memory } : {}),
     ...(options.onPayload ? { onPayload: options.onPayload } : {}),
+    ...(options.streamFn ? { streamFn: options.streamFn } : {}),
     ...(options.includeProviderErrorText ? { includeProviderErrorText: true } : {}),
     ...(options.providers ? { providers: options.providers } : {}),
   };
@@ -390,6 +397,7 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
     ...(options.commands ? { commands: options.commands } : {}),
     ...(options.memory ? { memory: options.memory } : {}),
     ...(options.onPayload ? { onPayload: options.onPayload } : {}),
+    ...(options.streamFn ? { streamFn: options.streamFn } : {}),
     ...(options.includeProviderErrorText ? { includeProviderErrorText: true } : {}),
     ...(options.providers ? { providers: options.providers } : {}),
   };
@@ -607,7 +615,12 @@ export type {
   InvocationBudget,
   RunResult,
 } from "@droveragent/core";
-export { staticRegistry, type AgentRegistry, type PreResolvedModel } from "@droveragent/harness";
+export {
+  staticRegistry,
+  withProviderCost,
+  type AgentRegistry,
+  type PreResolvedModel,
+} from "@droveragent/harness";
 export {
   createProviderChain,
   FAILOVER,
