@@ -46,6 +46,8 @@ interface ModelOpts {
   onCall?: (noticed: boolean) => void;
   /** Usage of the answering call (default 1 in / 1 out, `costPerCall`). */
   answerUsage?: { input: number; output: number; cost?: number };
+  /** The answering call fails at the provider (`stopReason: "error"`, HTTP 500). */
+  answerError?: boolean;
 }
 
 function greedyModel(costPerCall = 0, opts: ModelOpts = {}) {
@@ -109,6 +111,16 @@ function greedyModel(costPerCall = 0, opts: ModelOpts = {}) {
       return stream;
     }
     stream.push({ type: "start", partial: base });
+    if (warned && !post && opts.answerError) {
+      const failed: AssistantMessage = {
+        ...final,
+        content: [],
+        stopReason: "error",
+        errorMessage: "500 upstream exploded SECRET-BODY",
+      };
+      stream.push({ type: "error", reason: "error", error: failed });
+      return stream;
+    }
     stream.push({ type: "done", reason: warned ? "stop" : "toolUse", message: final });
     return stream;
   };
@@ -311,7 +323,7 @@ describe("quota.wrapUp", () => {
       limit: 10,
       used: 6,
       outcome: "wrapped_up",
-      overshoot: { dimension: "tokens", limit: 10, observed: 26 },
+      overshoot: { dimension: "tokens", limit: 10, observed: 26, scope: "spec" },
     });
   });
 
@@ -330,6 +342,25 @@ describe("quota.wrapUp", () => {
     expect(invalid.result.status).toBe("quota");
     expect(invalid.result.wrapUp?.outcome).toBe("cut_off");
     expect(invalid.result.wrapUp?.overshoot).toBeUndefined();
+  });
+
+  test("a cost or token breach on a call that ends in a provider error ends ProviderError, not quota (#62)", async () => {
+    for (const quota of [
+      { maxTokens: 10, wrapUp: { at: 0.5 } },
+      { maxCostUsd: 1, wrapUp: { at: 0.5 } },
+    ] satisfies RunQuota[]) {
+      // oxlint-disable-next-line no-await-in-loop -- two scenarios, sequential
+      const { result } = await run(quota, quota.maxCostUsd ? 0.3 : 0, {
+        answerError: true,
+        answerUsage: { input: 10, output: 10, cost: 0.6 },
+      });
+      expect(result.status).toBe("error");
+      expect(result.error).toMatchObject({ tag: "ProviderError", status: 500 });
+      expect(result.error?.message).not.toContain("SECRET-BODY");
+      expect(result.wrapUp).toBeDefined();
+      expect(result.wrapUp && "outcome" in result.wrapUp).toBe(false);
+      expect(result.wrapUp?.overshoot).toBeUndefined();
+    }
   });
 
   test("turn threshold: the notice starts on turn min(ceil(at x maxTurns), maxTurns - 1), at least turn 1", async () => {

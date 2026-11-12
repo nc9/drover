@@ -867,6 +867,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             const spent =
               d.inputTokens + d.outputTokens + (d.cacheReadTokens ?? 0) + (d.cacheWriteTokens ?? 0);
             if (budget.maxTokens !== undefined && spent >= budget.maxTokens) {
+              if (!quotaBreach.value) breachMessage.value = e.message;
               tripQuota({
                 dimension: "tokens",
                 limit: budget.maxTokens,
@@ -875,6 +876,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
               });
             }
             if (budget.maxCostUsd !== undefined && (d.costUsd ?? 0) >= budget.maxCostUsd) {
+              if (!quotaBreach.value) breachMessage.value = e.message;
               tripQuota({
                 dimension: "cost",
                 limit: budget.maxCostUsd,
@@ -907,6 +909,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         }
         const invocationTurns = turn - startTurn;
         if (budget?.maxTurns !== undefined && invocationTurns >= budget.maxTurns) {
+          if (!quotaBreach.value) breachMessage.value = lastAssistantMsg.value;
           tripQuota({
             dimension: "turns",
             limit: budget.maxTurns,
@@ -1399,6 +1402,8 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       //     turn is not an overshoot (that turn was allowed);
       //   - cost and tokens, only under `quota.wrapUp` once the warning fired:
       //     an overshoot, recorded on `RunResult.wrapUp.overshoot`.
+      //   The same holds for a per-invocation `budget` breach (it has no warning
+      //   of its own: its cost / token breach needs the spec's wrap-up).
       // The run is `success`, the abort that stopped a NEXT turn is not a loop
       // error, and the `postSuccess` lifecycle is skipped (the budget is
       // spent). An ongoing run (the breaching call asked for tools) or an
@@ -1418,11 +1423,12 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         forgiven = true;
         if (breach.dimension !== "turns") overshoot = breach;
       }
-      // The turn that reached `maxTurns` ended in a provider error: that error is
-      // the outcome (`ProviderError`), not the turn budget, which was not exceeded.
+      // The call that tripped a forgivable budget (the turn that reached `maxTurns`,
+      // or a cost / token breach once the wrap-up warning fired) ended in a provider
+      // error: that error is the outcome (`ProviderError`), not `quota` / `cut_off`.
       const lastStop = (lastAssistantMsg.value as { stopReason?: string } | null)?.stopReason;
       if (
-        breach?.dimension === "turns" &&
+        forgivable &&
         breachMessage.value !== null &&
         breachMessage.value === lastAssistantMsg.value &&
         lastStop === "error"
@@ -1682,6 +1688,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
                 dimension: overshoot.dimension as "cost" | "tokens",
                 limit: overshoot.limit,
                 observed: overshoot.observed,
+                scope: overshoot.scope === "invocation" ? "budget" : "spec",
               },
             }
           : {}),
