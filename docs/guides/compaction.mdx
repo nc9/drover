@@ -146,6 +146,9 @@ preserve: { firstUserTurn: true, recentTurns: 3, pinTools: ["remember", "recall"
 - **`pinTools`** — tool ids whose results are never compacted. Pin
   `remember`/`recall` so externalised [memory](/guides/memory) survives a pass.
 
+The leading `system` message (the rendered system prompt and the tool declarations)
+is always kept and never summarised or dropped; its size counts toward the trigger.
+
 Only the **head** — everything between the preserved opener and the verbatim
 tail — is ever compacted. The head boundary snaps to a turn boundary, so a
 `toolCall` is never split from its `toolResult`.

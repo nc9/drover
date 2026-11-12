@@ -10,6 +10,12 @@ saved messages. With [compaction](/guides/compaction) enabled the
 checkpoint stores the _compacted_ history, so resume replays the
 shortened transcript rather than re-deriving it.
 
+The system prompt is not part of the checkpoint. pi 1.x sends it to the model as a
+leading `system` message, and drover rebuilds that message from the spec on every
+invocation (run, resume, continue, `postSuccess`). So a resume always sends the
+current rendered prompt, a changed prompt takes effect, and checkpoints written
+before the pi 1.x migration (which have no system message) resume unchanged.
+
 ## Prerequisites
 
 Storage must be wired. Without it, `pause()` degrades to plain `abort()`
