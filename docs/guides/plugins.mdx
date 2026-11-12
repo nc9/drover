@@ -37,6 +37,11 @@ ones that match what your plugin actually does.
     Warns once near each cap. Counts per run; refused calls are not counted.
     Pair with `quota.maxTurns`. Details below.
   </Card>
+  <Card title="balance-preflight">
+    Refuses a run (and optionally every Nth call) when a provider's balance is below the
+    estimate plus a reserve, before a 402 happens mid-run. Host-level, built on the
+    `beforeModelCall` hook. `balancePreflightPlugin({ sources: [openRouterBalance({ apiKey })], estimateUsd: 1, reserveUsd: 0.5 })`.
+  </Card>
   <Card title="step-tracer">
     Projects events into a flat trace list for observability.
     `stepTracerPlugin()` returns `{ steps, plugin }`.
@@ -277,3 +282,75 @@ again. Change the arguments, try a different approach, or stop and report what y
 - **Counting:** `usage(runId)` gives `{ failed, repeated }`. In a trace, a guarded call's
   `tool_call_end` has `result.denied.code === "repeat_refusal"`, and `summarizeTrace` counts them
   in `toolCalls.repeatedFailures`.
+
+## Refusing a model call: `beforeModelCall`
+
+`beforeModelCall(info, ctx)` runs before every model call, the first included, with the
+call number and the usage so far. It returns `{ kind: "allow" }` or
+`{ kind: "refuse", tag, message }`; a refusal aborts the loop before that call is made
+and the run ends `status: "error"` with that tag and message (and an `error` event). A hook
+that throws or dies is swallowed and the call is allowed: a broken guard must not take the
+run down. It is the seam for admission control; `balancePreflightPlugin` is built on it.
+
+```ts
+import { balancePreflightPlugin, openRouterBalance } from "@droveragent/plugins";
+
+plugins: [
+  balancePreflightPlugin({
+    sources: [openRouterBalance({ apiKey })], // first that answers is used
+    estimateUsd: 0.5,                         // or ({ runId }) => number
+    reserveUsd: 1,                            // always keep this much
+    everyNCalls: 10,                          // also re-check, against what is still expected to be spent
+    onUnknown: "allow",                       // lookup failed or timed out: advisory by default, "refuse" for strict
+  }),
+];
+```
+
+Balance sources are host-level (`{ provider, balance() }`); the provider chain knows nothing about
+them. `openRouterBalance` reads `GET /credits` (credits minus usage) from OpenRouter's documented shape; it is not
+verified against the live API, and nothing reads keys from the environment. The failure reason of a lookup is never
+put in the run's error message.
+
+**Which calls are checked.** One check per model call of the run that carries the plugin:
+
+- It runs first, before compaction and the checkpoint snapshot, so a refused call spends
+  nothing, not even a compaction summary call. The summariser's own call is not checked
+  separately: it belongs to the checked call.
+- Under a provider chain it is checked once per call, not once per failover attempt.
+- A subagent's calls are checked only by plugins on the child's spec (host plugins attach to
+  the parent's spec); add the plugin to child specs to guard their spend.
+- The refusal message is the plugin's own text. `balancePreflightPlugin` builds it from numbers
+  and the configured provider name only (balance, amount needed, estimate, reserve), never from
+  a balance API's response.
+- Order with `quota.wrapUp`: before each model call the guard runs first, then the base
+  transform (compaction, checkpoint snapshot), then the wrap-up notice. A refused call stops at
+  the guard, so it never fires a `budget_warning` or adds the notice. The `postSuccess`
+  continuation runs the guard, then the base transform, with no wrap-up notice.
+- The hook sees only the call number and usage, never message content, so its order relative
+  to untrusted-data fencing of tool results does not matter.
+
+**A hook that fails.** A `beforeModelCall` that throws or dies is treated as `allow` (fail
+open). A guard whose rule is "never spend without a known balance" handles that itself:
+`balancePreflightPlugin` catches every lookup failure, and an `estimateUsd` function that
+throws or returns a non-finite number, and applies `onUnknown` (`"refuse"` fails closed with
+tag `BalanceUnknown`; the failure's own text is never in the message).
+
+**A refusal is terminal.** The refused call is never sent: the transport is not called at all,
+whatever it does with an aborted signal. The run ends `status: "error"` with the plugin's tag
+(`InsufficientBalance`, `BalanceUnknown`) and message. The refused call adds no usage, no
+checkpoint and no turn: `result.turns` counts only calls that were made (the event stream does
+carry a `turn_start` for the refused turn). Work done before the refusal is kept in the result
+and in the last checkpoint. There is no "wait and resume" for a refused run: it ends `error`, and
+`resumeAgent` (with or without `appendMessages`) refuses `error` runs, so start a new run after
+a top-up. A continuation of a finished `success` run is checked like any run: its first call
+is `callNumber` 1 again, with `usage` the whole run so far.
+
+The numbers in the message add up: before the first call, needed = estimate + reserve; on a
+later check, needed = (estimate minus the cost already spent, floored at 0) + reserve, and the
+message spells out each term.
+
+**Concurrent runs.** One plugin instance can serve many runs, and a looked-up balance is reused
+for `cacheMs` (default 5 s). Runs that start within that window all see the same balance, and
+each is checked against it on its own, so several can pass together and overspend it. The
+reserve is the only buffer: size it for the runs you start at once, or use one instance per
+run with `cacheMs: 0`.

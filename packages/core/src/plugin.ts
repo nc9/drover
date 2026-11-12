@@ -1,7 +1,7 @@
 import type { Effect } from "effect";
 
 import type { RunContext } from "./context.ts";
-import type { HarnessEvent, ToolResult } from "./events.ts";
+import type { HarnessEvent, ToolResult, Usage } from "./events.ts";
 import type { HarnessError } from "./errors.ts";
 import type { RunResult } from "./result.ts";
 import type { AnyToolDef } from "./tool.ts";
@@ -29,6 +29,22 @@ export type ToolDecision =
        */
       code?: string;
     };
+
+/**
+ * Decision returned by `beforeModelCall`. `refuse` ends the run with `status: "error"` and the
+ * given tag and message, before that model call is made.
+ */
+export type ModelCallDecision =
+  | { kind: "allow" }
+  | { kind: "refuse"; tag: string; message: string };
+
+/** What a `beforeModelCall` hook is told about the call about to be made. */
+export interface ModelCallInfo {
+  /** 1-based count of model calls in this invocation of the run (the first call is 1). */
+  callNumber: number;
+  /** Usage accumulated so far in the run, cost included. */
+  usage: Usage;
+}
 
 /**
  * Recovery returned by `onError`. Lets plugins decide whether a thrown
@@ -161,6 +177,17 @@ export interface HarnessPlugin {
    * name the old one).
    */
   assertResumable?: (ctx: RunContext) => void;
+
+  /**
+   * Called before every model call (including the first). May refuse: the run then ends
+   * `error` with the plugin's tag and message, with no model call made. For admission control:
+   * a balance preflight, a rate guard. Failures and defects of the hook are swallowed (the call
+   * is allowed): a broken guard must not take the run down.
+   */
+  beforeModelCall?: (
+    info: ModelCallInfo,
+    ctx: RunContext,
+  ) => Effect.Effect<ModelCallDecision, never, never>;
 
   onError?: (error: HarnessError, ctx: RunContext) => Effect.Effect<ErrorRecovery, never, never>;
 }
