@@ -340,8 +340,10 @@ whatever it does with an aborted signal. The run ends `status: "error"` with the
 (`InsufficientBalance`, `BalanceUnknown`) and message. The refused call adds no usage, no
 checkpoint and no turn: `result.turns` counts only calls that were made (the event stream does
 carry a `turn_start` for the refused turn). Work done before the refusal is kept in the result
-and in the last checkpoint. There is no "wait and resume" for a refused run; once continuing a
-finished run with new input is supported (#2), a refused run can be continued after a top-up.
+and in the last checkpoint. There is no "wait and resume" for a refused run: it ends `error`, and
+`resumeAgent` (with or without `appendMessages`) refuses `error` runs, so start a new run after
+a top-up. A continuation of a finished `success` run is checked like any run: its first call
+is `callNumber` 1 again, with `usage` the whole run so far.
 
 The numbers in the message add up: before the first call, needed = estimate + reserve; on a
 later check, needed = (estimate minus the cost already spent, floored at 0) + reserve, and the

@@ -326,3 +326,71 @@ describe("beforeModelCall refusal round 2", () => {
     expect(events.filter((e) => e.kind === "error")).toHaveLength(1);
   });
 });
+
+describe("beforeModelCall on a continuation (#2)", () => {
+  const continued = async (plugins: HarnessPlugin[]) => {
+    const { state, streamFn } = transport();
+    state.reached = 1; // answer directly
+    const prior = msg([{ type: "text", text: "first answer" }], "stop");
+    const result = await Effect.runPromise(
+      runAgentEffect({
+        spec: defineAgent({
+          id: "g",
+          systemPrompt: "p",
+          inputSchema: Type.Object({ q: Type.String() }),
+          outputSchema: Type.Unknown(),
+          model: "m",
+          tools: ["read"],
+          plugins,
+        }),
+        input: { q: "x" },
+        ctx: {
+          runId: "cont",
+          depth: 0,
+          cwd: process.cwd(),
+          env: {},
+          signal: new AbortController().signal,
+        },
+        emit: () => {},
+        deps: {
+          sandbox: createNoneSandbox(),
+          preResolvedModels: new Map([["m", { model, apiKey: "k" }]]),
+          streamFn,
+        },
+        resumeFrom: {
+          runId: "cont",
+          seq: 2,
+          messages: [
+            { role: "user", content: "x", timestamp: 1 },
+            prior,
+            { role: "user", content: "and now a follow-up", timestamp: 2 },
+          ],
+          usage: { inputTokens: 10, outputTokens: 10, costUsd: 2 },
+          toolCalls: [],
+          retriesUsed: 0,
+          ts: Date.now(),
+        },
+      }),
+    );
+    return { result, state };
+  };
+
+  test("the first call of a continuation is callNumber 1 with the run's usage so far", async () => {
+    const seen: Array<[number, number]> = [];
+    const { result, state } = await continued([
+      guard((n, cost) => (seen.push([n, cost]), { kind: "allow" })),
+    ]);
+    expect(result.status).toBe("success");
+    expect(seen[0]).toEqual([1, 2]);
+    expect(state.reached).toBe(2);
+  });
+
+  test("a refusal on a continuation's first call ends error and makes no call", async () => {
+    const { result, state } = await continued([
+      guard(() => ({ kind: "refuse", tag: "InsufficientBalance", message: "top up" })),
+    ]);
+    expect(result.status).toBe("error");
+    expect(result.error).toMatchObject({ tag: "InsufficientBalance", message: "top up" });
+    expect(state.reached).toBe(1);
+  });
+});
