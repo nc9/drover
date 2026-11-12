@@ -515,6 +515,7 @@ describe("response tap: structured errors over the real transport", () => {
       expect(result.diagnostics!.at(-1)!.details).toMatchObject({
         status: 429,
         code: "insufficient_quota",
+        type: "rate_limit_error",
         retryAfterMs: 3000,
       });
       // The host's wrapper ran underneath the tap, and never saw the tag.
