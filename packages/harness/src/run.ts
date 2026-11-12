@@ -5,6 +5,7 @@ import {
   type AnyToolDef,
   CancelledError,
   CompactionConfigError,
+  createFence,
   type HarnessError,
   type HarnessEvent,
   InputValidationError,
@@ -40,7 +41,7 @@ import {
 import { skillLoadTool, skillResourceTool } from "@droveragent/skills";
 import type { CheckpointRow } from "@droveragent/storage";
 import { builtinsById, type BuiltinToolId } from "@droveragent/tools";
-import { Effect } from "effect";
+import { Cause, Effect, Exit, Option } from "effect";
 import { runAgentLoop, runAgentLoopContinue, type StreamFn } from "@mariozechner/pi-agent-core";
 import { taskTool, DEFAULT_MAX_DEPTH, DEFAULT_FAN_OUT } from "./task-tool.ts";
 import {
@@ -262,6 +263,24 @@ export async function assembleDefaultPrompt(
 export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
   args: RunArgs<S>,
 ): Effect.Effect<RunResult<AgentOutput<S>>, HarnessError, never> {
+  // `onRunEnd` must fire on EVERY exit (plugins free per-run state there), exactly once. The
+  // normal path fires it after terminal resolution; an early failure, defect or interrupt
+  // (before or outside that point) fires it from `onExit` with a synthetic `error` result.
+  const end: {
+    fired: boolean;
+    plugins: ReadonlyArray<import("@droveragent/core").HarnessPlugin>;
+    startedAt: number;
+    usage: Usage;
+    toolCalls: string[];
+    /** Storage whose run row is `running` and not yet given a terminal status. */
+    row?: NonNullable<HarnessDeps["storage"]>;
+  } = {
+    fired: false,
+    plugins: [],
+    startedAt: Date.now(),
+    usage: { inputTokens: 0, outputTokens: 0 },
+    toolCalls: [],
+  };
   return Effect.gen(function* () {
     const { spec, input, ctx, emit, deps, resumeFrom, pauseFlag, compactFlag, emitDeltas, budget } =
       args;
@@ -286,6 +305,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     const plugins: ReadonlyArray<import("@droveragent/core").HarnessPlugin> = autoMemoryPlugin
       ? [...explicitPlugins, autoMemoryPlugin]
       : explicitPlugins;
+    end.plugins = plugins;
+    end.startedAt = startedAt;
+    end.usage = usage;
+    end.toolCalls = toolCalls;
     if (isResume) {
       for (const p of plugins) {
         try {
@@ -357,11 +380,13 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         }),
       );
       if (createResult._tag === "Left") void createResult.left;
+      else end.row = storage;
     }
     if (storage && isResume) {
       // Flip status back to "running" so observers see the in-flight state.
       const r = yield* Effect.either(storage.updateRun(ctx.runId, { status: "running" }));
       if (r._tag === "Left") void r.left;
+      else end.row = storage;
     }
 
     safeEmit({ kind: "run_start", runId: ctx.runId, agentId: spec.id, specHash, ts: Date.now() });
@@ -891,7 +916,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // afterToolCall: walk plugins in order; each may rewrite the tool result.
     const afterToolCall = plugins.some((p) => p.afterToolCall)
       ? async (aCtx: {
-          toolCall: { name: string };
+          toolCall: { name: string; id?: string };
           args: unknown;
           result: { content: Array<{ type: string; text?: string }>; details?: unknown };
           isError: boolean;
@@ -912,7 +937,15 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             if (!p.afterToolCall) continue;
             const before = current;
             const exit = await Effect.runPromiseExit(
-              Effect.suspend(() => p.afterToolCall!(aCtx.toolCall.name, aCtx.args, before, ctx)),
+              Effect.suspend(() =>
+                p.afterToolCall!(
+                  aCtx.toolCall.name,
+                  aCtx.args,
+                  before,
+                  ctx,
+                  aCtx.toolCall.id !== undefined ? { toolUseId: aCtx.toolCall.id } : {},
+                ),
+              ),
             );
             if (exit._tag === "Success") {
               current = exit.value;
@@ -1536,6 +1569,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       if (errorOut) patch.error = errorOut;
       const r = yield* Effect.either(storage.updateRun(ctx.runId, patch));
       if (r._tag === "Left") void r.left;
+      delete end.row;
     }
 
     const result: RunResult<AgentOutput<S>> = {
@@ -1577,14 +1611,90 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // Run-level lifecycle: fire `onRunEnd` once, after the loop +
     // `postSuccess` and terminal resolution. Observation only — failures and
     // defects are swallowed (and async effects awaited).
+    end.fired = true;
     for (const p of plugins) {
       if (!p.onRunEnd) continue;
-      yield* p.onRunEnd(result, ctx).pipe(Effect.catchAllCause(() => Effect.void));
+      yield* safeOnRunEnd(p, result, ctx);
     }
 
     return result;
-  });
+  }).pipe(
+    // Runs uninterruptibly (an interrupt waits for it): onRunEnd hooks must be fast.
+    Effect.onExit((exit) =>
+      Effect.suspend(() => {
+        if (end.fired) return Effect.void;
+        end.fired = true;
+        const interrupted = Exit.isFailure(exit) && Cause.isInterruptedOnly(exit.cause);
+        const failure = Exit.isFailure(exit) ? Cause.failureOption(exit.cause) : Option.none();
+        const error = Option.isSome(failure)
+          ? {
+              tag: tagOf(failure.value),
+              message: scrubEarlyMessage((failure.value as { message?: unknown }).message),
+            }
+          : interrupted
+            ? { tag: "CancelledError", message: "interrupted" }
+            : { tag: "Defect", message: "run failed" };
+        const status: RunStatus = interrupted ? "cancelled" : "error";
+        const synthetic: RunResult = {
+          runId: args.ctx.runId,
+          status,
+          finalText: "",
+          turns: 0,
+          durationMs: Date.now() - end.startedAt,
+          usage: end.usage,
+          toolCalls: end.toolCalls,
+          error,
+        };
+        // A row created (or flipped to running on resume) but never given a terminal status.
+        const row = end.row;
+        delete end.row;
+        const persist = row
+          ? Effect.either(
+              row.updateRun(args.ctx.runId, {
+                status,
+                endedAt: Date.now(),
+                tokensIn: end.usage.inputTokens,
+                tokensOut: end.usage.outputTokens,
+                costUsd: end.usage.costUsd ?? 0,
+                error,
+              }),
+            ).pipe(Effect.catchAllCause(() => Effect.void))
+          : Effect.void;
+        return persist.pipe(
+          Effect.zipRight(
+            Effect.forEach(end.plugins, (p) => safeOnRunEnd(p, synthetic, args.ctx), {
+              discard: true,
+            }),
+          ),
+        );
+      }),
+    ),
+  );
 }
+
+/**
+ * One plugin's `onRunEnd`: a hook that throws synchronously, fails or dies is swallowed, so it
+ * cannot replace the run's result or keep a later plugin (the fence) from freeing its state.
+ */
+function safeOnRunEnd(
+  p: import("@droveragent/core").HarnessPlugin,
+  result: RunResult,
+  ctx: RunContext,
+): Effect.Effect<void> {
+  if (!p.onRunEnd) return Effect.void;
+  const hook = p.onRunEnd;
+  return Effect.suspend(() => hook(result, ctx)).pipe(Effect.catchAllCause(() => Effect.void));
+}
+
+const tagOf = (e: unknown): string => {
+  const t = (e as { _tag?: unknown } | null)?._tag;
+  return typeof t === "string" && /^[A-Za-z0-9_]{1,64}$/.test(t) ? t : "HarnessError";
+};
+
+const earlyCleaner = createFence({ nonce: "" });
+/** An early failure's message for the run row and the synthetic result: cleaned and bounded. */
+const scrubEarlyMessage = (m: unknown): string =>
+  typeof m === "string" && m.length > 0 ? earlyCleaner.clean(m, 500) : "run failed";
 
 function composeTools(
   spec: AgentSpec,

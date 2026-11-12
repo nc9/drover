@@ -65,7 +65,9 @@ const spec = defineAgent({
 Plugin order does not decide safety. The harness applies a fencing plugin's
 `wrapTool` outermost and runs its `afterToolCall` after every other plugin's. That
 `afterToolCall` keeps verbatim only the exact strings the plugin itself produced for
-the run (its fence blocks, the raw text of trusted results) and fences everything
+that same tool call (its fence blocks, the raw text of trusted results; matched by tool-use
+id, and forgotten once the call's result is finalised, so memory stays bounded by the calls in
+flight) and fences everything
 else. Text another plugin added or rewrote, including on a trusted tool's result, is
 fenced, and so is a block that only looks like one of ours: the model knows the nonce
 from the system prompt, so a later plugin that echoes model-chosen text could forge
@@ -85,7 +87,9 @@ whose nonce the plugin cannot recover is **refused** (a `PluginError` from
 `assertResumable`), because the restored history would carry fences that name the
 old nonce while the note names a new one. Every use of a live run's fence reads the
 store (refreshing the in-memory store's LRU entry, which keeps the 10,000 most
-recently used runs). If a live run's nonce goes missing from the store or changes,
+recently used runs, and never evicts a run that is live: when it is full, ended runs go first,
+and it only grows past the limit while more runs than that are live; `memoryNonceLimit` sets
+the limit). If a live run's nonce goes missing from the store or changes,
 the plugin throws instead of minting a new one, so a run never ends up with a system
 prompt naming one nonce and results fenced with another.
 
@@ -138,7 +142,8 @@ takes a string or any JSON-able value; `wrapText` is the whole-text variant.
   - a property name, `required` entry or `$defs` name is not `[A-Za-z0-9_.-]{1,64}`;
   - an `enum` / `const` string or `$ref` has control, zero-width or look-alike
     characters, `<` or `>`, more than 128 characters, or more than 3 whitespace
-    characters (a token, not prose);
+    characters (a token, not prose), or all `enum` / `const` strings of the tool together
+    exceed 2048 characters (many word-like tokens are still text the model reads);
   - the schema is over 32 KB or 32 levels deep, or has an unknown `type`;
   - the tool name is not `[A-Za-z0-9_-]{1,64}`, or `<server>__<tool>` is longer than
     64 characters.

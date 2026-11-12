@@ -14,7 +14,7 @@ import {
 import {
   MAX_PREFIXED_TOOL_NAME,
   MCP_TOOL_NAME,
-  sanitizeInputSchema,
+  sanitizeToolSurface,
   sanitizeToolDescription,
 } from "./schema.ts";
 
@@ -174,19 +174,19 @@ function mcpToolToDroverTool(
   if (prefixedToolName(serverId, tool.name).length > MAX_PREFIXED_TOOL_NAME) {
     return { refused: `"<server>__<tool>" is longer than ${MAX_PREFIXED_TOOL_NAME} chars` };
   }
-  let schema: TSchema = Type.Object({}, { additionalProperties: true });
-  if (tool.inputSchema !== undefined && tool.inputSchema !== null) {
-    const cleaned = sanitizeInputSchema(tool.inputSchema);
-    if (!cleaned.ok) return { refused: cleaned.reason };
-    schema = Type.Unsafe(cleaned.schema) as TSchema;
-  }
+  const surface = sanitizeToolSurface(
+    tool.description ?? `MCP tool ${tool.name} on server ${serverId}`,
+    tool.inputSchema,
+  );
+  if (!surface.ok) return { refused: surface.reason };
+  const schema: TSchema = surface.schema
+    ? (Type.Unsafe(surface.schema) as TSchema)
+    : Type.Object({}, { additionalProperties: true });
 
   const prefixed = prefixedToolName(serverId, tool.name);
   return defineTool({
     id: prefixed,
-    description: sanitizeToolDescription(
-      tool.description ?? `MCP tool ${tool.name} on server ${serverId}`,
-    ),
+    description: surface.description,
     inputSchema: schema,
     execute: (input, ctx): Effect.Effect<ToolResult, SandboxError, never> =>
       Effect.tryPromise({

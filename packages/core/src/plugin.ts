@@ -99,6 +99,8 @@ export interface HarnessPlugin {
     input: unknown,
     result: ToolResult,
     ctx: RunContext,
+    /** `toolUseId`: the id of this tool call (the one the tool's `execute` saw), when known. */
+    meta?: { toolUseId?: string },
   ) => Effect.Effect<ToolResult, HarnessError, never>;
 
   beforeCompaction?: (
@@ -121,9 +123,13 @@ export interface HarnessPlugin {
   onRunStart?: (ctx: RunContext) => Effect.Effect<void, never, never>;
 
   /**
-   * Run-level lifecycle. Fired once after the loop + `postSuccess` finish
-   * and the terminal status is resolved. Observation only; async effects
-   * are awaited, failures and defects swallowed.
+   * Run-level lifecycle. Fired exactly once per run, on every exit: after the
+   * loop + `postSuccess` finish and the terminal status is resolved, or, when
+   * the run fails, dies or is interrupted before that, with a synthetic result
+   * (`status: "error"`, or `"cancelled"` for an interrupt). Observation only;
+   * async effects are awaited, failures, defects and synchronous throws
+   * swallowed. During an interrupt it runs uninterruptibly (the interrupt waits
+   * for it), so keep it fast.
    */
   onRunEnd?: (result: RunResult, ctx: RunContext) => Effect.Effect<void, never, never>;
 

@@ -54,6 +54,29 @@ export const SCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
   "definitions",
 ]);
 
+/** The JSON Schema `format` names kept; any other `format` value is dropped. */
+export const JSON_SCHEMA_FORMATS: ReadonlySet<string> = new Set([
+  "date-time",
+  "date",
+  "time",
+  "duration",
+  "email",
+  "idn-email",
+  "hostname",
+  "idn-hostname",
+  "ipv4",
+  "ipv6",
+  "uri",
+  "uri-reference",
+  "iri",
+  "iri-reference",
+  "uuid",
+  "uri-template",
+  "json-pointer",
+  "relative-json-pointer",
+  "regex",
+]);
+
 const JSON_TYPES = new Set(["string", "number", "integer", "boolean", "object", "array", "null"]);
 const NUMERIC = new Set([
   "minimum",
@@ -96,6 +119,16 @@ function exactToken(v: string, what: string): string {
   if ((v.match(/\s/g)?.length ?? 0) > MAX_TOKEN_SPACES) refuse(`${what} reads like prose`);
   return v;
 }
+
+/**
+ * Total characters of all `enum` / `const` / `default` strings (and object keys inside those
+ * values) one tool's schema may carry. Each token is
+ * already short and word-like (at most {@link MAX_SCHEMA_TOKEN_CHARS}, few spaces), but a
+ * schema can hold many: a list of `ignore_previous_instructions`-style tokens is still text the
+ * model reads unfenced. Over this, the tool is refused. Real enums (units, modes, languages,
+ * region codes) stay far below it.
+ */
+export const MAX_SCHEMA_TOKEN_TOTAL_CHARS = 2048;
 
 /** At most this many whitespace characters in an exact token (enum / const string). */
 export const MAX_TOKEN_SPACES = 3;
@@ -166,11 +199,21 @@ function walk(node: unknown, depth: number, path: string): unknown {
       out = v;
     } else if (k === "required") {
       if (!Array.isArray(v)) refuse(`${at} is not an array`);
-      out = (v as unknown[]).map((n) =>
-        typeof n === "string"
-          ? schemaName(n, `${at} entry`)
-          : refuse(`${at} entry is not a string`),
-      );
+      // Only names of sibling `properties`, each once, at most one per property: anything else
+      // is text the model reads that names nothing, so it is dropped.
+      const props = (node as { properties?: unknown }).properties;
+      const names =
+        props !== null && typeof props === "object" && !Array.isArray(props)
+          ? Object.keys(props)
+          : [];
+      const kept = [
+        ...new Set(
+          (v as unknown[]).filter((n): n is string => typeof n === "string" && names.includes(n)),
+        ),
+      ]
+        .slice(0, names.length)
+        .map((n) => schemaName(n, `${at} entry`));
+      out = kept.length > 0 ? kept : undefined;
     } else if (k === "enum") {
       if (!Array.isArray(v)) refuse(`${at} is not an array`);
       out = exactValue(v, at, depth + 1);
@@ -179,14 +222,8 @@ function walk(node: unknown, depth: number, path: string): unknown {
     } else if (k === "default") {
       out = optional(() => exactValue(v, at, depth + 1));
     } else if (k === "format") {
-      out =
-        typeof v === "string"
-          ? optional(() => {
-              if (/[<>]/.test(v) || v.length > MAX_MCP_DESCRIPTION_CHARS) refuse(at);
-              if (cleaner.clean(v, MAX_MCP_DESCRIPTION_CHARS) !== v) refuse(at);
-              return v;
-            })
-          : undefined;
+      // Only a known format name; anything else is free text outside every budget: dropped.
+      out = typeof v === "string" && JSON_SCHEMA_FORMATS.has(v) ? v : undefined;
     } else if (k === "$ref") {
       if (typeof v !== "string" || !v.startsWith("#/")) refuse(`${at} is not a local reference`);
       out = exactToken(v as string, at);
@@ -223,13 +260,15 @@ function walk(node: unknown, depth: number, path: string): unknown {
  *
  * - Only {@link SCHEMA_KEYWORDS} pass; `$comment`, `x-*`, `examples` and unknown keys are dropped.
  * - `description` / `title`: cleaned, tags escaped, bounded (as tool descriptions).
- * - Property names, `required` entries, `$defs` names: {@link SCHEMA_NAME} (identifier-like,
- *   at most 64 chars), else the tool is refused.
+ * - Property names, `$defs` names: {@link SCHEMA_NAME} (identifier-like, at most 64 chars),
+ *   else the tool is refused. `required` keeps only names of sibling `properties` (deduplicated,
+ *   at most one per property); other entries are dropped.
  * - `enum` / `const` strings and `$ref`: must already be clean, at most
  *   {@link MAX_SCHEMA_TOKEN_CHARS} chars, without `<` or `>`, at most
  *   {@link MAX_TOKEN_SPACES} whitespace characters (a token, not prose); otherwise the tool is
  *   refused (a rewritten value would no longer match the server).
- * - `default` and `format` with such text are dropped instead. `pattern` is always dropped:
+ * - `default` with such text is dropped instead; `format` is kept only when it is a known
+ *   format name ({@link JSON_SCHEMA_FORMATS}), else dropped. `pattern` is always dropped:
  *   a server-supplied regex run by a validator is a ReDoS risk.
  * - Over {@link MAX_SCHEMA_BYTES} serialised or {@link MAX_SCHEMA_DEPTH} deep: refused.
  */
@@ -248,6 +287,13 @@ export function sanitizeInputSchema(schema: unknown): SchemaSanitizeResult {
     if (typeof out !== "object" || out === null) {
       return { ok: false, reason: "top-level schema must be an object" };
     }
+    const tokenChars = enumConstChars(out, false);
+    if (tokenChars > MAX_SCHEMA_TOKEN_TOTAL_CHARS) {
+      return {
+        ok: false,
+        reason: `enum / const / default text totals ${tokenChars} chars, over the ${MAX_SCHEMA_TOKEN_TOTAL_CHARS}-char cap`,
+      };
+    }
     return { ok: true, schema: out as Record<string, unknown> };
   } catch (e) {
     if (e instanceof Refused) return { ok: false, reason: e.message };
@@ -260,3 +306,93 @@ export const MCP_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** Longest prefixed tool id (`<server>__<tool>`) the model sees: most providers cap names at 64. */
 export const MAX_PREFIXED_TOOL_NAME = 64;
+
+/**
+ * Characters of every string under an `enum`, `const` or `default` keyword, anywhere in the
+ * schema, object KEYS inside those values included (an object-valued enum entry can carry text
+ * in its keys). Children of `properties` / `$defs` / `definitions` are keyed by NAME, so a
+ * property called `enum` is not mistaken for the keyword.
+ */
+function enumConstChars(node: unknown, inToken: boolean, namesHere = false): number {
+  if (typeof node === "string") return inToken ? node.length : 0;
+  if (Array.isArray(node)) {
+    return node.reduce((n: number, x) => n + enumConstChars(x, inToken), 0);
+  }
+  if (node === null || typeof node !== "object") return 0;
+  let n = 0;
+  for (const [k, v] of Object.entries(node)) {
+    if (inToken) n += k.length;
+    if (namesHere) n += enumConstChars(v, inToken);
+    else {
+      n += enumConstChars(
+        v,
+        inToken || k === "enum" || k === "const" || k === "default",
+        SCHEMA_MAPS.has(k),
+      );
+    }
+  }
+  return n;
+}
+
+/**
+ * Total characters of one tool's prose the model reads unfenced: its description plus every
+ * `description` / `title` in its input schema (after cleaning) and every property / `$defs` /
+ * `definitions` name (each at most 64 chars, but a schema can hold many). Each is capped at
+ * {@link MAX_MCP_DESCRIPTION_CHARS}, but a schema can hold many; over this total the tool is
+ * refused.
+ */
+export const MAX_TOOL_PROSE_TOTAL_CHARS = 4096;
+
+/**
+ * Characters of every `description` / `title` / `$ref` string and `required` entry in a
+ * (sanitised) schema, plus every property / `$defs` / `definitions` NAME. Those children are keyed by name, so a property
+ * called `description` counts as a name, not the keyword; `enum` / `const` / `default` values
+ * are data, not schema nodes (they have their own budget).
+ */
+function schemaProseChars(node: unknown, namesHere = false): number {
+  if (Array.isArray(node)) return node.reduce((n: number, x) => n + schemaProseChars(x), 0);
+  if (node === null || typeof node !== "object") return 0;
+  let n = 0;
+  for (const [k, v] of Object.entries(node)) {
+    if (namesHere) n += k.length + schemaProseChars(v);
+    else if ((k === "description" || k === "title" || k === "$ref") && typeof v === "string")
+      n += v.length;
+    else if (k === "required" && Array.isArray(v))
+      n += v.reduce((m: number, x) => m + (typeof x === "string" ? x.length : 0), 0);
+    else if (k === "enum" || k === "const" || k === "default") continue;
+    else n += schemaProseChars(v, SCHEMA_MAPS.has(k));
+  }
+  return n;
+}
+
+export type ToolSurfaceResult =
+  | {
+      readonly ok: true;
+      readonly description: string;
+      readonly schema: Record<string, unknown> | undefined;
+    }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * Everything of one server tool the model reads: the cleaned description and the sanitised
+ * input schema (see {@link sanitizeInputSchema}), or a refusal. Also refuses a tool whose
+ * description, schema descriptions / titles and property names total over
+ * {@link MAX_TOOL_PROSE_TOTAL_CHARS}.
+ */
+export function sanitizeToolSurface(description: string, inputSchema: unknown): ToolSurfaceResult {
+  let schema: Record<string, unknown> | undefined;
+  if (inputSchema !== undefined && inputSchema !== null) {
+    const cleaned = sanitizeInputSchema(inputSchema);
+    if (!cleaned.ok) return cleaned;
+    schema = cleaned.schema;
+  }
+  const desc = sanitizeToolDescription(description);
+  const total = desc.length + (schema ? schemaProseChars(schema) : 0);
+  if (total > MAX_TOOL_PROSE_TOTAL_CHARS) {
+    return {
+      ok: false,
+      reason: `description, schema descriptions / titles, names, required entries and $refs total ${total} chars, over the ${MAX_TOOL_PROSE_TOTAL_CHARS}-char cap`,
+    };
+  }
+  return { ok: true, description: desc, schema };
+}
