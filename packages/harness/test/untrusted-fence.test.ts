@@ -4,11 +4,12 @@
  * fenced, and a subagent runs under the same plugin with its own nonce.
  */
 import { describe, expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
 import { Type } from "@sinclair/typebox";
 import { defineAgent, type AgentSpec, type HarnessEvent, type RunContext } from "@droveragent/core";
 import { createInMemoryMemory, renderMemoryIndex } from "@droveragent/memory";
 import { createNoneSandbox } from "@droveragent/sandbox";
+import { createMemoryStorage } from "@droveragent/storage";
 import type { PreResolvedModel } from "@droveragent/model";
 import { untrustedResultsPlugin } from "@droveragent/plugins";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@mariozechner/pi-ai";
@@ -447,5 +448,112 @@ describe("fence review round 2: onRunEnd on every exit", () => {
     expect(result.status).toBe("success");
     expect(ends).toBe(1);
     expect(plugin.liveRuns()).toBe(0);
+  });
+});
+
+describe("fence review round 3: onRunEnd isolation, cancelled status, run row", () => {
+  const failingInit = (id: string, plugins: AgentSpec["plugins"]) =>
+    agent({
+      id,
+      plugins,
+      mcpServers: ["srv"],
+      lifecycle: { init: [{ kind: "mcp", tool: "srv__fetch" }] },
+    });
+  const throwingMcp: HarnessDeps["mcpRuntime"] = {
+    tools: () => [],
+    servers: () => [],
+    callTool: async () => {
+      throw new Error("init boom");
+    },
+    close: async () => {},
+  };
+  const syncThrower = {
+    id: "sync-thrower",
+    onRunEnd: () => {
+      throw new Error("sync throw in onRunEnd");
+    },
+  };
+
+  test("a sync-throwing onRunEnd before the fence: the success stands and the fence still frees", async () => {
+    const plugin = untrustedResultsPlugin();
+    const { streamFn } = scripted([() => text("done")]);
+    const result = await Effect.runPromise(
+      runAgentEffect({
+        spec: agent({ id: "ok", plugins: [syncThrower as never, plugin] }),
+        input: { q: "x" },
+        ctx: ctx("sync-ok"),
+        emit: () => {},
+        deps: deps(streamFn),
+      }),
+    );
+    expect(result.status).toBe("success");
+    expect(plugin.liveRuns()).toBe(0);
+  });
+
+  test("the same on an early failure: the run fails with its own error and the fence frees", async () => {
+    const plugin = untrustedResultsPlugin();
+    const { streamFn } = scripted([() => text("never")]);
+    const r = await Effect.runPromise(
+      Effect.either(
+        runAgentEffect({
+          spec: failingInit("f", [syncThrower as never, plugin]),
+          input: { q: "x" },
+          ctx: ctx("sync-fail"),
+          emit: () => {},
+          deps: deps(streamFn, { mcpRuntime: throwingMcp }),
+        }),
+      ),
+    );
+    expect(r._tag === "Left" && (r.left as { _tag: string })._tag).toBe("LifecycleError");
+    expect(plugin.liveRuns()).toBe(0);
+  });
+
+  test("an init failure leaves the stored run row at error with the failure's tag", async () => {
+    const storage = createMemoryStorage();
+    const { streamFn } = scripted([() => text("never")]);
+    await Effect.runPromise(
+      Effect.either(
+        runAgentEffect({
+          spec: failingInit("row", [untrustedResultsPlugin()]),
+          input: { q: "x" },
+          ctx: ctx("row-fail"),
+          emit: () => {},
+          deps: deps(streamFn, { mcpRuntime: throwingMcp, storage }),
+        }),
+      ),
+    );
+    const row = await Effect.runPromise(storage.loadRun("row-fail"));
+    expect(row?.status).toBe("error");
+    expect(row?.error?.tag).toBe("LifecycleError");
+    expect(row?.endedAt).toBeNumber();
+  });
+
+  test("an interrupt reports cancelled to onRunEnd and on the run row", async () => {
+    const storage = createMemoryStorage();
+    const seen: string[] = [];
+    const observer = {
+      id: "observer",
+      onRunEnd: (r: { status: string }) => Effect.sync(() => void seen.push(r.status)),
+    };
+    const plugin = untrustedResultsPlugin();
+    const hang: StreamFn = () => {
+      const s = createAssistantMessageEventStream();
+      return s; // never completes
+    };
+    const fiber = Effect.runFork(
+      runAgentEffect({
+        spec: agent({ id: "int", plugins: [plugin, observer as never] }),
+        input: { q: "x" },
+        ctx: ctx("int-run"),
+        emit: () => {},
+        deps: deps(hang, { storage }),
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    await Effect.runPromise(Fiber.interrupt(fiber));
+    expect(seen).toEqual(["cancelled"]);
+    expect(plugin.liveRuns()).toBe(0);
+    const row = await Effect.runPromise(storage.loadRun("int-run"));
+    expect(row?.status).toBe("cancelled");
   });
 });

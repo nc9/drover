@@ -84,3 +84,10 @@ const metricsPlugin: HarnessPlugin = {
 `postSuccess` and terminal resolution. Both are observation-only — async
 effects are awaited, and any failure or defect is swallowed so an observer
 hook can't crash a run.
+
+`onRunEnd` fires exactly once on every exit. A run that fails before the loop
+(an `init` step, a bad model) or is interrupted still gets it, with a synthetic
+result: `status: "error"` and the failure's tag, or `"cancelled"` for an
+interrupt; the stored run row gets the same terminal status. During an
+interrupt the hook runs uninterruptibly (the interrupt waits for it), so keep
+it fast: hand slow work like a webhook to a queue instead of awaiting it.
