@@ -54,6 +54,29 @@ export const SCHEMA_KEYWORDS: ReadonlySet<string> = new Set([
   "definitions",
 ]);
 
+/** The JSON Schema `format` names kept; any other `format` value is dropped. */
+export const JSON_SCHEMA_FORMATS: ReadonlySet<string> = new Set([
+  "date-time",
+  "date",
+  "time",
+  "duration",
+  "email",
+  "idn-email",
+  "hostname",
+  "idn-hostname",
+  "ipv4",
+  "ipv6",
+  "uri",
+  "uri-reference",
+  "iri",
+  "iri-reference",
+  "uuid",
+  "uri-template",
+  "json-pointer",
+  "relative-json-pointer",
+  "regex",
+]);
+
 const JSON_TYPES = new Set(["string", "number", "integer", "boolean", "object", "array", "null"]);
 const NUMERIC = new Set([
   "minimum",
@@ -189,14 +212,8 @@ function walk(node: unknown, depth: number, path: string): unknown {
     } else if (k === "default") {
       out = optional(() => exactValue(v, at, depth + 1));
     } else if (k === "format") {
-      out =
-        typeof v === "string"
-          ? optional(() => {
-              if (/[<>]/.test(v) || v.length > MAX_MCP_DESCRIPTION_CHARS) refuse(at);
-              if (cleaner.clean(v, MAX_MCP_DESCRIPTION_CHARS) !== v) refuse(at);
-              return v;
-            })
-          : undefined;
+      // Only a known format name; anything else is free text outside every budget: dropped.
+      out = typeof v === "string" && JSON_SCHEMA_FORMATS.has(v) ? v : undefined;
     } else if (k === "$ref") {
       if (typeof v !== "string" || !v.startsWith("#/")) refuse(`${at} is not a local reference`);
       out = exactToken(v as string, at);
@@ -239,7 +256,8 @@ function walk(node: unknown, depth: number, path: string): unknown {
  *   {@link MAX_SCHEMA_TOKEN_CHARS} chars, without `<` or `>`, at most
  *   {@link MAX_TOKEN_SPACES} whitespace characters (a token, not prose); otherwise the tool is
  *   refused (a rewritten value would no longer match the server).
- * - `default` and `format` with such text are dropped instead. `pattern` is always dropped:
+ * - `default` with such text is dropped instead; `format` is kept only when it is a known
+ *   format name ({@link JSON_SCHEMA_FORMATS}), else dropped. `pattern` is always dropped:
  *   a server-supplied regex run by a validator is a ReDoS risk.
  * - Over {@link MAX_SCHEMA_BYTES} serialised or {@link MAX_SCHEMA_DEPTH} deep: refused.
  */
@@ -307,24 +325,25 @@ function enumConstChars(node: unknown, inToken: boolean, namesHere = false): num
 
 /**
  * Total characters of one tool's prose the model reads unfenced: its description plus every
- * `description` / `title` in its input schema (after cleaning). Each is capped at
+ * `description` / `title` in its input schema (after cleaning) and every property / `$defs` /
+ * `definitions` name (each at most 64 chars, but a schema can hold many). Each is capped at
  * {@link MAX_MCP_DESCRIPTION_CHARS}, but a schema can hold many; over this total the tool is
  * refused.
  */
 export const MAX_TOOL_PROSE_TOTAL_CHARS = 4096;
 
 /**
- * Characters of every `description` / `title` string in a (sanitised) schema. Children of
- * `properties` / `$defs` / `definitions` are keyed by NAME, so a property called `description`
- * is not mistaken for the keyword; `enum` / `const` / `default` values are data, not schema
- * nodes (they have their own budget).
+ * Characters of every `description` / `title` string in a (sanitised) schema, plus every
+ * property / `$defs` / `definitions` NAME. Those children are keyed by name, so a property
+ * called `description` counts as a name, not the keyword; `enum` / `const` / `default` values
+ * are data, not schema nodes (they have their own budget).
  */
 function schemaProseChars(node: unknown, namesHere = false): number {
   if (Array.isArray(node)) return node.reduce((n: number, x) => n + schemaProseChars(x), 0);
   if (node === null || typeof node !== "object") return 0;
   let n = 0;
   for (const [k, v] of Object.entries(node)) {
-    if (namesHere) n += schemaProseChars(v);
+    if (namesHere) n += k.length + schemaProseChars(v);
     else if ((k === "description" || k === "title") && typeof v === "string") n += v.length;
     else if (k === "enum" || k === "const" || k === "default") continue;
     else n += schemaProseChars(v, SCHEMA_MAPS.has(k));
@@ -343,7 +362,8 @@ export type ToolSurfaceResult =
 /**
  * Everything of one server tool the model reads: the cleaned description and the sanitised
  * input schema (see {@link sanitizeInputSchema}), or a refusal. Also refuses a tool whose
- * description and schema descriptions / titles total over {@link MAX_TOOL_PROSE_TOTAL_CHARS}.
+ * description, schema descriptions / titles and property names total over
+ * {@link MAX_TOOL_PROSE_TOTAL_CHARS}.
  */
 export function sanitizeToolSurface(description: string, inputSchema: unknown): ToolSurfaceResult {
   let schema: Record<string, unknown> | undefined;
@@ -357,7 +377,7 @@ export function sanitizeToolSurface(description: string, inputSchema: unknown): 
   if (total > MAX_TOOL_PROSE_TOTAL_CHARS) {
     return {
       ok: false,
-      reason: `description and schema descriptions / titles total ${total} chars, over the ${MAX_TOOL_PROSE_TOTAL_CHARS}-char cap`,
+      reason: `description, schema descriptions / titles and property names total ${total} chars, over the ${MAX_TOOL_PROSE_TOTAL_CHARS}-char cap`,
     };
   }
   return { ok: true, description: desc, schema };
