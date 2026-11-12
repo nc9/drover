@@ -1,7 +1,7 @@
 # drover
 
 [![CI](https://github.com/nc9/drover/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/nc9/drover/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/droveragent.svg)](https://www.npmjs.com/package/droveragent)
+[![npm](https://img.shields.io/npm/v/@droveragent/facade/next.svg)](https://www.npmjs.com/package/@droveragent/facade)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A declarative, strongly typed, Effect-native agent harness for TypeScript. Define agents as JSON-serialisable specs, run them headless, stream normalised events.
@@ -11,8 +11,13 @@ A declarative, strongly typed, Effect-native agent harness for TypeScript. Defin
 ## Install
 
 ```bash
-bun add droveragent @sinclair/typebox
+bun add @droveragent/facade@next @droveragent/core@next @sinclair/typebox
 ```
+
+> The unscoped `droveragent` umbrella is not on npm yet (its name is pending), so install
+> the scoped packages: `defineAgent` comes from `@droveragent/core` and `runAgent` from
+> `@droveragent/facade`. Until 0.3.0 is stable, `@next` is needed: `latest` still points at
+> the older 0.1 / 0.2 releases.
 
 Drover runs on [Bun](https://bun.sh) 1.3+. Default model aliases route through OpenRouter, so set `OPENROUTER_API_KEY` before running.
 
@@ -22,7 +27,8 @@ Drover runs on [Bun](https://bun.sh) 1.3+. Default model aliases route through O
 
 ```ts
 import { Type } from "@sinclair/typebox";
-import { defineAgent, runAgent } from "droveragent";
+import { defineAgent } from "@droveragent/core";
+import { runAgent } from "@droveragent/facade";
 
 const echo = defineAgent({
   id: "echo",
@@ -62,7 +68,7 @@ The same file lives at [`packages/droveragent/examples/quickstart.ts`](packages/
 
 | Package                           | What it is                                                            | Status  |
 | --------------------------------- | --------------------------------------------------------------------- | ------- |
-| `droveragent`                     | Umbrella entry point: `defineAgent` and `runAgent`                    | Preview |
+| `droveragent`                     | Umbrella entry point: `defineAgent` and `runAgent` (not on npm yet)   | Preview |
 | `@droveragent/core`               | `AgentSpec`, `HarnessEvent`, `RunContext`, tagged errors              | Preview |
 | `@droveragent/harness`            | Effect-native run loop, compaction, registry                          | Preview |
 | `@droveragent/facade`             | `Promise` and `AsyncIterable` wrapper over the Effect surface         | Preview |

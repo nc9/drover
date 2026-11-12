@@ -16,10 +16,9 @@ const between = (text: string, name: string) => {
 describe("README", () => {
   test("quickstart block matches the typechecked example file", () => {
     const block = between(readme, "quickstart").match(/```ts\n([\s\S]*?)```/)?.[1];
-    const example = read("packages/droveragent/examples/quickstart.ts").replace(
-      '"../src/index.ts"',
-      '"droveragent"',
-    );
+    // The README installs the scoped packages (the umbrella is not on npm yet), so the
+    // example imports them as written: no rewrite.
+    const example = read("packages/droveragent/examples/quickstart.ts");
     expect(block).toBe(example);
   });
 

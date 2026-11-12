@@ -40,8 +40,21 @@ export type Manifest = {
   devDependencies?: Record<string, string>;
 };
 
+// Packages with `"private": true` are built, typechecked and tested like the rest
+// and bumped in lockstep, but never packed for publish or published (npm would
+// refuse them anyway, after the packages before them had gone out).
+export const isPrivatePackage = (pkg: string): boolean =>
+  readManifest(packageDir(pkg)).private === true;
+
+// PACKAGE_ORDER without the private packages: what pack, release and
+// publish-all.sh publish, in order. `isPrivate` is injectable for tests.
+export const publishOrder = (
+  order: readonly string[] = PACKAGE_ORDER,
+  isPrivate: (pkg: string) => boolean = isPrivatePackage,
+): string[] => order.filter((p) => !isPrivate(p));
+
 // `bun scripts/ci.ts pack --out <dir>` writes <dir>/index.json: PackEntry[]
-// in PACKAGE_ORDER, consumed by scripts/release.ts.
+// in publishOrder() (private packages left out), consumed by scripts/release.ts.
 export const PACK_INDEX = "index.json";
 export type PackEntry = { pkg: string; name: string; version: string; tarball: string };
 
@@ -104,11 +117,12 @@ export const staleWorkspaceDeps = (
   );
 
 if (import.meta.main) {
-  // `bun scripts/workspace.ts` prints the order, one per line (for shell use).
+  // `bun scripts/workspace.ts` prints the order, one per line (for shell use);
+  // `--publish` prints only the packages that are published (no private ones).
   const problems = orderProblems();
   if (problems.length > 0) {
     for (const p of problems) console.error(`✗ ${p}`);
     process.exit(1);
   }
-  console.log(PACKAGE_ORDER.join("\n"));
+  console.log((Bun.argv.includes("--publish") ? publishOrder() : PACKAGE_ORDER).join("\n"));
 }

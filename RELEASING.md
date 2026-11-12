@@ -4,6 +4,17 @@ All `@droveragent/*` packages and the `droveragent` umbrella share one version
 (lockstep). Prereleases such as `0.3.0-next.1` go to the npm `next` dist-tag and
 never to `latest`; a plain `0.3.0` goes to `latest`.
 
+**The `droveragent` umbrella is not published.** npm refused the unscoped name
+(`403`, "Package name too similar to existing package drover-agent"), so it is
+`"private": true` until a publishable name is chosen. Users install
+`@droveragent/facade` (and `@droveragent/core` for `defineAgent`). A private
+package is still built, typechecked, tested and bumped in lockstep by
+`scripts/release-bump.ts`, but `bun scripts/ci.ts pack`, `scripts/release.ts`
+(plan, verify, publish) and `scripts/publish-all.sh` leave it out
+(`publishOrder()` in `scripts/workspace.ts`; `bun scripts/workspace.ts
+--publish` prints it). To publish it later, rename it and set
+`"private": false`.
+
 Releases are published by `.github/workflows/release.yml` when a `v*` tag is
 pushed, after an approval on the `npm-publish` environment. Nothing publishes
 from a branch, a pull request or a dry run.

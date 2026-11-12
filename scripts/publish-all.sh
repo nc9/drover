@@ -23,6 +23,9 @@ cd "$(dirname "$0")/.."
 # it exits non-zero when the order misses a package or lists one before a dep.
 # shellcheck disable=SC2207
 ORDER=($(bun scripts/workspace.ts)) || { echo "✗ package order check failed"; exit 1; }
+# Published packages only: `"private": true` packages are built but never published.
+# shellcheck disable=SC2207
+PUBLISH=($(bun scripts/workspace.ts --publish)) || { echo "✗ package order check failed"; exit 1; }
 
 echo "▶ building all (dependency order)…"
 for p in "${ORDER[@]}"; do
@@ -44,7 +47,7 @@ bun scripts/ci.ts pack || exit 1
 echo "▶ publishing…"
 published=0
 skipped=0
-for p in "${ORDER[@]}"; do
+for p in "${PUBLISH[@]}"; do
   name=$(bun -e "console.log(require('./packages/$p/package.json').name)")
   version=$(bun -e "console.log(require('./packages/$p/package.json').version)")
 

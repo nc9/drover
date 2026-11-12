@@ -15,6 +15,11 @@ export interface PublishDeps {
   log: (line: string) => void;
   fail: (msg: string) => never;
   dryRun: boolean;
+  /**
+   * Whether an entry is a private package (`"private": true` in its packed manifest).
+   * A private entry is never checked against or sent to the registry. Default: none are.
+   */
+  isPrivate?: (entry: PackEntry) => boolean;
 }
 
 const is404 = (r: NpmResult): boolean => /E404/.test(`${r.stdout}\n${r.stderr}`);
@@ -96,6 +101,11 @@ export const publishEntries = (
   const counts = { published: 0, skipped: 0 };
   for (const e of entries) {
     const spec = `${e.name}@${e.version}`;
+    if (deps.isPrivate?.(e) === true) {
+      deps.summary(`↷ SKIP ${spec}: private package, never published`);
+      counts.skipped += 1;
+      continue;
+    }
     const tag = distTagFor(e.version);
     if (versionPublished(deps, e.name, e.version)) {
       deps.log(`↷ SKIP ${spec}: exact version already on registry`);
