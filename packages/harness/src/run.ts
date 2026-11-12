@@ -8,6 +8,7 @@ import {
   type HarnessError,
   type HarnessEvent,
   InputValidationError,
+  type InvocationBudget,
   LifecycleError,
   OutputValidationError,
   PluginError,
@@ -85,6 +86,12 @@ export interface RunArgs<S extends AgentSpec<TSchema, TSchema>> {
    */
   resumeFrom?: CheckpointRow;
   /**
+   * Budget for this invocation alone (a continuation's own turns, tokens,
+   * cost and time), on top of the spec's cumulative `quota`. See
+   * `InvocationBudget`.
+   */
+  budget?: InvocationBudget;
+  /**
    * Mutable holder the facade flips when `handle.pause()` is called.
    * When the loop exits with `requested === true`, the terminal status
    * is `paused` rather than `cancelled` — so resume can pick up later.
@@ -114,6 +121,8 @@ type QuotaBreach = {
   dimension: "turns" | "duration" | "cost" | "tokens";
   limit: number;
   observed: number;
+  /** `invocation`: the per-invocation `budget`, not the spec's cumulative quota. */
+  scope?: "invocation";
 };
 
 /** Stateless engine — registered builtins only; run state travels per render. */
@@ -254,8 +263,11 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
   args: RunArgs<S>,
 ): Effect.Effect<RunResult<AgentOutput<S>>, HarnessError, never> {
   return Effect.gen(function* () {
-    const { spec, input, ctx, emit, deps, resumeFrom, pauseFlag, compactFlag, emitDeltas } = args;
+    const { spec, input, ctx, emit, deps, resumeFrom, pauseFlag, compactFlag, emitDeltas, budget } =
+      args;
     const isResume = resumeFrom !== undefined;
+    // Turn counter at the start of this invocation (the checkpoint's on resume).
+    const startTurn = resumeFrom ? resumeFrom.seq : 0;
     const startedAt = Date.now();
     // Clock for the wrap-up wall-clock threshold only (test seam); hard limits use real timers.
     const clock = deps.now ?? Date.now;
@@ -604,7 +616,17 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     };
     // Usage split by serving provider, from the assistant messages' `provider`.
     // Null prototype: provider names are data (`__proto__` must be a plain key).
+    // Seeded from the checkpoint on resume, so it stays cumulative like `usage`.
     const usageByProvider: Record<string, Usage> = Object.create(null) as Record<string, Usage>;
+    if (resumeFrom?.usageByProvider) {
+      for (const [k, v] of Object.entries(resumeFrom.usageByProvider))
+        usageByProvider[k] = { ...v };
+    }
+    /** A plain-object copy of the per-provider split, for checkpoints. */
+    const providerSplit = (): Record<string, Usage> | undefined =>
+      Object.keys(usageByProvider).length > 0
+        ? Object.fromEntries(Object.entries(usageByProvider).map(([k, v]) => [k, { ...v }]))
+        : undefined;
     let retriesUsed = resumeFrom ? resumeFrom.retriesUsed : 0;
     const outputRetries = spec.outputRetries ?? DEFAULT_OUTPUT_RETRIES;
     const quota = spec.quota ?? {};
@@ -627,23 +649,36 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       value: resumeFrom ? (resumeFrom.messages as ReadonlyArray<AgentMessage>) : [],
     };
 
+    // Messages that ended since the last `transformContext` snapshot. The
+    // snapshot is taken BEFORE each model call, so on its own it misses the
+    // last assistant turn and its tool results; snapshot + these = the full
+    // history at any point.
+    const sinceSnapshot: AgentMessage[] = [];
+
+    // Turn checkpoints are written without blocking the loop. The chain of
+    // writes is awaited before the final checkpoint and the terminal run
+    // update, so a slow (remote) adapter cannot land a turn checkpoint AFTER
+    // the final one (same seq, INSERT OR REPLACE: stale history would win)
+    // or after the run is reported finished.
+    let checkpointWrites: Promise<unknown> = Promise.resolve();
     const persistCheckpoint = (turn: number, ts: number): void => {
       if (!storage) return;
-      Effect.runPromise(
-        Effect.either(
-          storage.saveCheckpoint({
-            runId: ctx.runId,
-            seq: turn,
-            messages: includeProviderErrorText
-              ? messagesSnapshot.value
-              : scrubProviderErrorText(messagesSnapshot.value),
-            usage: lastUsage.value,
-            toolCalls: [...toolCalls],
-            retriesUsed,
-            ts,
-          }),
-        ),
-      ).catch(() => {});
+      const split = providerSplit();
+      const row = {
+        runId: ctx.runId,
+        seq: turn,
+        messages: includeProviderErrorText
+          ? messagesSnapshot.value
+          : scrubProviderErrorText(messagesSnapshot.value),
+        usage: lastUsage.value,
+        toolCalls: [...toolCalls],
+        retriesUsed,
+        ...(split ? { usageByProvider: split } : {}),
+        ts,
+      };
+      checkpointWrites = checkpointWrites
+        .then(() => Effect.runPromise(Effect.either(storage.saveCheckpoint(row))))
+        .catch(() => {});
     };
 
     const sink = (e: PiEvent): void => {
@@ -665,6 +700,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           }
         }
       }
+      if (e.type === "message_end" && e.message) sinceSnapshot.push(e.message as AgentMessage);
       // Track tool calls in order.
       if (e.type === "tool_execution_start" && e.toolName) toolCalls.push(e.toolName);
       // Accumulate usage. pi-ai reports `input` EXCLUSIVE of cached prompt
@@ -723,6 +759,28 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             if (!quotaBreach.value) breachMessage.value = e.message;
             tripQuota({ dimension: "tokens", limit: quota.maxTokens, observed: totalTokens(next) });
           }
+          // This invocation's own budget, measured from where it started.
+          if (budget) {
+            const d = usageDelta(next, resumeFrom?.usage);
+            const spent =
+              d.inputTokens + d.outputTokens + (d.cacheReadTokens ?? 0) + (d.cacheWriteTokens ?? 0);
+            if (budget.maxTokens !== undefined && spent >= budget.maxTokens) {
+              tripQuota({
+                dimension: "tokens",
+                limit: budget.maxTokens,
+                observed: spent,
+                scope: "invocation",
+              });
+            }
+            if (budget.maxCostUsd !== undefined && (d.costUsd ?? 0) >= budget.maxCostUsd) {
+              tripQuota({
+                dimension: "cost",
+                limit: budget.maxCostUsd,
+                observed: d.costUsd ?? 0,
+                scope: "invocation",
+              });
+            }
+          }
         }
       }
       // Emit translated drover events. safeEmit fans out to plugin observers.
@@ -738,6 +796,15 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         if (maxTurns !== undefined && turn >= maxTurns) {
           if (!quotaBreach.value) breachMessage.value = lastAssistantMsg.value;
           tripQuota({ dimension: "turns", limit: maxTurns, observed: turn });
+        }
+        const invocationTurns = turn - startTurn;
+        if (budget?.maxTurns !== undefined && invocationTurns >= budget.maxTurns) {
+          tripQuota({
+            dimension: "turns",
+            limit: budget.maxTurns,
+            observed: invocationTurns,
+            scope: "invocation",
+          });
         }
       }
     };
@@ -939,7 +1006,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
                 ...(signal ? { signal } : {}),
               })) as AgentMessage[];
             }
-            if (storage) messagesSnapshot.value = [...next];
+            if (storage) {
+              messagesSnapshot.value = [...next];
+              sinceSnapshot.length = 0;
+            }
             return next;
           }
         : undefined;
@@ -1063,11 +1133,24 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             });
           }, maxDurationMs)
         : undefined;
+    const budgetDurationMs = budget?.maxDurationMs;
+    const budgetTimeoutHandle =
+      budgetDurationMs !== undefined
+        ? setTimeout(() => {
+            tripQuota({
+              dimension: "duration",
+              limit: budgetDurationMs,
+              observed: Date.now() - startedAt,
+              scope: "invocation",
+            });
+          }, budgetDurationMs)
+        : undefined;
     let abortCleaned = false;
     const cleanupAbort = (): void => {
       if (abortCleaned) return;
       abortCleaned = true;
       if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (budgetTimeoutHandle) clearTimeout(budgetTimeoutHandle);
       ctx.signal.removeEventListener("abort", onParentAbort);
     };
 
@@ -1088,6 +1171,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // Final message list — captured so a `postSuccess` lifecycle can continue
     // the loop from exactly where the agent stopped.
     let finalMessages: AgentMessage[] = [];
+    // Full message history so far. Only meaningful with storage (the snapshot
+    // is only taken then); without it, fall back to what the loop returned.
+    const completeMessages = (): AgentMessage[] =>
+      storage ? [...messagesSnapshot.value, ...sinceSnapshot] : finalMessages;
     yield* Effect.promise(async (): Promise<void> => {
       try {
         if (isResume) {
@@ -1200,7 +1287,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         status = "quota";
         errorOut = {
           tag: "QuotaExceededError",
-          message: `${breach.dimension} budget exceeded (limit ${breach.limit}, observed ${breach.observed})`,
+          message: quotaMessage(breach),
         };
       } else if (loopError && !forgiven) {
         status = "error";
@@ -1296,7 +1383,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             await runAgentLoopContinue(
               {
                 systemPrompt,
-                messages: [...finalMessages, postMsg as AgentMessage],
+                messages: [...completeMessages(), postMsg as AgentMessage],
                 tools: piTools,
               },
               postLoopConfig,
@@ -1317,7 +1404,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
             status = "quota";
             errorOut = {
               tag: "QuotaExceededError",
-              message: `${breach.dimension} budget exceeded (limit ${breach.limit}, observed ${breach.observed})`,
+              message: quotaMessage(breach),
             };
           } else {
             status = "error";
@@ -1345,6 +1432,33 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         if (lastUsage.value.cacheWriteTokens !== undefined)
           usage.cacheWriteTokens = lastUsage.value.cacheWriteTokens;
         if (lastUsage.value.costUsd !== undefined) usage.costUsd = lastUsage.value.costUsd;
+      }
+    }
+
+    // A finished run's last turn_end checkpoint predates its final assistant
+    // message (the snapshot is pre-call). Rewrite the latest checkpoint with
+    // the complete history so the run can be continued with new user input.
+    // Same seq as the last turn checkpoint: replaces it (libsql) / supersedes
+    // it (memory). Awaited, so it lands before the terminal status.
+    // Let in-flight turn checkpoints land first (see `persistCheckpoint`).
+    yield* Effect.promise(() => checkpointWrites);
+    if (storage && status === "success") {
+      const full = completeMessages();
+      if (full.length > 0) {
+        const split = providerSplit();
+        const r = yield* Effect.either(
+          storage.saveCheckpoint({
+            runId: ctx.runId,
+            seq: translator.currentTurn(),
+            messages: includeProviderErrorText ? full : scrubProviderErrorText(full),
+            usage: lastUsage.value,
+            toolCalls: [...toolCalls],
+            retriesUsed,
+            ...(split ? { usageByProvider: split } : {}),
+            ts: Date.now(),
+          }),
+        );
+        if (r._tag === "Left") void r.left;
       }
     }
 
@@ -1395,6 +1509,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       turns,
       durationMs,
       usage,
+      usageDelta: usageDelta(usage, resumeFrom?.usage),
       toolCalls,
     };
     if (output !== undefined) result.output = output;
@@ -1663,4 +1778,26 @@ export function hashSpec(spec: AgentSpec): string {
 /** Every token the provider reported: input + output + cache read + cache write. */
 function totalTokens(u: Usage): number {
   return u.inputTokens + u.outputTokens + (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0);
+}
+
+/** `now - before`, field-wise; `before` undefined (fresh run) = `now`. */
+function usageDelta(now: Usage, before: Usage | undefined): Usage {
+  if (!before) return { ...now };
+  const out: Usage = {
+    inputTokens: now.inputTokens - before.inputTokens,
+    outputTokens: now.outputTokens - before.outputTokens,
+  };
+  const cr = (now.cacheReadTokens ?? 0) - (before.cacheReadTokens ?? 0);
+  if (cr > 0) out.cacheReadTokens = cr;
+  const cw = (now.cacheWriteTokens ?? 0) - (before.cacheWriteTokens ?? 0);
+  if (cw > 0) out.cacheWriteTokens = cw;
+  const cost = (now.costUsd ?? 0) - (before.costUsd ?? 0);
+  if (cost > 0) out.costUsd = cost;
+  return out;
+}
+
+/** `turns budget exceeded (...)`; an invocation budget says so. */
+function quotaMessage(b: QuotaBreach): string {
+  const scope = b.scope === "invocation" ? "invocation " : "";
+  return `${scope}${b.dimension} budget exceeded (limit ${b.limit}, observed ${b.observed})`;
 }

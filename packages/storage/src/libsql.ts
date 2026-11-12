@@ -125,7 +125,9 @@ export async function createLibsqlStorage(opts: LibsqlStorageOptions): Promise<S
             cp.runId,
             cp.seq,
             JSON.stringify(cp.messages),
-            JSON.stringify(cp.usage),
+            JSON.stringify(
+              cp.usageByProvider ? { ...cp.usage, byProvider: cp.usageByProvider } : cp.usage,
+            ),
             JSON.stringify(cp.toolCalls),
             cp.retriesUsed,
             cp.ts,
@@ -298,7 +300,7 @@ function rowToCheckpoint(row: Record<string, unknown>): CheckpointRow {
     runId: String(row.run_id),
     seq: toNumber(row.seq),
     messages: parseJson(row.messages),
-    usage: parseJson(row.usage) as CheckpointRow["usage"],
+    ...usageColumn(parseJson(row.usage)),
     toolCalls: parseJson(row.tool_calls) as ReadonlyArray<string>,
     retriesUsed: toNumber(row.retries_used),
     ts: toNumber(row.ts),
@@ -320,4 +322,17 @@ function toNumber(v: unknown): number {
   if (typeof v === "bigint") return Number(v);
   if (typeof v === "string") return Number(v);
   return 0;
+}
+
+/** The `usage` JSON column: the cumulative usage, plus the per-provider split under `byProvider`. */
+function usageColumn(raw: unknown): Pick<CheckpointRow, "usage" | "usageByProvider"> {
+  const { byProvider, ...usage } = (raw ?? {}) as Record<string, unknown> & {
+    byProvider?: unknown;
+  };
+  return byProvider !== null && typeof byProvider === "object"
+    ? {
+        usage: usage as unknown as CheckpointRow["usage"],
+        usageByProvider: byProvider as Record<string, CheckpointRow["usage"]>,
+      }
+    : { usage: usage as unknown as CheckpointRow["usage"] };
 }

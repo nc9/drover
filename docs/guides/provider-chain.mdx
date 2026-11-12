@@ -96,8 +96,9 @@ is always eligible.
 
 Every reaction is a `provider_failover` event (`retry` / `failover` / `exhausted`, from, to,
 failureClass, status, code, waitMs): class and status, never provider text. `usage` events and
-`RunResult.usageByProvider` name the serving provider. `usageByProvider` covers the calls of this
-invocation: a resumed run starts it empty (the cumulative `usage` is restored from the checkpoint).
+`RunResult.usageByProvider` name the serving provider. `usageByProvider` is cumulative over the
+run like `usage`: a resume or continuation restores it from the checkpoint (for checkpoints written
+by this version; an older checkpoint has no split, so it restarts from that invocation).
 
 ## Structured provider errors
 

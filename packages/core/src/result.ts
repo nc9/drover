@@ -19,6 +19,7 @@ export interface RunResult<TOutput = unknown> {
   finalText: string;
   turns: number;
   durationMs: number;
+  /** Cumulative across the run, including earlier segments when resumed/continued. */
   usage: Usage;
   /**
    * `usage` split by the provider that served each call. Present when the
@@ -39,6 +40,8 @@ export interface RunResult<TOutput = unknown> {
     outcome?: "wrapped_up" | "cut_off";
     overshoot?: { dimension: "cost" | "tokens"; limit: number; observed: number };
   };
+  /** Usage of THIS invocation only. Equals `usage` for a fresh run. */
+  usageDelta?: Usage;
   /** Tool ids invoked during the run, in order. Duplicates preserved. */
   toolCalls: ReadonlyArray<string>;
   /** Tagged error when `status === "error"`. */

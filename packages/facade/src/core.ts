@@ -7,6 +7,7 @@ import type {
   AgentSpec,
   HarnessEvent,
   HarnessPlugin,
+  InvocationBudget,
   RunContext,
   RunResult,
 } from "@droveragent/core";
@@ -307,6 +308,44 @@ function cryptoRandomId(): string {
  */
 export interface ResumeOptionsBase extends Omit<RunOptionsBase, "runId"> {
   storage: NonNullable<HarnessDeps["storage"]>;
+  /**
+   * Continue the run with new user message(s). Opt-in: when set, a run with
+   * status `success` (finished) can be continued as well as a `paused` one.
+   * The messages are appended to the latest checkpoint's history as user
+   * turns, then the loop runs. Spec-id and spec-hash validation still apply.
+   * Must be non-empty (an empty array is a `ResumeError`).
+   *
+   * Content is UNTRUSTED when it comes from outside your system (a user, an
+   * email, a fetched page): it goes into the model's history as a user turn,
+   * so it can carry prompt injection. Treat it like any other user input.
+   *
+   * Concurrency: a run that is `running` is refused (`ResumeError`), but the
+   * storage adapter has no compare-and-set, so the check and the status flip
+   * are not atomic. Two continuations of one run started at the same instant
+   * can both pass it and then run interleaved: their events and checkpoints
+   * mix under one run id (interleaved seqs, mixed histories, one message set
+   * lost) and tool side effects may run twice. The stored run is corrupt, not
+   * merely "last write wins". drover does NOT serialise continuations across
+   * processes: the host must serialise them per `runId`, e.g. by running each
+   * continuation as a job on `@droveragent/runtime`'s `QueueAdapter` (its job
+   * lease and `reclaimStale` give one holder at a time), or with a lock or a
+   * DB advisory lock.
+   *
+   * The spec's `quota.maxTurns` and `quota.maxCostUsd` are measured against the
+   * cumulative run, so a continuation shares the original run's budget;
+   * `quota.maxDurationMs` restarts with each invocation. Use `budget` for a
+   * continuation's own limits.
+   * `RunResult.usage` is cumulative; `RunResult.usageDelta` is this call only.
+   */
+  appendMessages?: ReadonlyArray<string>;
+  /**
+   * Budget for THIS resume or continuation alone: turns, tokens (input +
+   * output + cache), USD and wall-clock ms counted from where it starts. The
+   * spec's `quota` still applies cumulatively across the whole run; the first
+   * breach wins and ends the call `status: "quota"` with an
+   * `invocation <dimension> budget exceeded` message.
+   */
+  budget?: InvocationBudget;
 }
 
 /**
@@ -397,10 +436,29 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
     if (!runRow) {
       return resumeFailure("ResumeError", `run ${runId} not found in storage`);
     }
-    if (runRow.status !== "paused") {
+    if (runRow.status === "running") {
       return resumeFailure(
         "ResumeError",
-        `run ${runId} is ${runRow.status}, not paused — only paused runs can resume`,
+        `run ${runId} is marked running: another resume or continuation holds it, or a process ` +
+          `that held it crashed (a crashed holder is not reclaimed automatically yet; reset the ` +
+          `run's status once you are sure nothing is running it)`,
+      );
+    }
+    const appending = options.appendMessages;
+    if (appending !== undefined && appending.length === 0) {
+      return resumeFailure("ResumeError", "appendMessages must contain at least one message");
+    }
+    if (appending !== undefined && appending.some((m) => typeof m !== "string")) {
+      // A runtime guard: callers outside TypeScript can pass anything.
+      return resumeFailure("ResumeError", "appendMessages must be strings");
+    }
+    const continuable = appending !== undefined && runRow.status === "success";
+    if (runRow.status !== "paused" && !continuable) {
+      return resumeFailure(
+        "ResumeError",
+        appending !== undefined
+          ? `run ${runId} is ${runRow.status}, not paused or success — only those can be continued`
+          : `run ${runId} is ${runRow.status}, not paused — only paused runs can resume (pass appendMessages to continue a finished run)`,
       );
     }
     if (runRow.agentId !== spec.id) {
@@ -428,11 +486,21 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
         `loadLatestCheckpoint failed: ${(checkpointResult.left as { message?: string }).message ?? ""}`,
       );
     }
-    const checkpoint = checkpointResult.right;
+    const loaded = checkpointResult.right;
+    const checkpoint =
+      loaded && appending
+        ? {
+            ...loaded,
+            messages: [
+              ...(loaded.messages as ReadonlyArray<unknown>),
+              ...appending.map((content) => ({ role: "user", content, timestamp: Date.now() })),
+            ],
+          }
+        : loaded;
     if (!checkpoint) {
       return resumeFailure(
         "ResumeError",
-        `run ${runId} is paused but has no checkpoint — storage anomaly`,
+        `run ${runId} is ${runRow.status} but has no checkpoint — storage anomaly`,
       );
     }
     const input = runRow.input as AgentInput<S>;
@@ -444,6 +512,7 @@ export function resumeAgent<S extends AgentSpec<TSchema, TSchema>>(
       emit: stream.emit,
       deps,
       resumeFrom: checkpoint,
+      ...(options.budget ? { budget: options.budget } : {}),
       pauseFlag,
       compactFlag,
       ...(options.emitDeltas ? { emitDeltas: true } : {}),
@@ -535,6 +604,7 @@ export type {
   AgentInput,
   AgentOutput,
   HarnessEvent,
+  InvocationBudget,
   RunResult,
 } from "@droveragent/core";
 export { staticRegistry, type AgentRegistry, type PreResolvedModel } from "@droveragent/harness";

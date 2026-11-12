@@ -55,6 +55,8 @@ interface RunOptions {
 ```ts
 interface ResumeOptions extends Omit<RunOptions, "runId"> {
   storage: StorageAdapter;   // required, not optional
+  appendMessages?: string[]; // continue a `success` run with new user turns
+  budget?: InvocationBudget; // this call only: maxTurns, maxTokens, maxCostUsd, maxDurationMs
 }
 ```
 

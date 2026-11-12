@@ -173,6 +173,23 @@ export interface RunQuota {
 }
 
 /**
+ * Budget for ONE invocation (a resume or a continuation of a stored run),
+ * measured from where that invocation started, not across the whole run.
+ * Enforced alongside the spec's cumulative {@link RunQuota}; the first breach
+ * wins. Omitted fields are unbounded.
+ */
+export interface InvocationBudget {
+  /** Turns completed in this invocation. */
+  maxTurns?: number;
+  /** Tokens reported in this invocation: input + output + cache read + cache write. */
+  maxTokens?: number;
+  /** USD spent in this invocation. */
+  maxCostUsd?: number;
+  /** Wall-clock ms for this invocation (loop + `postSuccess`). */
+  maxDurationMs?: number;
+}
+
+/**
  * Conversation-history compaction policy. Absent ⇒ no compaction (the
  * historical behaviour). Present ⇒ exactly what is configured — drover bakes
  * in no defaults for the behavioural knobs: `strategy` and `preserve` are
