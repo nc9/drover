@@ -8,19 +8,20 @@ builds a just-bash sandbox over the host filesystem, which does not bundle for a
 `@droveragent/facade/core` has the same `runAgent` / `resumeAgent` without that default.
 
 <Warning>
-Status: the core entry is checked by bundling (a test bundles it for the browser target and
-fails on a Node-only import or a size over budget). It has not yet been run on the Workers
-runtime (`workerd` / `wrangler dev`) by an automated test.
+  Status: the core entry is checked by bundling (a test bundles it for the browser target with the
+  `workerd` conditions and nothing external but Node built-ins, and fails on a Node-only import, an
+  import nothing installs, or a size over budget). It has not yet been run on the Workers runtime
+  (`workerd` / `wrangler dev`) by an automated test.
 </Warning>
 
 ## What differs from the default entry
 
-| | `@droveragent/facade` | `@droveragent/facade/core` |
-| --- | --- | --- |
-| `sandbox` | optional, defaults to just-bash over `cwd` | **required**: an adapter or `"disabled"` |
-| `cwd` | `process.cwd()` | `"/"` |
-| `env` | `process.env` | `{}`: pass the keys the run needs |
-| Node built-ins at import | many | `node:path`, `node:crypto` only (both provided with `nodejs_compat`) |
+|                          | `@droveragent/facade`                      | `@droveragent/facade/core`                                           |
+| ------------------------ | ------------------------------------------ | -------------------------------------------------------------------- |
+| `sandbox`                | optional, defaults to just-bash over `cwd` | **required**: an adapter or `"disabled"`                             |
+| `cwd`                    | `process.cwd()`                            | `"/"`                                                                |
+| `env`                    | `process.env`                              | `{}`: pass the keys the run needs                                    |
+| Node built-ins at import | many                                       | `node:path`, `node:crypto` only (both provided with `nodejs_compat`) |
 
 `sandbox: "disabled"` means no filesystem and no shell: every sandbox operation fails with a
 `SandboxError`, and `bash` is never offered to the model. Use it when every tool is a custom
@@ -70,12 +71,16 @@ const triage = defineAgent({
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const { ticket } = (await request.json()) as { ticket: string };
-    const handle = runAgent(triage, { ticket }, {
-      sandbox: "disabled",
-      // Model API keys are read from `env`, never from `process.env`, in the core entry.
-      env: { OPENROUTER_API_KEY: env.OPENROUTER_API_KEY },
-      storage: createD1Storage({ db: env.DB }),
-    });
+    const handle = runAgent(
+      triage,
+      { ticket },
+      {
+        sandbox: "disabled",
+        // Model API keys are read from `env`, never from `process.env`, in the core entry.
+        env: { OPENROUTER_API_KEY: env.OPENROUTER_API_KEY },
+        storage: createD1Storage({ db: env.DB }),
+      },
+    );
     const result = await handle.result;
     return Response.json({ status: result.status, output: result.output });
   },
@@ -105,11 +110,14 @@ What works without a filesystem:
 
 ## Bundle size
 
-Measured with `bun build src/core.ts --target=browser --minify --external 'node:*' --external @opentelemetry/api`:
+No extra packages are needed: `@opentelemetry/api`, an optional peer of the Mistral SDK inside
+pi-ai that a Worker bundler must resolve, is a dependency of `@droveragent/model`.
 
-| Bundle | Size |
-| --- | --- |
-| `@droveragent/facade/core`, every pi-ai provider | about 2.1 MB |
+Measured with `bun build src/core.ts --target=browser --minify --external 'node:*'`:
+
+| Bundle                                                                  | Size         |
+| ----------------------------------------------------------------------- | ------------ |
+| `@droveragent/facade/core`, every pi-ai provider                        | about 2.3 MB |
 | the same with the other provider SDKs external (OpenAI-compatible only) | about 1.0 MB |
 
 A test (`packages/facade/test/core-entry.test.ts`) fails when the first number passes 2.4 MB.
@@ -119,7 +127,7 @@ provider, mark the other SDKs external:
 
 ```sh
 bun build src/worker.ts --target=browser --minify \
-  --external 'node:*' --external @opentelemetry/api \
+  --external 'node:*' \
   --external @anthropic-ai/sdk --external @google/genai --external @mistralai/mistralai \
   --external '@aws-sdk/*' --external '@smithy/*' --external proxy-agent --external undici
 ```
