@@ -56,7 +56,7 @@ export default {
         { name: "openrouter", apiKey: env.OPENROUTER_KEY, useEnv: false },
         {
           name: "cloudflare-ai-gateway",
-          apiKey: env.CF_AIG_TOKEN, // sent as cf-aig-authorization by pi-ai
+          apiKey: env.CF_AIG_TOKEN, // sent as cf-aig-authorization by drover
           // The base URL is pi-ai's gateway URL for the model's API (here `/compat`), with
           // these filled in; set `baseUrl` to use another.
           vars: {
@@ -82,7 +82,7 @@ export default {
   provider and the model's API, also for a model declared in `models`. When none is known the
   provider is refused (`no base URL for provider "..."`): a request is never sent with an empty
   base URL, which the OpenAI SDK would turn into `api.openai.com`.
-- Azure (`azure-openai-responses`): pi-ai lists Azure models without a base URL, so an Azure
+- Azure (`azure`; the old name `azure-openai-responses` is still accepted in the settings as a deprecated alias): pi-ai lists Azure models without a base URL, so an Azure
   entry needs `baseUrl` (`https://<resource>.openai.azure.com/openai/v1`), or
   `AZURE_OPENAI_BASE_URL` / `AZURE_OPENAI_RESOURCE_NAME` in the entry's environment (not read
   with `useEnv: false`); otherwise the provider is refused. The URL chosen is also passed to
@@ -109,8 +109,8 @@ export default {
 - Azure and Bedrock calls go through pi-ai's full `stream()` with complete options: its simple
   stream drops `azureBaseUrl`, `region` and `bearerToken` and falls back to `process.env`.
 - Headers: on OpenAI-compatible providers an `Authorization` header in `headers` replaces the
-  `apiKey` bearer. On `cloudflare-ai-gateway`, pi-ai sets `cf-aig-authorization` from `apiKey`
-  after `headers`, so a `cf-aig-authorization` header has no effect: put the gateway token in
+  `apiKey` bearer. On `cloudflare-ai-gateway`, drover sets `cf-aig-authorization` from `apiKey`
+  after `headers` (pi-ai 1.x no longer does this in its adapter, only in its `Models` auth layer), so a `cf-aig-authorization` header has no effect: put the gateway token in
   `apiKey`. Anything absent falls back to `apiKeys`, `overrides`,
   `ids` / `extraModels` and then the environment; `useEnv: false` turns the environment off for
   that entry, so a missing setting makes the provider unusable instead of reading `process.env`.
