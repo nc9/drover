@@ -141,10 +141,20 @@ interface ProviderErrorDetails {
 }
 ```
 
-They come from the response tap (the error body and `Retry-After`), so they are plain tokens and
-a number, never provider text: a `type` that is not a short token is dropped, and a malformed
-`Retry-After` (read as "beyond any cap") is not reported as a wait. Without a chain pi-ai keeps
-only the status, so `details` is absent.
+Sources, all filtered:
+
+- the response tap: the error body's `code` and `type`, and the `Retry-After` / `retry-after-ms`
+  header;
+- an error thrown by the provider SDK or a custom transport: its `status`, `code` and
+  `retryAfterMs` fields and its `error` body;
+- on a 429 with no header only, a wait read from the message text ("try again in 1.5s").
+
+`code` is kept only when it is on the chain's allow-list (`KNOWN_CODES` in
+`@droveragent/model`). `type` is the provider's own string, kept only when it is a plain token
+(letters, digits and `_ . : -`, at most 64 characters), so treat it as untrusted: it is a
+marked field in the trace format (`details.type`). `retryAfterMs` is a number; a malformed
+`Retry-After` (read as "beyond any cap") is not reported as a wait. No provider message text
+is ever copied in. Without a chain pi-ai keeps only the status, so `details` is absent.
 
 | final assistant message                                                                                | `error.message`                                      | `status` |
 | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- | -------- |

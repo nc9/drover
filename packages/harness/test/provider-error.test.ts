@@ -562,7 +562,7 @@ describe("providerFailure classification", () => {
       message:
         "provider error 403 (openrouter: credits_exhausted 402; cf: region_refused 403 unsupported_x)",
       status: 403,
-      details: { code: "unsupported_x" },
+      // "unsupported_x" is a token but not on the chain's code allow-list: no details.
     });
     expect(providerFailure(chainMsg, true)?.message).toEndWith(
       ": all providers failed: SECRET text",
@@ -606,10 +606,66 @@ describe("providerFailure classification", () => {
       ],
     });
     expect(providerFailure(hostile, false)).not.toHaveProperty("details");
+    // A code must be on the chain's allow-list, not just token-shaped.
+    expect(
+      providerFailure(
+        am({
+          stopReason: "error",
+          diagnostics: [d({ provider: "a", failureClass: "other", status: 400, code: "made_up" })],
+        }),
+        false,
+      ),
+    ).not.toHaveProperty("details");
     // Without a chain only the status is known.
     expect(
       providerFailure(am({ stopReason: "error", errorMessage: "429 slow" }), false),
     ).not.toHaveProperty("details");
+  });
+
+  test("details are the last attempt's only: earlier attempts' fields never leak forward (#92)", () => {
+    // First attempt knows type and a wait; the last knows nothing: no details at all.
+    const lastBare = am({
+      stopReason: "error",
+      diagnostics: [
+        d({
+          provider: "a",
+          failureClass: "rate_limited",
+          status: 429,
+          type: "rate_limit_error",
+          retryAfterMs: 3000,
+        }),
+        d({ provider: "b", failureClass: "provider_error", status: 503 }),
+      ],
+    });
+    const bare = providerFailure(lastBare, false);
+    expect(bare?.status).toBe(503);
+    expect(bare).not.toHaveProperty("details");
+
+    // A same-provider retry (429 with a wait), then a different final failure: the final's.
+    const retried = am({
+      stopReason: "error",
+      diagnostics: [
+        d({
+          provider: "a",
+          failureClass: "rate_limited",
+          status: 429,
+          type: "rate_limit_error",
+          retryAfterMs: 1000,
+        }),
+        d({
+          provider: "a",
+          failureClass: "credits_exhausted",
+          status: 402,
+          code: "insufficient_quota",
+          type: "insufficient_quota",
+        }),
+      ],
+    });
+    expect(providerFailure(retried, false)).toMatchObject({
+      status: 402,
+      details: { code: "insufficient_quota", type: "insufficient_quota" },
+    });
+    expect(providerFailure(retried, false)?.details).not.toHaveProperty("retryAfterMs");
   });
 
   test("scrubProviderErrorText replaces raw errorMessage in checkpoint history", () => {

@@ -4,6 +4,7 @@
  * not re-exported from the package index.
  */
 import type { ProviderErrorDetails } from "@droveragent/core";
+import { KNOWN_CODES } from "@droveragent/model";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 
 /** The slice of pi's assistant message the provider-failure check reads. */
@@ -51,7 +52,8 @@ function chainFailures(
  */
 function detailsOf(d: Record<string, unknown>): ProviderErrorDetails | undefined {
   const out: ProviderErrorDetails = {};
-  if (typeof d.code === "string" && NAME.test(d.code)) out.code = d.code;
+  // The chain's own allow-list, not just a token check: only codes the chain itself keeps.
+  if (typeof d.code === "string" && KNOWN_CODES.has(d.code)) out.code = d.code;
   if (typeof d.type === "string" && NAME.test(d.type)) out.type = d.type;
   const w = d.retryAfterMs;
   // A malformed Retry-After is recorded as MAX_SAFE_INTEGER ("beyond any cap"): not a real wait.

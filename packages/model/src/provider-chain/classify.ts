@@ -49,7 +49,11 @@ const ERROR_TYPE_TOKEN = /^[A-Za-z][A-Za-z0-9_.:-]{0,63}$/;
 /** The gateway and its upstream use this code on a 403 for a region refusal. */
 export const REGION_REFUSAL_CODE = "unsupported_country_region_territory";
 
-const KNOWN_CODES: ReadonlySet<string> = new Set([
+/**
+ * Provider error codes the chain keeps on a failure (`ProviderFailure.code`, notices,
+ * diagnostics, the harness's `error.details.code`). Any other code is dropped.
+ */
+export const KNOWN_CODES: ReadonlySet<string> = new Set([
   REGION_REFUSAL_CODE,
   "insufficient_quota",
   "invalid_api_key",
