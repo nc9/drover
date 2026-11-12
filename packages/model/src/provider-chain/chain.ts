@@ -23,6 +23,7 @@ import {
 } from "./classify.ts";
 import { applyBilledCost, isOpenRouter, withUsageInclude } from "./provider-cost.ts";
 import { rawFromResponse, startAttemptTap, type AttemptTap } from "./response-tap.ts";
+import { PINNED_PROVIDERS, pinnedStream } from "./pinned-stream.ts";
 
 /** pi-agent-core's `StreamFn`. */
 export type ChainStreamFn = (
@@ -87,6 +88,13 @@ export interface ProviderEntry {
    * (`{ id, contextWindow?, maxTokens?, cost?, ... }`; api `openai-completions` by default).
    */
   models?: Readonly<Record<string, string | null | (Partial<Model<Api>> & { id: string })>>;
+  /**
+   * AWS region, for `amazon-bedrock` only (`eu-west-1`): the runtime endpoint
+   * (`https://bedrock-runtime.<region>.amazonaws.com`, unless `baseUrl` is set) and the request's
+   * region. Default: `AWS_REGION`, then `AWS_DEFAULT_REGION` from the environment. A model
+   * declared in `models` needs a region or a `baseUrl`.
+   */
+  region?: string;
   /** Read the environment for anything not given here. Default true. */
   useEnv?: boolean;
 }
@@ -258,6 +266,18 @@ function own<V>(rec: Readonly<Record<string, V>> | undefined, key: string): V | 
  * one is refused here instead of being read from the environment behind `useEnv: false`.
  */
 const PLACEHOLDER = /\{([A-Z0-9_]+)\}/g;
+/** One provider's call: the model, its key, and provider options pi-ai reads (Azure URL, Bedrock region). */
+type ChainCall = { model: Model<Api>; apiKey: string; extra?: Record<string, unknown> };
+
+/** An AWS region name (`us-east-1`, `eu-central-2`, `us-gov-west-1`, `ap-southeast-5`). */
+const AWS_REGION_NAME = /^[a-z]{2}(-gov|-iso[a-z]?)?-[a-z]+-\d{1,2}$/;
+/** A standard Bedrock runtime host; group 1 is its region (as pi-ai matches it). */
+const BEDROCK_RUNTIME_HOST = /^bedrock-runtime\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?$/;
+/** A FIPS Bedrock host (`bedrock-runtime-fips.<region>.amazonaws.com`, `bedrock-fips...`). */
+const BEDROCK_FIPS_HOST = /^bedrock(?:-runtime)?-fips\./;
+/** An Azure OpenAI resource name: letters, digits and hyphens. */
+const AZURE_RESOURCE_NAME = /^[A-Za-z0-9][A-Za-z0-9-]{1,62}$/;
+
 /** A placeholder value goes into a URL path: plain id characters only, never `.` / `..` alone. */
 const PLACEHOLDER_VALUE = /^(?!\.{1,2}$)[\w.-]+$/;
 
@@ -340,7 +360,10 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
         baseUrl:
           entries.get(provider)?.baseUrl ??
           own(options.overrides, provider)?.baseUrl ??
-          registryBaseUrl(provider, declared.api ?? "openai-completions") ??
+          // Bedrock's registry lists one URL per region; the region (or `baseUrl`) picks it.
+          (provider === "amazon-bedrock"
+            ? undefined
+            : registryBaseUrl(provider, declared.api ?? "openai-completions")) ??
           "",
         reasoning: false,
         input: ["text"],
@@ -357,21 +380,38 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
   };
 
   /** The call for one provider: pi-ai's own model entry (base URL, api, quirks) plus key; null if it cannot serve the id. */
-  const callFor = (
-    provider: string,
-    canonicalId: string,
-  ): { model: Model<Api>; apiKey: string } | string | null => {
+  const callFor = (provider: string, canonicalId: string): ChainCall | string | null => {
     const id = idFor(provider, canonicalId);
     if (id === null) return null;
     const found = modelFor(provider, canonicalId, id);
     if (!found) return null;
     const entry = entries.get(provider) ?? { name: provider };
     const entryEnv = envFor(entry);
-    const baseUrl = (
-      entry.baseUrl ??
-      own(options.overrides, provider)?.baseUrl ??
-      found.baseUrl
-    ).replace(PLACEHOLDER, (_m, n: string) => {
+    const configured = entry.baseUrl ?? own(options.overrides, provider)?.baseUrl;
+    // Options pi-ai reads for this provider, so its own process.env fallbacks cannot override
+    // what the settings (or the entry's environment) chose.
+    const extra: Record<string, unknown> = {};
+    let fallbackUrl = found.baseUrl;
+    if (provider === "amazon-bedrock") {
+      const region = entry.region ?? entryEnv.AWS_REGION ?? entryEnv.AWS_DEFAULT_REGION;
+      if (region !== undefined && !AWS_REGION_NAME.test(region))
+        return `amazon-bedrock: not an AWS region name (set "region", e.g. "eu-west-1")`;
+      if (region !== undefined) {
+        extra.region = region;
+        fallbackUrl = `https://bedrock-runtime.${region}.amazonaws.com`;
+      } else if (configured === undefined && typeof own(entry.models, canonicalId) === "object")
+        return `amazon-bedrock: a declared model needs "region" or "baseUrl"`;
+    }
+    if (provider === "azure-openai-responses" && configured === undefined && !found.baseUrl) {
+      // pi-ai lists Azure models without a base URL and reads it from process.env; read it from
+      // the entry's environment here instead (nothing with `useEnv: false`).
+      const resource = entryEnv.AZURE_OPENAI_RESOURCE_NAME;
+      const fromEnv = entryEnv.AZURE_OPENAI_BASE_URL?.trim();
+      if (fromEnv) fallbackUrl = fromEnv;
+      else if (resource !== undefined && AZURE_RESOURCE_NAME.test(resource))
+        fallbackUrl = `https://${resource}.openai.azure.com/openai/v1`;
+    }
+    const baseUrl = (configured ?? fallbackUrl).replace(PLACEHOLDER, (_m, n: string) => {
       const v = own(entry.vars, n) ?? entryEnv[n];
       // An unusable value stays a placeholder and is refused below (the value is never echoed).
       return v !== undefined && PLACEHOLDER_VALUE.test(v) ? v : `{${n}}`;
@@ -379,8 +419,59 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
     const left = baseUrl.match(new RegExp(PLACEHOLDER.source));
     if (left)
       return `no usable value for ${left[0]} in the settings or environment (letters, digits, "_", "." and "-" only)`;
-    if (baseUrl.trim() === "") return `no base URL for provider "${provider}"`;
-    const apiKey = entry.apiKey ?? own(options.apiKeys, provider) ?? readApiKey(provider, entryEnv);
+    if (baseUrl.trim() === "")
+      return provider === "azure-openai-responses"
+        ? `no base URL for provider "${provider}": set "baseUrl" (https://<resource>.openai.azure.com/openai/v1), or AZURE_OPENAI_BASE_URL / AZURE_OPENAI_RESOURCE_NAME in the environment`
+        : `no base URL for provider "${provider}"`;
+    if (provider === "amazon-bedrock") {
+      let host = "";
+      try {
+        host = new URL(baseUrl).hostname.toLowerCase();
+      } catch {
+        /* not a URL */
+      }
+      // pi-ai does not pass `useFipsEndpoint` to the AWS SDK, and with a region pinned the SDK
+      // would sign for, and call, the NON-FIPS endpoint: a silent compliance downgrade. Refuse.
+      if (BEDROCK_FIPS_HOST.test(host))
+        return "amazon-bedrock: FIPS endpoints are not supported; pi-ai does not forward useFipsEndpoint";
+    }
+    if (provider === "amazon-bedrock" && extra.region === undefined) {
+      // No region given: take it from the endpoint (pi-ai's catalog URL, or a standard
+      // `baseUrl`). Unpinned, pi-ai would read process.env.AWS_REGION, which also turns off its
+      // endpoint pin and sends the call to that region instead.
+      let host = "";
+      try {
+        host = new URL(baseUrl).hostname.toLowerCase();
+      } catch {
+        /* not a URL: no region from it */
+      }
+      const fromHost = BEDROCK_RUNTIME_HOST.exec(host)?.[1];
+      if (fromHost !== undefined && AWS_REGION_NAME.test(fromHost)) extra.region = fromHost;
+      else if (entry.useEnv === false)
+        return `amazon-bedrock: set "region" (the endpoint does not name one, and useEnv: false rules out AWS_REGION)`;
+    }
+    if (provider === "azure-openai-responses") {
+      extra.azureBaseUrl = baseUrl;
+      // Nothing else from process.env either: pi-ai reads the API version and a deployment-name
+      // map from it.
+      if (entry.useEnv === false) {
+        extra.azureApiVersion = "v1";
+        extra.azureDeploymentName = id;
+      }
+    }
+    const explicitKey = entry.apiKey ?? own(options.apiKeys, provider);
+    if (provider === "amazon-bedrock") {
+      // `apiKey` is a Bedrock API key, sent as the bearer token. Without one, the AWS SDK reads
+      // IAM credentials from its default chain (process.env, ~/.aws, instance roles), which
+      // `useEnv: false` rules out.
+      if (explicitKey) extra.bearerToken = explicitKey;
+      else if (entry.useEnv === false)
+        return `amazon-bedrock with useEnv: false needs "apiKey" (a Bedrock API key): IAM credentials come from the AWS SDK's environment chain`;
+    }
+    const apiKey =
+      explicitKey ??
+      readApiKey(provider, entryEnv) ??
+      (provider === "amazon-bedrock" ? "aws-sdk-default-credentials" : null);
     if (!apiKey) return `no API key for provider "${provider}"`;
     const headers = {
       ...found.headers,
@@ -396,6 +487,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
         ...(Object.keys(headers).length > 0 ? { headers } : {}),
       },
       apiKey,
+      ...(Object.keys(extra).length > 0 ? { extra } : {}),
     };
   };
 
@@ -441,7 +533,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       });
 
       /** One call to one provider. Events are held until the first content event, so a failure before it is retryable elsewhere. */
-      const attempt = async (provider: string, call: { model: Model<Api>; apiKey: string }) => {
+      const attempt = async (provider: string, call: ChainCall) => {
         // The response tap restores what pi-ai drops (status, body code, Retry-After) for the real
         // transport; a custom `streams` entry never touches fetch, so it is not tapped.
         const billed = options.billedCost === true && isOpenRouter(call.model);
@@ -456,7 +548,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       };
       const attemptOnce = async (
         provider: string,
-        call: { model: Model<Api>; apiKey: string },
+        call: ChainCall,
         tap?: AttemptTap,
         billed = false,
       ): Promise<{ failure: ProviderFailure; message: AssistantMessage | null } | null> => {
@@ -467,12 +559,17 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
             message,
           };
         };
-        const stream = own(options.streams, provider) ?? streamSimple;
+        // Azure and Bedrock go through pi-ai's full stream: its simple stream drops the
+        // pinned base URL / region and would fall back to process.env (pinned-stream.ts).
+        const stream =
+          own(options.streams, provider) ??
+          (PINNED_PROVIDERS.has(provider) ? pinnedStream : streamSimple);
         let inner: AssistantMessageEventStream;
         try {
           // The SDK's own retries are off: failing over is the retry.
           inner = await stream(call.model, context, {
             ...callOptions,
+            ...call.extra,
             apiKey: call.apiKey,
             maxRetries: callOptions?.maxRetries ?? 0,
             ...(tap ? { headers: { ...callOptions?.headers, ...tap.header } } : {}),
@@ -546,8 +643,7 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
       };
 
       void (async () => {
-        const servable: Array<{ provider: string; call: { model: Model<Api>; apiKey: string } }> =
-          [];
+        const servable: Array<{ provider: string; call: ChainCall }> = [];
         const unusable: string[] = [];
         for (const provider of names) {
           const call = callFor(provider, canonical.id);
