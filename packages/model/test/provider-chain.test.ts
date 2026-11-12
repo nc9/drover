@@ -656,3 +656,20 @@ describe("provider chain", () => {
     }
   });
 });
+
+describe("provider chain balance capability (#49)", () => {
+  test("balanceSources() lists the providers' balances in chain order; a provider without one is skipped", () => {
+    const bal = (provider: string) => ({
+      provider,
+      balance: async () => ({ remainingUsd: 1 }),
+    });
+    const [x, z] = [bal("x"), bal("z")];
+    const chain = createProviderChain({
+      providers: ["z", "y", "x"],
+      env: {},
+      balances: { x, z, other: bal("other") },
+    });
+    expect(chain.balanceSources()).toEqual([z, x]);
+    expect(createProviderChain({ providers: ["a"], env: {} }).balanceSources()).toEqual([]);
+  });
+});

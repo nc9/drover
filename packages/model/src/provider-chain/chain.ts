@@ -1,4 +1,4 @@
-import type { ProviderFailureClass } from "@droveragent/core";
+import type { BalanceSource, ProviderFailureClass } from "@droveragent/core";
 import {
   createAssistantMessageEventStream,
   getModel,
@@ -71,6 +71,12 @@ export interface ProviderChainOptions {
   streams?: Readonly<Record<string, ChainStreamFn>>;
   /** Wait for a retry (tests). */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  /**
+   * Optional balance capability per provider (by provider name), e.g.
+   * `{ openrouter: openRouterBalance({ apiKey }) }`. Not used for failover; exposed in chain
+   * order by `balanceSources()` so a balance preflight can read the providers configured here.
+   */
+  balances?: Readonly<Record<string, BalanceSource>>;
 }
 
 export interface ProviderChain {
@@ -79,6 +85,11 @@ export interface ProviderChain {
   forRun(listener?: ProviderFailoverListener): ChainStreamFn;
   /** `options.models` as harness `preResolvedModels`. The key is a placeholder: each call uses its provider's key. */
   preResolvedModels(): Map<string, PreResolvedModel>;
+  /**
+   * The `balances` of this chain's providers, in chain order; a provider without one is skipped.
+   * Pass the chain itself as `balancePreflightPlugin({ sources: chain })`.
+   */
+  balanceSources(): ReadonlyArray<BalanceSource>;
 }
 
 const defaultSleep = (ms: number, signal?: AbortSignal): Promise<void> =>
@@ -467,5 +478,12 @@ export function createProviderChain(options: ProviderChainOptions): ProviderChai
     return map;
   };
 
-  return { providers: options.providers, forRun, preResolvedModels };
+  const balanceSources = (): ReadonlyArray<BalanceSource> =>
+    options.providers.flatMap((p) => {
+      const b =
+        options.balances && Object.hasOwn(options.balances, p) ? options.balances[p] : undefined;
+      return b ? [b] : [];
+    });
+
+  return { providers: options.providers, forRun, preResolvedModels, balanceSources };
 }

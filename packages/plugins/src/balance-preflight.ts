@@ -1,16 +1,26 @@
-import type { HarnessPlugin, ModelCallDecision } from "@droveragent/core";
+import type {
+  BalanceSource,
+  BalanceSourceProvider,
+  HarnessPlugin,
+  ModelCallDecision,
+} from "@droveragent/core";
 import { Effect } from "effect";
 
-/** A provider's own balance lookup. Host-level: nothing in the provider chain depends on it. */
-export interface BalanceSource {
-  /** For messages. */
-  provider: string;
-  /** Remaining spendable USD. May throw or reject: that is "unknown". */
-  balance(signal?: AbortSignal): Promise<{ remainingUsd: number }>;
-}
+// The source interface lives in core (a provider chain carries them too); re-exported here.
+export type { BalanceSource, BalanceSourceProvider } from "@droveragent/core";
 
 export interface OpenRouterBalanceOptions {
+  /** Sent as the bearer token of the lookup only; never logged or put in an error. */
   apiKey: string;
+  /**
+   * What "balance" means:
+   * - `"credits"` (default): the ACCOUNT's credits minus usage, `GET /credits`. OpenRouter may
+   *   require a management (provisioning) key for this endpoint.
+   * - `"key"`: what THIS key may still spend, `GET /key` -> `data.limit_remaining`. Works with an
+   *   ordinary API key; a key without a spending limit has no number here and reads as unknown
+   *   (list a `"credits"` source after it to fall back to the account balance).
+   */
+  mode?: "credits" | "key";
   /** Default `https://openrouter.ai/api/v1`. */
   baseUrl?: string;
   /** Replace `fetch` (tests, proxies). Default: the global one. */
@@ -18,23 +28,35 @@ export interface OpenRouterBalanceOptions {
 }
 
 /**
- * OpenRouter's account balance: `GET <base>/credits` -> `{ data: { total_credits, total_usage } }`,
- * remaining = credits - usage. Written from OpenRouter's documented response shape; not verified
- * against the live API. Pass the key explicitly: nothing here reads the environment.
+ * OpenRouter balance source. `mode: "credits"` reads `GET <base>/credits` ->
+ * `{ data: { total_credits, total_usage } }` (remaining = credits - usage); `mode: "key"` reads
+ * `GET <base>/key` -> `{ data: { limit_remaining } }`. Written from OpenRouter's documented
+ * response shapes; not verified against the live API. Errors carry the HTTP status only, never
+ * the key or the response body. Nothing here reads the environment.
  */
 export function openRouterBalance(opts: OpenRouterBalanceOptions): BalanceSource {
   const base = (opts.baseUrl ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+  const mode = opts.mode ?? "credits";
   return {
     provider: "openrouter",
     async balance(signal) {
-      const res = await (opts.fetch ?? fetch)(`${base}/credits`, {
+      const res = await (opts.fetch ?? fetch)(`${base}/${mode === "key" ? "key" : "credits"}`, {
         headers: { authorization: `Bearer ${opts.apiKey}` },
         ...(signal ? { signal } : {}),
       });
       if (!res.ok) throw new Error(`balance lookup failed: ${res.status}`);
       const body = (await res.json()) as {
-        data?: { total_credits?: unknown; total_usage?: unknown };
+        data?: { total_credits?: unknown; total_usage?: unknown; limit_remaining?: unknown };
       };
+      if (mode === "key") {
+        const left = body.data?.limit_remaining;
+        if (typeof left !== "number") {
+          throw new Error(
+            "balance lookup: this key has no spending limit (or an unexpected shape)",
+          );
+        }
+        return { remainingUsd: left };
+      }
       const credits = body.data?.total_credits;
       const used = body.data?.total_usage;
       if (typeof credits !== "number" || typeof used !== "number")
@@ -45,8 +67,11 @@ export function openRouterBalance(opts: OpenRouterBalanceOptions): BalanceSource
 }
 
 export interface BalancePreflightOptions {
-  /** Looked up in order; the first that answers is used. */
-  sources: ReadonlyArray<BalanceSource>;
+  /**
+   * Looked up in order; the first that answers is used. Or anything with `balanceSources()`,
+   * such as a provider chain carrying `balances` (its sources in chain order, read per lookup).
+   */
+  sources: ReadonlyArray<BalanceSource> | BalanceSourceProvider;
   /** What the run is expected to cost, USD, or a function of the run. */
   estimateUsd: number | ((ctx: { runId: string }) => number);
   /** Always keep this much unspent (USD). Default 0. */
@@ -84,7 +109,8 @@ export function balancePreflightPlugin(opts: BalancePreflightOptions): HarnessPl
 
   const lookup = async (): Promise<{ remainingUsd: number; provider: string } | null> => {
     if (cached && now() - cached.at < cacheMs) return cached;
-    for (const source of opts.sources) {
+    const sources = "balanceSources" in opts.sources ? opts.sources.balanceSources() : opts.sources;
+    for (const source of sources) {
       const ac = new AbortController();
       const timer = setTimeout(() => ac.abort(), timeoutMs);
       try {
