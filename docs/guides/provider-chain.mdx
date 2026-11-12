@@ -312,9 +312,14 @@ logs one warning per process naming the cause when:
   normally an ordinary writable global, so the tap works there too; the off switch covers
   runtimes or hosts that lock it down.
 - the global was replaced more than 8 times after install.
-- two copies of `@droveragent/model` are installed (for example two versions in one bundle):
-  each copy re-wraps the other's tap until one runs out of re-wraps and warns. Deduplicate the
-  package to keep structured errors everywhere.
+- two copies of `@droveragent/model` are installed (for example two versions in one bundle) and
+  both run attempts. Each copy knows only its own wrappers (by identity, never a marker a
+  wrapper could copy), so an attempt that finds the other copy's wrapper on top wraps it again
+  and is recorded. That costs one re-wrap per switch between the copies; a copy that runs out
+  warns and stays off. Until then, an attempt that is in flight while the OTHER copy's wrapper
+  sits outside it loses its record for that attempt (both copies strip the same tag header), and
+  falls back to the SDK's status without a warning. Deduplicate the package to keep structured
+  errors everywhere.
 
 The tap needs the OpenAI SDK to resolve `globalThis.fetch` when its client is created (true for the version
 pi-ai uses); a `streams` entry (custom transport) is not tapped and supplies its own `status` / `error: { code }`

@@ -567,6 +567,53 @@ describe("response tap: structured errors over the real transport", () => {
     }
   });
 
+  test("two installed copies, used A, B, A, B: every attempt is recorded; no copy mistakes the other's wrapper for its own (#100 review)", async () => {
+    const saved = globalThis.fetch;
+    const warnings: string[] = [];
+    const warn = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args.map(String).join(" "));
+    const failing = server(() =>
+      json(503, { error: { message: "down", code: "insufficient_quota" } }),
+    );
+    try {
+      type Tap = typeof import("../src/provider-chain/response-tap.ts");
+      const copyA = (await import(
+        `${import.meta.dir}/../src/provider-chain/response-tap.ts?two-copies-a`
+      )) as Tap;
+      const copyB = (await import(
+        `${import.meta.dir}/../src/provider-chain/response-tap.ts?two-copies-b`
+      )) as Tap;
+      const attempt = async (copy: Tap) => {
+        const tap = copy.startAttemptTap();
+        const res = await fetch(`${failing.base}/v1/chat/completions`, {
+          method: "POST",
+          headers: tap.header,
+          body: "{}",
+        });
+        await res.text();
+        const record = tap.take();
+        tap.dispose();
+        return record;
+      };
+      const records = [];
+      for (const copy of [copyA, copyB, copyA, copyB]) {
+        // oxlint-disable-next-line no-await-in-loop -- the order of the copies is the point
+        records.push(await attempt(copy));
+      }
+      // A2 (the third attempt) is the one the property marker broke: B's wrapper carried A's
+      // marker, A reused it, and B stripped A's tag. Every attempt has its record now; were a
+      // copy out of re-wraps, it would have warned instead.
+      for (const r of records) expect(r).toMatchObject({ status: 503, code: "insufficient_quota" });
+      expect(warnings).toEqual([]);
+      // Never sent to the provider: the tag header.
+      expect(failing.seen.every((req) => req.headers.get("x-drover-attempt") === null)).toBe(true);
+    } finally {
+      console.warn = warn;
+      globalThis.fetch = saved;
+      await failing.stop();
+    }
+  });
+
   test("concurrent attempts through a re-wrapped tap keep their own records (#100)", async () => {
     startAttemptTap().dispose();
     const ours = globalThis.fetch;

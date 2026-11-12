@@ -25,10 +25,16 @@
  * the global afterwards (fetch instrumentation, a test double, a second installed copy
  * of `@droveragent/model`), the next attempt wraps the CURRENT global again, so the
  * host's wrapper runs underneath and still sees the request (without the tag). A
- * global that is one of this tap's own wrappers is reused. Re-wraps are bounded per
- * process; past that, or when the global cannot be replaced, the tap stays off for new
- * attempts (one warning per process) rather than send a tag nothing will strip, and
- * classification falls back to the SDK's leading status.
+ * global that is one of THIS module copy's own wrappers (kept by identity in a
+ * module-local WeakSet, never a property marker another wrapper could copy) is reused.
+ * Re-wraps are bounded per process; past that, or when the global cannot be replaced,
+ * the tap stays off for new attempts (one warning per process) rather than send a tag
+ * nothing will strip, and classification falls back to the SDK's leading status.
+ *
+ * Two installed copies: each re-wraps when it finds the other's wrapper on top, one
+ * re-wrap per switch, until one runs out and warns. Both strip the same tag header, so
+ * an attempt in flight while the other copy's wrapper sits outside it loses its record
+ * for that attempt (no warning). Deduplicate the package.
  */
 import { structuredFromBody, type RawFailure } from "./classify.ts";
 
@@ -170,8 +176,12 @@ export async function readBoundedText(body: ReadableStream<Uint8Array>): Promise
   return text;
 }
 
-/** Marks this module's own fetch wrappers (module-local: another installed copy has its own). */
-const OWN_TAP = Symbol("droveragent.response-tap");
+/**
+ * This module copy's own fetch wrappers, by identity. Not a property on the function: a wrapper
+ * that copies own keys (another installed copy of this module, a host instrumentation that
+ * copies symbols) would carry a property marker over and pass for one of ours.
+ */
+const OWN_TAPS = new WeakSet<typeof fetch>();
 /** Re-wraps after a host replaced the global (OTel, Sentry, a test double): bounded per process. */
 const MAX_REWRAPS = 8;
 let rewraps = 0;
@@ -252,13 +262,15 @@ function makeTapped(base: typeof fetch): typeof fetch {
     if (live.has(tag)) records.set(tag, record);
     return res;
   };
-  // Copy own properties (Bun's `fetch.preconnect` is non-enumerable) before the swap.
+  // Copy own string-keyed properties (Bun's `fetch.preconnect` is non-enumerable) before the
+  // swap. Symbol keys are skipped: they are other code's private markers, not fetch's API.
   for (const key of Reflect.ownKeys(base)) {
-    if (key === "length" || key === "name" || key === "prototype" || key === OWN_TAP) continue;
+    if (typeof key === "symbol" || key === "length" || key === "name" || key === "prototype")
+      continue;
     const d = Object.getOwnPropertyDescriptor(base, key);
     if (d) Object.defineProperty(tapped, key, d);
   }
-  Object.defineProperty(tapped, OWN_TAP, { value: true });
+  OWN_TAPS.add(tapped as typeof fetch);
   return tapped as typeof fetch;
 }
 
@@ -272,10 +284,10 @@ function makeTapped(base: typeof fetch): typeof fetch {
  * off and one warning per process says why. False when the tap is off.
  */
 function ensureTap(): boolean {
-  const current = globalThis.fetch as typeof fetch & { [OWN_TAP]?: true };
+  const current = globalThis.fetch;
   if (typeof current !== "function") return false;
   if (installed && current === tappedFetch) return true;
-  if (current[OWN_TAP]) {
+  if (OWN_TAPS.has(current)) {
     tappedFetch = current;
     installed = true;
     return true;
