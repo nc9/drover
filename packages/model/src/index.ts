@@ -2,3 +2,4 @@ import "./version.ts";
 export * from "./aliases.ts";
 export * from "./resolve.ts";
 export * from "./provider-chain/index.ts";
+export * from "./stream-idle.ts";

@@ -22,7 +22,7 @@ Returns a handle immediately. Iterate `events`, await `result`, call
 function resumeAgent<S extends AgentSpec>(
   spec: S,
   runId: string,
-  options: ResumeOptions,   // storage required
+  options: ResumeOptions, // storage required
 ): RunHandle<S>;
 ```
 
@@ -35,26 +35,42 @@ the spec hash drifted.
 
 ```ts
 interface RunOptions {
-  runId?: string;                          // auto-generated when absent
-  cwd?: string;                            // default process.cwd()
+  runId?: string; // auto-generated when absent
+  cwd?: string; // default process.cwd()
   env?: Record<string, string>;
   signal?: AbortSignal;
   meta?: Record<string, unknown>;
-  sandbox?: SandboxAdapter;                // default: none rooted at cwd
+  sandbox?: SandboxAdapter; // default: none rooted at cwd
   modelAliases?: Record<string, AliasEntry>;
-  agentRegistry?: AgentRegistry;           // required when spec.subagents declared
+  agentRegistry?: AgentRegistry; // required when spec.subagents declared
   storage?: StorageAdapter;
-  skills?: SkillRegistry;                  // required when spec.skills declared
-  mcpRuntime?: McpRuntime;                 // required when spec.mcpServers declared
-  plugins?: HarnessPlugin[];                // additive on top of spec.plugins
+  skills?: SkillRegistry; // required when spec.skills declared
+  mcpRuntime?: McpRuntime; // required when spec.mcpServers declared
+  plugins?: HarnessPlugin[]; // additive on top of spec.plugins
+  providers?: ProviderChain; // createProviderChain({ providers: [...] }) only
+  streamFn?: StreamFn; // replace the model transport
+  streamIdleTimeoutMs?: number; // default 600_000; 0 = off
 }
 ```
+
+`providers` must be a chain from `createProviderChain` (`@droveragent/model`), whose
+`providers` are pi-ai provider names or `ProviderEntry` objects. Any other value, such as the
+hand-built `{ forRun, preResolvedModels }` object 0.3.0-next.1 accepted, fails the run before
+any model call with `error.tag === "SpecConfigError"`, naming the option.
+
+`streamIdleTimeoutMs`: a model call whose stream yields no event for this long ends as a
+provider failure (`ProviderError`), so a transport that never answers cannot hang the run (in
+a Worker, a hang is cancelled by the runtime with nothing to log). A chain applies its own,
+per attempt, and fails over (`createProviderChain({ streamIdleTimeoutMs })`).
+
+An unexpected throw inside the run still ends the event stream and resolves `result` with
+`status: "error"` and `error.tag === "InternalError"`; `result` never rejects.
 
 ## `ResumeOptions`
 
 ```ts
 interface ResumeOptions extends Omit<RunOptions, "runId"> {
-  storage: StorageAdapter;   // required, not optional
+  storage: StorageAdapter; // required, not optional
   // Continue a `success` run with new user turns. `untrusted: true` items are
   // fenced by the run's fencing plugins (section "appended-input").
   appendMessages?: Array<string | { content: string; untrusted?: boolean }>;
@@ -69,8 +85,8 @@ interface RunHandle<S> {
   runId: string;
   events: AsyncIterable<HarnessEvent>;
   result: Promise<RunResult<AgentOutput<S>>>;
-  abort: () => void;        // terminal: status="cancelled"
-  pause: () => void;        // terminal: status="paused" (requires storage)
+  abort: () => void; // terminal: status="cancelled"
+  pause: () => void; // terminal: status="paused" (requires storage)
 }
 ```
 
@@ -82,9 +98,7 @@ to `abort`.
 ## `staticRegistry`
 
 ```ts
-function staticRegistry(
-  agents: Readonly<Record<string, AgentSpec>>,
-): AgentRegistry;
+function staticRegistry(agents: Readonly<Record<string, AgentSpec>>): AgentRegistry;
 ```
 
 Helper for the common case where you have a fixed set of agents.

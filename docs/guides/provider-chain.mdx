@@ -153,6 +153,10 @@ pi-ai keeps nothing else: the leading status code of the SDK's message (`"402 ..
 on a 429 only, a "Retry-After: N" / "try again in Ns" hint (at most one wait of
 `maxRateLimitWaitMs`, default 10 s).
 
+An attempt whose stream yields no event for `streamIdleTimeoutMs` (default 10 minutes; 0 turns
+it off) is aborted and classified `timeout`, so it fails over like any other timeout instead of
+hanging the run.
+
 | Class                | Needs                                                                       | Fails over          | Retried in place                                       | Skipped for the rest of the run |
 | -------------------- | --------------------------------------------------------------------------- | ------------------- | ------------------------------------------------------ | ------------------------------- |
 | `credits_exhausted`  | 402; 403 + `limit_source: openrouter_key_limit`; 429 + `insufficient_quota` | yes                 | no                                                     | yes                             |
