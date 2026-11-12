@@ -378,3 +378,74 @@ describe("fence round 8 in a run", () => {
     expect(toolText).toBe("[tool result withheld: the untrusted-data fence failed]");
   });
 });
+
+describe("fence review round 2: onRunEnd on every exit", () => {
+  const failingInit = (id: string, plugins: AgentSpec["plugins"]) =>
+    agent({
+      id,
+      plugins,
+      mcpServers: ["srv"],
+      lifecycle: { init: [{ kind: "mcp", tool: "srv__fetch" }] },
+    });
+  const throwingMcp: HarnessDeps["mcpRuntime"] = {
+    tools: () => [],
+    servers: () => [],
+    callTool: async () => {
+      throw new Error("init boom");
+    },
+    close: async () => {},
+  };
+
+  test("a run that fails in init frees the fence state; repeated failures do not pin nonces", async () => {
+    const plugin = untrustedResultsPlugin({ memoryNonceLimit: 2 });
+    const seen: string[] = [];
+    const observer = {
+      id: "observer",
+      onRunEnd: (r: { status: string; error?: { tag: string } }) =>
+        Effect.sync(() => void seen.push(`${r.status}:${r.error?.tag}`)),
+    };
+    const { streamFn, calls } = scripted([() => text("never")]);
+    for (let i = 0; i < 5; i++) {
+      // oxlint-disable-next-line no-await-in-loop -- sequential runs on purpose
+      const r = await Effect.runPromise(
+        Effect.either(
+          runAgentEffect({
+            spec: failingInit("init-fail", [plugin, observer as never]),
+            input: { q: "x" },
+            ctx: ctx(`fail-${i}`),
+            emit: () => {},
+            deps: deps(streamFn, { mcpRuntime: throwingMcp }),
+          }),
+        ),
+      );
+      expect(r._tag).toBe("Left");
+      expect(plugin.liveRuns()).toBe(0);
+      expect(plugin.pendingCalls(`fail-${i}`)).toBe(0);
+    }
+    expect(calls.length).toBe(0);
+    // Once per run, with a synthetic error result.
+    expect(seen).toEqual(Array(5).fill("error:LifecycleError"));
+    // Not pinned: the store kept only the 2 most recent nonces (the oldest were evicted).
+    expect(() => plugin.assertResumable!(ctx("fail-0"))).toThrow(/nonce/);
+    expect(() => plugin.assertResumable!(ctx("fail-4"))).not.toThrow();
+  });
+
+  test("on the normal path onRunEnd fires exactly once", async () => {
+    let ends = 0;
+    const observer = { id: "observer", onRunEnd: () => Effect.sync(() => void ends++) };
+    const plugin = untrustedResultsPlugin();
+    const { streamFn } = scripted([() => text("done")]);
+    const result = await Effect.runPromise(
+      runAgentEffect({
+        spec: agent({ id: "ok", plugins: [plugin, observer as never] }),
+        input: { q: "x" },
+        ctx: ctx("ok-run"),
+        emit: () => {},
+        deps: deps(streamFn),
+      }),
+    );
+    expect(result.status).toBe("success");
+    expect(ends).toBe(1);
+    expect(plugin.liveRuns()).toBe(0);
+  });
+});

@@ -92,6 +92,8 @@ export interface UntrustedResultsPlugin extends HarnessPlugin {
    * result has not been finalised yet). Stays at the number of calls in flight.
    */
   pendingCalls(runId: string): number;
+  /** Diagnostics: how many runs are live (fence held, nonce pinned). Zero once every run has ended. */
+  liveRuns(): number;
 }
 
 const DEFAULT_MEMORY_NONCE_LIMIT = 10_000;
@@ -327,6 +329,7 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
     fenceFor,
     isTrusted,
     pendingCalls: (runId) => known.get(runId)?.size ?? 0,
+    liveRuns: () => live.size,
     systemPromptAddendum: (ctx: RunContext) => fenceFor(ctx.runId).note(),
     wrapUntrusted: (section, text, ctx) => fenceFor(ctx.runId).wrapText(section, text),
     inheritToSubagents: true,

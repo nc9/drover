@@ -304,3 +304,61 @@ function enumConstChars(node: unknown, inToken: boolean, namesHere = false): num
   }
   return n;
 }
+
+/**
+ * Total characters of one tool's prose the model reads unfenced: its description plus every
+ * `description` / `title` in its input schema (after cleaning). Each is capped at
+ * {@link MAX_MCP_DESCRIPTION_CHARS}, but a schema can hold many; over this total the tool is
+ * refused.
+ */
+export const MAX_TOOL_PROSE_TOTAL_CHARS = 4096;
+
+/**
+ * Characters of every `description` / `title` string in a (sanitised) schema. Children of
+ * `properties` / `$defs` / `definitions` are keyed by NAME, so a property called `description`
+ * is not mistaken for the keyword; `enum` / `const` / `default` values are data, not schema
+ * nodes (they have their own budget).
+ */
+function schemaProseChars(node: unknown, namesHere = false): number {
+  if (Array.isArray(node)) return node.reduce((n: number, x) => n + schemaProseChars(x), 0);
+  if (node === null || typeof node !== "object") return 0;
+  let n = 0;
+  for (const [k, v] of Object.entries(node)) {
+    if (namesHere) n += schemaProseChars(v);
+    else if ((k === "description" || k === "title") && typeof v === "string") n += v.length;
+    else if (k === "enum" || k === "const" || k === "default") continue;
+    else n += schemaProseChars(v, SCHEMA_MAPS.has(k));
+  }
+  return n;
+}
+
+export type ToolSurfaceResult =
+  | {
+      readonly ok: true;
+      readonly description: string;
+      readonly schema: Record<string, unknown> | undefined;
+    }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * Everything of one server tool the model reads: the cleaned description and the sanitised
+ * input schema (see {@link sanitizeInputSchema}), or a refusal. Also refuses a tool whose
+ * description and schema descriptions / titles total over {@link MAX_TOOL_PROSE_TOTAL_CHARS}.
+ */
+export function sanitizeToolSurface(description: string, inputSchema: unknown): ToolSurfaceResult {
+  let schema: Record<string, unknown> | undefined;
+  if (inputSchema !== undefined && inputSchema !== null) {
+    const cleaned = sanitizeInputSchema(inputSchema);
+    if (!cleaned.ok) return cleaned;
+    schema = cleaned.schema;
+  }
+  const desc = sanitizeToolDescription(description);
+  const total = desc.length + (schema ? schemaProseChars(schema) : 0);
+  if (total > MAX_TOOL_PROSE_TOTAL_CHARS) {
+    return {
+      ok: false,
+      reason: `description and schema descriptions / titles total ${total} chars, over the ${MAX_TOOL_PROSE_TOTAL_CHARS}-char cap`,
+    };
+  }
+  return { ok: true, description: desc, schema };
+}

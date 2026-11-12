@@ -39,7 +39,7 @@ import {
 import { skillLoadTool, skillResourceTool } from "@droveragent/skills";
 import type { CheckpointRow } from "@droveragent/storage";
 import { builtinsById, type BuiltinToolId } from "@droveragent/tools";
-import { Effect } from "effect";
+import { Cause, Effect, Exit, Option } from "effect";
 import { runAgentLoop, runAgentLoopContinue, type StreamFn } from "@mariozechner/pi-agent-core";
 import { taskTool, DEFAULT_MAX_DEPTH, DEFAULT_FAN_OUT } from "./task-tool.ts";
 import {
@@ -253,6 +253,22 @@ export async function assembleDefaultPrompt(
 export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
   args: RunArgs<S>,
 ): Effect.Effect<RunResult<AgentOutput<S>>, HarnessError, never> {
+  // `onRunEnd` must fire on EVERY exit (plugins free per-run state there), exactly once. The
+  // normal path fires it after terminal resolution; an early failure, defect or interrupt
+  // (before or outside that point) fires it from `onExit` with a synthetic `error` result.
+  const end: {
+    fired: boolean;
+    plugins: ReadonlyArray<import("@droveragent/core").HarnessPlugin>;
+    startedAt: number;
+    usage: Usage;
+    toolCalls: string[];
+  } = {
+    fired: false,
+    plugins: [],
+    startedAt: Date.now(),
+    usage: { inputTokens: 0, outputTokens: 0 },
+    toolCalls: [],
+  };
   return Effect.gen(function* () {
     const { spec, input, ctx, emit, deps, resumeFrom, pauseFlag, compactFlag, emitDeltas } = args;
     const isResume = resumeFrom !== undefined;
@@ -274,6 +290,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     const plugins: ReadonlyArray<import("@droveragent/core").HarnessPlugin> = autoMemoryPlugin
       ? [...explicitPlugins, autoMemoryPlugin]
       : explicitPlugins;
+    end.plugins = plugins;
+    end.startedAt = startedAt;
+    end.usage = usage;
+    end.toolCalls = toolCalls;
     if (isResume) {
       for (const p of plugins) {
         try {
@@ -1434,13 +1454,48 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // Run-level lifecycle: fire `onRunEnd` once, after the loop +
     // `postSuccess` and terminal resolution. Observation only — failures and
     // defects are swallowed (and async effects awaited).
+    end.fired = true;
     for (const p of plugins) {
       if (!p.onRunEnd) continue;
       yield* p.onRunEnd(result, ctx).pipe(Effect.catchAllCause(() => Effect.void));
     }
 
     return result;
-  });
+  }).pipe(
+    Effect.onExit((exit) =>
+      Effect.suspend(() => {
+        if (end.fired) return Effect.void;
+        end.fired = true;
+        const failure = Exit.isFailure(exit) ? Cause.failureOption(exit.cause) : Option.none();
+        const error = Option.isSome(failure)
+          ? {
+              tag: (failure.value as { _tag?: string })._tag ?? "HarnessError",
+              message: (failure.value as { message?: string }).message ?? "run failed",
+            }
+          : Exit.isFailure(exit) && Cause.isInterruptedOnly(exit.cause)
+            ? { tag: "CancelledError", message: "interrupted" }
+            : { tag: "Defect", message: "run failed" };
+        const synthetic: RunResult = {
+          runId: args.ctx.runId,
+          status: "error",
+          finalText: "",
+          turns: 0,
+          durationMs: Date.now() - end.startedAt,
+          usage: end.usage,
+          toolCalls: end.toolCalls,
+          error,
+        };
+        return Effect.forEach(
+          end.plugins,
+          (p) =>
+            p.onRunEnd
+              ? p.onRunEnd(synthetic, args.ctx).pipe(Effect.catchAllCause(() => Effect.void))
+              : Effect.void,
+          { discard: true },
+        );
+      }),
+    ),
+  );
 }
 
 function composeTools(
