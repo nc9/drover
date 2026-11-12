@@ -34,6 +34,15 @@ export function messageChars(message: Message): number {
       else if (c.type === "thinking") n += c.thinking.length;
       else if (c.type === "toolCall") n += c.name.length + JSON.stringify(c.arguments).length;
     }
+  } else if (message.role === "system") {
+    // The leading system message carries the prompt AND the tool declarations
+    // (pi 1.x moved both into the transcript), so both count toward the window.
+    n +=
+      typeof message.content === "string" ? message.content.length : contentChars(message.content);
+    for (const v of Object.values(message.sections ?? {})) n += v === null ? 0 : v.length;
+    if (message.toolsAdded && message.toolsAdded.length > 0)
+      n += JSON.stringify(message.toolsAdded).length;
+    for (const t of message.toolsRemoved ?? []) n += t.name.length;
   } else {
     // toolResult
     n += message.toolName.length + contentChars(message.content);

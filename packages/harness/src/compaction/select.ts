@@ -4,7 +4,7 @@
  *
  * Layout of the array after a split:
  *
- *   [ 0 .. prefixEnd )   preserved opener (the first user turn)
+ *   [ 0 .. prefixEnd )   preserved opener (leading system message + the first user turn)
  *   [ headStart .. headEnd )   the compactable HEAD
  *   [ headEnd .. len )   verbatim recent TAIL
  *
@@ -47,8 +47,13 @@ export function selectHeadTail(
   messages: ReadonlyArray<Message>,
   preserve: CompactionPreserve,
 ): HeadTailSplit {
+  // The leading system message(s) (prompt + tool declarations) are never compactable.
+  let sysEnd = 0;
+  while (sysEnd < messages.length && messages[sysEnd]!.role === "system") sysEnd += 1;
   const prefixEnd =
-    preserve.firstUserTurn && messages.length > 0 && messages[0]!.role === "user" ? 1 : 0;
+    preserve.firstUserTurn && messages.length > sysEnd && messages[sysEnd]!.role === "user"
+      ? sysEnd + 1
+      : sysEnd;
   const tailStart = tailStartIndex(messages, preserve.recentTurns);
   const headEnd = Math.max(prefixEnd, tailStart);
   return { prefixEnd, headStart: prefixEnd, headEnd };
