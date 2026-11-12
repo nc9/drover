@@ -62,6 +62,7 @@ describe("tap reader lifetime", () => {
         ),
     });
     try {
+      const before = liveAttemptTaps(); // other tests in this process may hold taps
       const tap = startAttemptTap({ cost: true });
       const res = await fetch(`http://127.0.0.1:${server.port}/`, { headers: tap.header });
       expect(res.ok).toBe(true);
@@ -70,7 +71,7 @@ describe("tap reader lifetime", () => {
       tap.dispose();
       expect(await reading).toBeUndefined();
       expect(Date.now() - t0).toBeLessThan(1_000);
-      expect(liveAttemptTaps()).toBe(0);
+      expect(liveAttemptTaps()).toBe(before);
       await res.body?.cancel(); // the caller's branch too: the source is released
       await new Promise((r) => setTimeout(r, 50));
       expect(open).toBe(false);
