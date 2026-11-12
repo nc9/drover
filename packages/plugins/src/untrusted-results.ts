@@ -7,8 +7,9 @@
  * - EVERY tool result is fenced (success, error and defect alike), unless the tool
  *   is on the one `trusted` allowlist this plugin owns. Output is never inspected
  *   to decide: a result that contains a fence-shaped string is wrapped like any
- *   other. The only other opt-out is the explicit `selfFenced` list (and even
- *   there errors are wrapped).
+ *   other. The only other opt-out is the explicit `selfFenced` list. For both lists
+ *   only a SUCCESS is exempt: an error is fenced whether the tool fails or returns
+ *   `{ isError: true, content }` as a value (an error message can quote outside text).
  * - A reader tool (a stored copy by handle: the truncate plugin's
  *   `show_tool_result`) returns provenance in its own result `data` (`trusted`,
  *   `toolId`), from the same read as the content. It is returned raw only when
@@ -57,13 +58,15 @@ export interface UntrustedResultsOptions {
   memoryNonceLimit?: number;
   /**
    * Tools whose results are the operator's own (not outside text). The ONLY list:
-   * everything else is fenced. Default: none.
+   * everything else is fenced. Only their successes are raw: an error (failed, or
+   * returned as `{ isError: true, content }`) is fenced. Default: none.
    */
   trusted?: ReadonlyArray<string>;
   /**
    * Tools that already fence their own output with this plugin's fence for the
    * run (`plugin.fenceFor(ctx.runId)`). Success results are not wrapped again;
-   * errors still are. Explicit, never inferred from the output.
+   * errors still are, whether the tool fails or returns `{ isError: true, content }` as
+   * a value. Explicit, never inferred from the output.
    */
   selfFenced?: ReadonlyArray<string>;
   /**
@@ -258,9 +261,17 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
         execute: (input, ctx) =>
           Effect.suspend(() => tool.execute(input, ctx)).pipe(
             Effect.map((result): ToolResult => {
-              const d = result.data as { trusted?: unknown; toolId?: unknown } | undefined;
+              const d = result.data as
+                | { trusted?: unknown; toolId?: unknown; isError?: unknown }
+                | undefined;
+              // An error is never raw, whatever the data says: neither an error the reader
+              // returns as a value nor a stored entry that was an error (`data.isError`).
               const raw =
-                d?.trusted === true && typeof d.toolId === "string" && isTrusted(d.toolId);
+                !result.isError &&
+                !d?.isError &&
+                d?.trusted === true &&
+                typeof d.toolId === "string" &&
+                isTrusted(d.toolId);
               return raw
                 ? { ...result, content: remember(ctx, result.content) }
                 : {
@@ -281,18 +292,20 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
       };
     }
     if (isTrusted(tool.id)) {
-      // Raw, but remembered: afterToolCall keeps this exact text and fences anything another
-      // plugin adds to it. Errors of a trusted tool are the operator's own and pass through
-      // wrapTool untouched (afterToolCall still fences them, as text it did not produce).
+      // A success is raw, but remembered: afterToolCall keeps this exact text and fences
+      // anything another plugin adds to it. An error is fenced either way: returned as a value
+      // (`{ isError: true, content }`, the convention of MCP, bash and others) it is fenced
+      // here, and an Effect failure passes through wrapTool and is fenced by afterToolCall as
+      // text it did not produce. An error can quote outside text (an upstream body).
       return {
         ...tool,
         execute: (input, ctx) =>
           Effect.map(
             Effect.suspend(() => tool.execute(input, ctx)),
-            (r) => ({
-              ...r,
-              content: remember(ctx, r.content),
-            }),
+            (r) =>
+              r.isError
+                ? { ...r, content: fenceResult(ctx, sectionOf(tool.id), r.content) }
+                : { ...r, content: remember(ctx, r.content) },
           ),
       };
     }
@@ -303,13 +316,15 @@ export function untrustedResultsPlugin(opts: UntrustedResultsOptions = {}): Untr
         // suspend: a tool that throws before returning an Effect is still caught below.
         Effect.suspend(() => tool.execute(input, ctx)).pipe(
           Effect.map((result) =>
-            wrapSuccess
+            // A self-fenced tool fenced its own SUCCESS output with this run's fence. Its errors
+            // are fenced here, returned as a value (`{ isError: true, content }`) or as a
+            // failure (below): an error message can quote outside text.
+            wrapSuccess || result.isError
               ? {
                   ...result,
                   content: fenceResult(ctx, sectionOf(tool.id), result.content),
                 }
-              : // self-fenced: the tool fenced its own output with this run's fence
-                { ...result, content: remember(ctx, result.content) },
+              : { ...result, content: remember(ctx, result.content) },
           ),
           Effect.catchAllCause((cause) =>
             Cause.isInterruptedOnly(cause)

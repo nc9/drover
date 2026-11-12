@@ -23,12 +23,20 @@ export const TRUNCATE_HEAD_BYTES = 4096;
 
 /** Provenance written with an entry, by the code that knows which tool produced it. */
 export interface TruncateEntryMeta {
-  /** True only when the producing tool was positively declared trusted. Absent means untrusted. */
+  /**
+   * True only when the producing tool was positively declared trusted. Absent means untrusted.
+   * Ignored without `runId`: an entry with no run can be read by any run, so it is untrusted.
+   */
   trusted?: boolean;
   /** Run that stored the entry. The entry is only readable by that run (or via a legacy unscoped read). */
   runId?: string;
   /** Tool that produced the content. */
   toolId?: string;
+  /**
+   * The stored content is an error result (`isError`). Such an entry is never trusted, and
+   * reading it back says so (`data.isError`), so a reader never returns it raw.
+   */
+  isError?: boolean;
 }
 
 export interface TruncateEntry extends TruncateEntryMeta {
@@ -41,7 +49,8 @@ export interface TruncateStore {
    * Stash the full text under `toolUseId` and return the HANDLE to read it back
    * with. A backend that repeats tool-use ids (`call_0` every turn) must not
    * overwrite an earlier entry, so a taken id gets a suffixed handle (`id~2`).
-   * The optional third argument is additive: absent means "untrusted, no run".
+   * The optional third argument is additive: absent means "untrusted, no run", and
+   * `trusted` counts only together with `runId`.
    */
   set(toolUseId: string, fullText: string, meta?: TruncateEntryMeta): string | void;
   /**
@@ -61,9 +70,12 @@ export function makeTruncateStore(): TruncateStore {
   return {
     set(id, text, meta) {
       const entry: TruncateEntry = { fullText: text, totalBytes: Buffer.byteLength(text, "utf8") };
-      if (meta?.trusted === true) entry.trusted = true;
+      // Trusted only with a run: an entry without run metadata (a legacy `set()`) can be read
+      // by any run, so it is always untrusted.
+      if (meta?.trusted === true && meta.runId !== undefined) entry.trusted = true;
       if (meta?.runId !== undefined) entry.runId = meta.runId;
       if (meta?.toolId !== undefined) entry.toolId = meta.toolId;
+      if (meta?.isError) entry.isError = true;
       const scope = meta?.runId ?? "";
       let handle = id;
       for (let n = 2; map.has(`${scope}${SEP}${handle}`); n++) handle = `${id}~${n}`;
@@ -147,8 +159,10 @@ function showToolResultTool(
             end,
             total,
             remaining,
-            trusted: entry.trusted === true,
+            // An error entry is never trusted, whatever its `trusted` flag says.
+            trusted: entry.trusted === true && entry.isError !== true,
             ...(entry.toolId !== undefined ? { toolId: entry.toolId } : {}),
+            ...(entry.isError ? { isError: true } : {}),
           },
         };
       }),
@@ -204,9 +218,11 @@ export function truncatePlugin(opts: TruncateOptions = {}): TruncatePlugin {
             if (bytes <= maxBytes) return result;
             const handle =
               store.set(ctx.toolUseId, result.content, {
-                trusted: isTrusted(tool.id),
+                // An error is never trusted, even from a trusted tool: it can quote outside text.
+                trusted: isTrusted(tool.id) && !result.isError,
                 runId: ctx.runId,
                 toolId: tool.id,
+                ...(result.isError ? { isError: true } : {}),
               }) ?? ctx.toolUseId;
             const head = Buffer.from(result.content, "utf8")
               .subarray(0, headBytes)
