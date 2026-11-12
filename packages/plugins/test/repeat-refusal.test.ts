@@ -12,7 +12,11 @@ const ctx = (runId = "r1"): RunContext => ({
   signal: new AbortController().signal,
 });
 
-/** Drives the plugin like the harness: decide, then (if allowed) start and end the call. */
+/**
+ * Drives the plugin in pi's order: `tool_call_start` (pi's tool_execution_start, with the raw
+ * arguments), then `beforeToolCall` (with the validated arguments), then `tool_call_end`.
+ * `order: "before-first"` swaps the first two, for the other order the plugin also handles.
+ */
 function driver(opts: RepeatRefusalOptions = {}) {
   const plugin = repeatRefusalPlugin(opts);
   let id = 0;
@@ -21,37 +25,47 @@ function driver(opts: RepeatRefusalOptions = {}) {
     input: unknown,
     result: Pick<ToolResult, "isError" | "denied">,
     runId = "r1",
-    extra: { destructive?: boolean; startInput?: unknown } = {},
+    extra: { destructive?: boolean; startInput?: unknown; order?: "pi" | "before-first" } = {},
   ) => {
     const toolUseId = `t${++id}`;
-    const decision = await Effect.runPromise(
-      plugin.beforeToolCall!(toolName, input, ctx(runId), {
-        toolUseId,
-        ...(extra.destructive !== undefined
-          ? {
-              tool: {
-                id: toolName,
-                description: "",
-                inputSchema: {} as never,
-                destructive: extra.destructive,
-                execute: () => Effect.succeed({ content: "" }),
-              },
-            }
-          : {}),
-      }),
-    );
     const ev = (e: Record<string, unknown>) =>
       Effect.runPromise(plugin.onEvent!(e as unknown as HarnessEvent, ctx(runId)));
     const startInput = "startInput" in extra ? extra.startInput : input;
-    await ev({
-      kind: "tool_call_start",
-      runId,
-      turn: 1,
-      toolUseId,
-      toolName,
-      input: startInput,
-      ts: 0,
-    });
+    const start = () =>
+      ev({
+        kind: "tool_call_start",
+        runId,
+        turn: 1,
+        toolUseId,
+        toolName,
+        input: startInput,
+        ts: 0,
+      });
+    const before = () =>
+      Effect.runPromise(
+        plugin.beforeToolCall!(toolName, input, ctx(runId), {
+          toolUseId,
+          ...(extra.destructive !== undefined
+            ? {
+                tool: {
+                  id: toolName,
+                  description: "",
+                  inputSchema: {} as never,
+                  destructive: extra.destructive,
+                  execute: () => Effect.succeed({ content: "" }),
+                },
+              }
+            : {}),
+        }),
+      );
+    let decision;
+    if (extra.order === "before-first") {
+      decision = await before();
+      await start();
+    } else {
+      await start();
+      decision = await before();
+    }
     const ended: ToolResult =
       decision.kind === "deny"
         ? {
@@ -194,12 +208,18 @@ describe("repeatRefusalPlugin", () => {
     ).toBe("deny");
   });
 
-  test("a failure is recorded under the input beforeToolCall saw and the started input", async () => {
+  test("a failure is recorded under the validated input and the started input, in either event order", async () => {
     // the harness validated/coerced the arguments ({ n: 1 }) but the event carries the raw ones
-    const { call } = driver();
-    await call("page", { n: 1 }, failed, "r1", { startInput: { n: "1" } });
-    expect((await call("page", { n: 1 }, ok)).kind).toBe("deny");
-    expect((await call("page", { n: "1" }, ok)).kind).toBe("deny");
+    for (const order of ["pi", "before-first"] as const) {
+      const { call, plugin } = driver();
+      await call("page", { n: 1 }, failed, "r1", { startInput: { n: "1" }, order });
+      // the resend arrives raw at the start event and validated at beforeToolCall
+      expect((await call("page", { n: 1 }, ok, "r1", { startInput: { n: "1" } })).kind).toBe(
+        "deny",
+      );
+      // nothing is left in flight after the calls ended
+      expect(plugin.inFlight("r1")).toBe(0);
+    }
   });
 
   test("large arguments are fingerprinted by a fixed-size digest and still told apart", async () => {

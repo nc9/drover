@@ -261,4 +261,83 @@ describe("repeatRefusalPlugin in a run", () => {
     expect(unfixed.codes).toEqual(["check:error", "check:repeat_refusal"]);
     expect(unfixed.checks).toBe(1);
   });
+
+  test('a coerced argument ("1" validated to 1) still matches the failed call through the real harness', async () => {
+    const seenInputs: unknown[] = [];
+    let executed = 0;
+    const page = defineTool({
+      id: "page",
+      description: "fetch a page by number",
+      // A plain JSON Schema (no TypeBox metadata, like an MCP tool's): pi coerces "1" to 1 for
+      // these before validating, so the call's raw and validated arguments differ.
+      inputSchema: {
+        type: "object",
+        properties: { n: { type: "number" } },
+        required: ["n"],
+      } as unknown as ReturnType<typeof Type.Object>,
+      execute: (input) =>
+        Effect.sync(() => {
+          executed += 1;
+          seenInputs.push(input);
+          return { content: "no such page", isError: true };
+        }),
+    });
+    const args: Array<Record<string, unknown>> = [{ n: "1" }, { n: "1" }, { n: 1 }];
+    let turn = 0;
+    const streamFn: StreamFn = () => {
+      turn += 1;
+      const s = createAssistantMessageEventStream();
+      const a = args[turn - 1];
+      const m = a
+        ? msg({
+            stopReason: "toolUse",
+            content: [{ type: "toolCall", id: `c${turn}`, name: "page", arguments: a }],
+          })
+        : msg({ content: [{ type: "text", text: "done" }] });
+      s.push({ type: "start", partial: m });
+      s.push({ type: "done", reason: m.stopReason as "stop", message: m });
+      s.end();
+      return s;
+    };
+    const events: HarnessEvent[] = [];
+    const guard = repeatRefusalPlugin();
+    const result = await Effect.runPromise(
+      runAgentEffect({
+        spec: defineAgent({
+          id: "rr-coerce",
+          systemPrompt: "probe",
+          inputSchema: Type.Object({ q: Type.String() }),
+          outputSchema: Type.Unknown(),
+          model: MODEL_NAME,
+          tools: [],
+          plugins: [{ id: "page-tools", tools: [page] }, guard],
+        }),
+        input: { q: "hi" },
+        ctx: {
+          runId: "rr-coerce",
+          depth: 0,
+          cwd: process.cwd(),
+          env: {},
+          signal: new AbortController().signal,
+        },
+        emit: (e) => events.push(e),
+        deps: {
+          sandbox: createNoneSandbox(),
+          preResolvedModels: new Map([[MODEL_NAME, { model: fakeModel, apiKey: "sk-fake" }]]),
+          streamFn,
+        },
+      }),
+    );
+    expect(result.status).toBe("success");
+    // the tool saw the validated value once; both resends (raw and already-numeric) were refused
+    expect(executed).toBe(1);
+    expect(seenInputs).toEqual([{ n: 1 }]);
+    const codes = events
+      .filter(
+        (e): e is Extract<HarnessEvent, { kind: "tool_call_end" }> => e.kind === "tool_call_end",
+      )
+      .map((e) => e.result.denied?.code ?? null);
+    expect(codes).toEqual([null, "repeat_refusal", "repeat_refusal"]);
+    expect(guard.inFlight("rr-coerce")).toBe(0);
+  });
 });

@@ -51,7 +51,10 @@ interface RunState {
    * the `tool_call_start` event, when they differ) and its call number, until `tool_call_end`.
    */
   pending: Map<string, { fps: Set<string>; call: number }>;
-  /** Fingerprints computed in `beforeToolCall`, by tool-use id, waiting for `tool_call_start`. */
+  /**
+   * Fingerprints computed in `beforeToolCall` for a call whose `tool_call_start` has not been
+   * seen yet (pi normally emits the start first). Cleared at `tool_call_end`.
+   */
   seen: Map<string, string>;
   calls: number;
   usage: RepeatRefusalUsage;
@@ -121,6 +124,8 @@ const digest = (body: string): string => `${hash53(body, 1)}.${hash53(body, 2)}`
 export function repeatRefusalPlugin(opts: RepeatRefusalOptions = {}): HarnessPlugin & {
   /** Counters for a run, for host metrics and evals; undefined if the run is unknown. */
   usage(runId: string): RepeatRefusalUsage | undefined;
+  /** Diagnostics: tool calls of a run still being tracked (started or decided, not ended). */
+  inFlight(runId: string): number;
 } {
   const maxFailures = opts.maxFailuresPerRun ?? 256;
   const maxRuns = opts.maxRuns ?? 1000;
@@ -168,6 +173,10 @@ export function repeatRefusalPlugin(opts: RepeatRefusalOptions = {}): HarnessPlu
 
   return {
     id: "repeat-refusal",
+    inFlight: (runId) => {
+      const s = runs.get(runId);
+      return s ? new Set([...s.pending.keys(), ...s.seen.keys()]).size : 0;
+    },
     usage: (runId) => {
       const s = runs.get(runId);
       return s ? { ...s.usage } : undefined;
@@ -180,7 +189,14 @@ export function repeatRefusalPlugin(opts: RepeatRefusalOptions = {}): HarnessPlu
         // The input as the harness hands it to tools (validated / coerced): the failure is
         // recorded under this fingerprint too, so a coerced resend still matches.
         const fp = fingerprint(toolName, input);
-        if (meta?.toolUseId !== undefined) s.seen.set(meta.toolUseId, fp);
+        // pi emits tool_execution_start (our `tool_call_start`) BEFORE beforeToolCall, so the
+        // call is usually pending already: add the validated fingerprint to it. Otherwise keep
+        // it until the start event arrives.
+        if (meta?.toolUseId !== undefined) {
+          const pending = s.pending.get(meta.toolUseId);
+          if (pending) pending.fps.add(fp);
+          else s.seen.set(meta.toolUseId, fp);
+        }
         const f = s.failures.get(fp);
         if (!f) return { kind: "allow" };
         const repeats = own(opts.retryable, toolName) ?? 0;
@@ -212,6 +228,7 @@ export function repeatRefusalPlugin(opts: RepeatRefusalOptions = {}): HarnessPlu
         const s = stateFor(ctx.runId);
         const started = s.pending.get(e.toolUseId);
         s.pending.delete(e.toolUseId);
+        s.seen.delete(e.toolUseId);
         if (!started) return;
         const code = e.result.denied?.code;
         if (code !== undefined && ignored.has(code)) return;

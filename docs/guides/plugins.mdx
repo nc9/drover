@@ -252,7 +252,8 @@ again. Change the arguments, try a different approach, or stop and report what y
   arguments run normally. The guard keeps a fixed-size digest (two 53-bit non-cryptographic
   hashes) per failure, not the arguments; a collision could only refuse a different call, never
   let a repeat through. A failure is recorded under both the arguments the harness validated and
-  the raw ones on the `tool_call_start` event, so a coerced resend still matches.
+  the raw ones on the `tool_call_start` event (pi coerces plain JSON Schema arguments, e.g.
+  `"1"` to `1`, between the two), so a coerced resend still matches.
 - **Failed** is read from structured flags, never from text: a result with `isError`, or a refusal
   by another `beforeToolCall` plugin. Refusals that are not about the call itself are ignored by
   their deny `code`: `tool_call_cap` (a budget) and the guard's own `repeat_refusal` always, plus
@@ -261,6 +262,10 @@ again. Change the arguments, try a different approach, or stop and report what y
   (`ToolDef.destructive`: the built-in `write`, `edit` and `bash`) forgets every failure of the
   run, because it may have fixed the cause: the test that failed can run again after the edit.
   Without a change in between, the identical rerun is still refused.
+  The guard cannot tell a fix from any other success: a successful `bash` call of any kind (even
+  `ls`) clears every remembered failure, so for an agent that works mostly through `bash` the
+  guard only catches back-to-back identical repeats. Narrow it with `include` / `exclude`, or
+  give such agents a cap (`toolCallCapPlugin`) as well.
 - **Which tools:** every tool by default. `include: [...]` guards only those, `exclude: [...]`
   never guards those (and wins over `include`).
 - **Retryable** tools run up to `retryable[tool]` identical repeats before the guard answers.
