@@ -99,7 +99,7 @@ bun scripts/ci.ts pack --out ~/src/drover-tarballs
 ```json
 {
   "dependencies": {
-    "droveragent": "file:../drover-tarballs/droveragent-<version>.tgz"
+    "@droveragent/all": "file:../drover-tarballs/droveragent-all-<version>.tgz"
   },
   "overrides": {
     "@droveragent/core": "file:../drover-tarballs/droveragent-core-<version>.tgz",
@@ -124,14 +124,14 @@ A plain `bun install` in the consumer **drops these links** and puts the npm rel
 ```bash
 cd ~/src/my-app
 ls -l node_modules/droveragent node_modules/@droveragent      # links point at drover-pinned
-bun -e 'console.log(Bun.resolveSync("droveragent", process.cwd()))'
+bun -e 'console.log(Bun.resolveSync("@droveragent/all", process.cwd()))'
 grep '"@droveragent/core": \["' bun.lock                      # tarball route: @droveragent/core@../drover-tarballs/...
 ```
 
 Run the check after every `bun install` in the consumer. From inside the consumer, one call prints what is actually loaded:
 
 ```ts
-import { droverVersions } from "droveragent"; // also exported by @droveragent/core and @droveragent/facade
+import { droverVersions } from "@droveragent/all"; // also exported by @droveragent/core and @droveragent/facade
 
 console.log(droverVersions());
 // { "@droveragent/core": "0.3.0+local.1a2b3c4", "@droveragent/harness": "0.3.0+local.1a2b3c4", ... }
@@ -143,7 +143,7 @@ The stamp is written into `dist/version.js` at build time (`scripts/postbuild-ve
 
 ### 4. Go back to the published release
 
-Remove the `file:` entries and overrides (tarballs) or run `bun unlink` in each linked package and `bun remove` the links in the consumer, then `bun add droveragent@<version>` and repeat step 3.
+Remove the `file:` entries and overrides (tarballs) or run `bun unlink` in each linked package and `bun remove` the links in the consumer, then `bun add @droveragent/all@<version>` and repeat step 3.
 
 ## Releases
 

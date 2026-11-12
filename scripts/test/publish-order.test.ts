@@ -16,11 +16,10 @@ describe("private packages are never packed for publish or published", () => {
     expect(publishOrder(order, (p) => priv.has(p))).toEqual(["core", "facade"]);
   });
 
-  test("the droveragent umbrella is private and out of the publish order", () => {
-    expect(isPrivatePackage("droveragent")).toBe(true);
+  test("the umbrella publishes as @droveragent/all: no package is private, publish order = build order", () => {
+    expect(isPrivatePackage("droveragent")).toBe(false);
     expect(PACKAGE_ORDER).toContain("droveragent");
-    expect(publishOrder()).not.toContain("droveragent");
-    expect(publishOrder()).toContain("facade");
+    expect(publishOrder()).toEqual([...PACKAGE_ORDER]);
   });
 
   test("bun scripts/workspace.ts --publish prints the publish order; plain prints the build order", () => {
@@ -38,7 +37,7 @@ describe("private packages are never packed for publish or published", () => {
       };
       const entries: PackEntry[] = [
         { pkg: "core", name: "@droveragent/core", version: "0.3.0", tarball: "core.tgz" },
-        { pkg: "droveragent", name: "droveragent", version: "0.3.0", tarball: "umbrella.tgz" },
+        { pkg: "secret", name: "@droveragent/secret", version: "0.3.0", tarball: "secret.tgz" },
       ];
       const deps: PublishDeps = {
         npm,
@@ -52,15 +51,15 @@ describe("private packages are never packed for publish or published", () => {
           throw new Error(m);
         },
         dryRun,
-        isPrivate: (e) => e.pkg === "droveragent",
+        isPrivate: (e) => e.pkg === "secret",
       };
       const counts = publishEntries(deps, entries, ["--provenance"]);
       expect(counts).toEqual({ published: 1, skipped: 1 });
       expect(
-        calls.filter((c) => c.includes("umbrella.tgz") || / droveragent(@|$| )/.test(` ${c}`)),
+        calls.filter((c) => c.includes("secret.tgz") || c.includes("@droveragent/secret")),
       ).toEqual([]);
       expect(calls.some((c) => c.startsWith("publish ./core.tgz"))).toBe(true);
-      expect(summary.join("\n")).toContain("SKIP droveragent@0.3.0: private package");
+      expect(summary.join("\n")).toContain("SKIP @droveragent/secret@0.3.0: private package");
     }
   });
 });

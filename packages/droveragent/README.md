@@ -1,19 +1,17 @@
-# droveragent
+# @droveragent/all
 
-> **Not published yet.** npm refused the unscoped name `droveragent` (too similar to an
-> existing package), so this package is `"private": true` until a name is chosen. Use
-> [`@droveragent/facade`](https://www.npmjs.com/package/@droveragent/facade) (`runAgent`,
-> `resumeAgent`) and [`@droveragent/core`](https://www.npmjs.com/package/@droveragent/core)
-> (`defineAgent`) instead.
+```bash
+bun add @droveragent/all@next @sinclair/typebox
+```
 
 Headless agent harness — define agents and run them.
 
 This is the umbrella entry point. It re-exports [`@droveragent/facade`](https://www.npmjs.com/package/@droveragent/facade)
 (run / resume) plus `defineAgent` from [`@droveragent/core`](https://www.npmjs.com/package/@droveragent/core),
-so the essentials are reachable from one unscoped import:
+so the essentials are reachable from one import:
 
 ```ts
-import { defineAgent, runAgent } from "droveragent";
+import { defineAgent, runAgent } from "@droveragent/all";
 
 const agent = defineAgent({
   id: "echo",

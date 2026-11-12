@@ -21,6 +21,7 @@ JSON, and reports its tokens + cost.
     ```
 
     See `@droveragent/model` for using a different provider.
+
   </Step>
 </Steps>
 
@@ -29,35 +30,32 @@ JSON, and reports its tokens + cost.
 <CodeGroup>
 
 ```bash bun
-bun add @droveragent/facade@next @droveragent/core@next @sinclair/typebox
+bun add @droveragent/all@next @sinclair/typebox
 ```
 
 </CodeGroup>
 
 <Note>
-The unscoped `droveragent` umbrella is not on npm yet (its name is pending). Install the
-scoped packages: `defineAgent` comes from `@droveragent/core`, `runAgent` from
-`@droveragent/facade`. Until 0.3.0 is stable, `@next` is needed: `latest` still points at
-the older 0.1 / 0.2 releases.
+  `@droveragent/all` is the umbrella package. To depend on less, install the scoped packages instead
+  (`@droveragent/facade` for `runAgent`, `@droveragent/core` for `defineAgent`). Until 0.3.0 is
+  stable, `@next` is needed: `latest` still points at the older 0.1 / 0.2 releases.
 </Note>
 
 ## Define + run an agent
 
 ```ts title="quickstart.ts"
 import { Type } from "@sinclair/typebox";
-import { defineAgent } from "@droveragent/core";
-import { runAgent } from "@droveragent/facade";
+import { defineAgent, runAgent } from "@droveragent/all";
 
 const echo = defineAgent({
   id: "echo",
-  systemPrompt:
-    "Reply with a JSON object matching the outputSchema. No prose.",
+  systemPrompt: "Reply with a JSON object matching the outputSchema. No prose.",
   inputSchema: Type.Object({ word: Type.String() }),
   outputSchema: Type.Object({
     upper: Type.String(),
     length: Type.Integer(),
   }),
-  model: "cheap",       // alias for gemini-3.1-flash-lite-preview
+  model: "cheap", // alias for gemini-3.1-flash-lite-preview
   tools: [],
   quota: { maxTurns: 2 },
 });
@@ -117,8 +115,7 @@ tokens: 179/24
 
 <CardGroup cols={2}>
   <Card title="Add tools" href="/guides/writing-an-agent" icon="wrench">
-    Compose `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls`, or
-    write your own.
+    Compose `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls`, or write your own.
   </Card>
   <Card title="Concepts" href="/guides/concepts" icon="book">
     AgentSpec, RunContext, HarnessEvent, plugins: the mental model.

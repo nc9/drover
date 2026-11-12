@@ -1,19 +1,17 @@
 # Releasing
 
-All `@droveragent/*` packages and the `droveragent` umbrella share one version
+All `@droveragent/*` packages, the `@droveragent/all` umbrella included, share one version
 (lockstep). Prereleases such as `0.3.0-next.1` go to the npm `next` dist-tag and
 never to `latest`; a plain `0.3.0` goes to `latest`.
 
-**The `droveragent` umbrella is not published.** npm refused the unscoped name
-(`403`, "Package name too similar to existing package drover-agent"), so it is
-`"private": true` until a publishable name is chosen. Users install
-`@droveragent/facade` (and `@droveragent/core` for `defineAgent`). A private
-package is still built, typechecked, tested and bumped in lockstep by
-`scripts/release-bump.ts`, but `bun scripts/ci.ts pack`, `scripts/release.ts`
-(plan, verify, publish) and `scripts/publish-all.sh` leave it out
-(`publishOrder()` in `scripts/workspace.ts`; `bun scripts/workspace.ts
---publish` prints it). To publish it later, rename it and set
-`"private": false`.
+**The umbrella publishes as `@droveragent/all`** (folder `packages/droveragent`). npm refused
+the unscoped name `droveragent` (`403`, "Package name too similar to existing package
+drover-agent"), so it was `"private": true` in 0.3.0-next.2 and first publishes in
+0.3.0-next.3. The private-package support stays: a package with `"private": true` is still
+built, typechecked, tested and bumped in lockstep by `scripts/release-bump.ts`, but
+`bun scripts/ci.ts pack`, `scripts/release.ts` (plan, verify, publish) and
+`scripts/publish-all.sh` leave it out (`publishOrder()` in `scripts/workspace.ts`;
+`bun scripts/workspace.ts --publish` prints it).
 
 Releases are published by `.github/workflows/release.yml` when a `v*` tag is
 pushed, after an approval on the `npm-publish` environment. Nothing publishes
@@ -38,15 +36,15 @@ Do these before pushing the first release tag.
    maintainers (bypass list). Pushing a `v*` tag starts a release, so only the
    people who may approve one may create one.
 
-3. **npm auth: `NPM_TOKEN` (required for `0.3.0-next.1`).** Create an npm
+3. **npm auth: `NPM_TOKEN` (required for any package's first publish).** Create an npm
    granular access token with read and write access to the `@droveragent`
-   scope and the `droveragent` package, allowed to bypass 2FA for publishing.
+   scope, allowed to bypass 2FA for publishing.
    Store it as the `NPM_TOKEN` secret **on the `npm-publish` environment**
    (not a repository secret), so only the approved publish job can read it.
 
-   The token is required for the first train: `@droveragent/sandbox-cloudflare`,
-   `@droveragent/storage-d1` and `droveragent` have never been published, and
-   npm only lets you add a trusted publisher to a package that already exists.
+   The token is required for a package's first publish: npm only lets you add a
+   trusted publisher to a package that already exists. In `0.3.0-next.3` that is
+   `@droveragent/all` (the umbrella's first publish).
 
 4. **npm auth: trusted publishing (after `0.3.0-next.1`).** Once every package
    exists, add a trusted publisher to each one on npmjs.com (Package >
@@ -55,6 +53,10 @@ Do these before pushing the first release tag.
    - Repository: `drover`
    - Workflow filename: `release.yml`
    - Environment name: `npm-publish`
+
+   A package published for the first time later needs the same step once it
+   exists: after `0.3.0-next.3`, add the trusted publisher for
+   `@droveragent/all` (its first publish goes out with `NPM_TOKEN`).
 
    The workflow pins npm 11.18.0 (trusted publishing needs npm 11.5.1 or later)
    and grants `id-token: write` to the publish job only; npm uses OIDC where a
@@ -116,8 +118,7 @@ it reads `npm view <pkg> dist-tags.latest`; when that points at a prerelease it 
 `latest` go), the run summary says so, and `npm install <pkg>` resolves to that
 prerelease until a stable version is published. A first publish is detected from
 `npm view <pkg> versions` (empty or 404), not `version`, which is empty once
-`latest` has been removed. For `0.3.0-next.1` this applies to
-`@droveragent/sandbox-cloudflare`, `@droveragent/storage-d1` and `droveragent`.
+`latest` has been removed. For `0.3.0-next.3` this applies to `@droveragent/all`.
 
 **`dist-tag rm` needs a token.** npm trusted publishing (OIDC) authorises `npm
 publish` only. Removing a dist-tag needs `NPM_TOKEN` on the `npm-publish`
