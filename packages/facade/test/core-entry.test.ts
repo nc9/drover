@@ -12,9 +12,8 @@ import { createDisabledSandbox, runAgent, type PreResolvedModel } from "../src/c
 /**
  * Bundle `entry` the way a Worker bundler does (browser target, workerd conditions), with
  * NOTHING external but Node built-ins: every other bare import must resolve from what the
- * packages install, or the build fails. An optional peer that nothing installs (#69:
- * `@opentelemetry/api`, imported by a provider SDK inside pi-ai) fails here as it fails
- * under wrangler. `minify` is for the size budget.
+ * packages install, or the build fails. An optional peer that nothing installs (#69, an
+ * OpenTelemetry import inside a provider SDK) fails here as it fails under wrangler. `minify` is for the size budget.
  */
 const workerBuild = async (entryPath: string, minify = false) => {
   const r = await Bun.build({
@@ -154,16 +153,16 @@ describe("@droveragent/facade/core", () => {
 const WORKERS_STATIC_NODE = new Set(["path", "crypto"]);
 /**
  * `require()` sites read and found to run inside a function, never at module load:
- * pi-ai's credentials-file lookup (`env-api-keys.js`) requires `node:fs` only when asked
- * for Google application-default credentials.
+ * pi-ai's `utils/provider-env.js` has a Bun-sandbox fallback that requires `node:fs` only
+ * inside a guarded function (never at module load).
  */
 const ALLOWED_REQUIRE_SITES: ReadonlyArray<{ file: RegExp; module: string }> = [
-  { file: /@mariozechner\/pi-ai\/dist\/env-api-keys\.js$/, module: "fs" },
+  { file: /@earendil-works\/pi-ai\/dist\/utils\/provider-env\.js$/, module: "fs" },
 ];
 /**
- * Minified browser bundle of `src/core.ts`, all pi-ai providers included. Measured: ~2.27 MB
- * (2026-11, mistral 2.7 + @opentelemetry/api since #69; was ~2.09 MB). The budget leaves
- * ~0.3 MB for provider-SDK minor bumps inside pi-ai's ranges, which drover does not pin for
+ * Minified browser bundle of `src/core.ts`, all pi-ai providers included. Measured: ~2.51 MB
+ * (2026-11, pi-ai 1.5.2 /compat; was ~2.27 MB on 0.73.1). The budget leaves
+ * ~0.09 MB for provider-SDK minor bumps inside pi-ai's ranges, which drover does not pin for
  * consumers; a jump past it means a new SDK or a static import, and is worth a look.
  */
 const CORE_BUNDLE_BUDGET_BYTES = 2_600_000;
@@ -229,7 +228,7 @@ describe("Workers guard classifier", () => {
     expect(
       nodeImportViolations({
         "nm/some-lib/index.js": { imports: [{ path: "fs", kind: "require-call" }] },
-        "nm/@earendil-works/pi-ai/dist/env-api-keys.js": {
+        "nm/@earendil-works/pi-ai/dist/utils/provider-env.js": {
           imports: [
             { path: "node:fs", kind: "require-call" },
             { path: "node:child_process", kind: "require-call" },
@@ -238,7 +237,7 @@ describe("Workers guard classifier", () => {
       }),
     ).toEqual([
       "fs (require-call) <- nm/some-lib/index.js",
-      "node:child_process (require-call) <- nm/@earendil-works/pi-ai/dist/env-api-keys.js",
+      "node:child_process (require-call) <- nm/@earendil-works/pi-ai/dist/utils/provider-env.js",
     ]);
   });
 });
@@ -270,12 +269,6 @@ describe("@droveragent/facade/core: every bare import resolves (#69)", () => {
     const { r, errors } = await workerBuild(new URL("../src/core.ts", import.meta.url).pathname);
     expect(errors).toEqual([]);
     expect(r.success).toBe(true);
-    const inputs = Object.keys(
-      (r as unknown as { metafile: { inputs: Record<string, unknown> } }).metafile.inputs,
-    );
-    // The import that broke Workers: a provider SDK's optional OpenTelemetry peer, now
-    // installed by @droveragent/model. Its SDK stays behind pi-ai's lazy provider import.
-    expect(inputs.some((f) => f.includes("@opentelemetry/api"))).toBe(true);
   });
 
   test("control: an import nothing installs fails the build", async () => {
