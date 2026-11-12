@@ -139,13 +139,18 @@ export function toolCallCapPlugin(opts: ToolCallCapOptions): ToolCallCapPlugin {
         if (opts.maxCalls !== undefined && s.total >= opts.maxCalls) {
           return {
             kind: "deny",
+            code: "tool_call_cap",
             reason: message({ toolName, scope: "total", limit: opts.maxCalls, used: s.total }),
           };
         }
         const cap = toolCap(toolName);
         const used = s.byTool.get(toolName) ?? 0;
         if (cap !== undefined && used >= cap) {
-          return { kind: "deny", reason: message({ toolName, scope: "tool", limit: cap, used }) };
+          return {
+            kind: "deny",
+            code: "tool_call_cap",
+            reason: message({ toolName, scope: "tool", limit: cap, used }),
+          };
         }
         s.total += 1;
         s.byTool.set(toolName, used + 1);

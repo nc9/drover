@@ -17,7 +17,18 @@ import type { AnyToolDef } from "./tool.ts";
  * If you need to rewrite a tool's input, use `wrapTool` instead (the
  * plugin wraps the tool and transforms args before delegating).
  */
-export type ToolDecision = { kind: "allow" } | { kind: "deny"; reason: string };
+export type ToolDecision =
+  | { kind: "allow" }
+  | {
+      kind: "deny";
+      reason: string;
+      /**
+       * Machine-readable source of the refusal (e.g. `tool_call_cap`, `repeat_refusal`),
+       * for observers that must tell a policy or budget refusal from a tool's own failure.
+       * It reaches observers as `ToolResult.denied.code`; the model sees only `reason`.
+       */
+      code?: string;
+    };
 
 /**
  * Recovery returned by `onError`. Lets plugins decide whether a thrown

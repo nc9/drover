@@ -313,7 +313,17 @@ export interface UsageStats {
 export interface TraceSummary {
   status: string | null;
   turns: number;
-  toolCalls: { count: number; errors: number; totalMs: number; byTool: Record<string, NameStats> };
+  toolCalls: {
+    count: number;
+    errors: number;
+    totalMs: number;
+    byTool: Record<string, NameStats>;
+    /**
+     * Calls refused because the same call had already failed in the run (`result.denied.code ===
+     * "repeat_refusal"`, from `repeatRefusalPlugin`). Each is also in `errors`.
+     */
+    repeatedFailures: number;
+  };
   usage: UsageStats;
   /** Usage by serving provider, when `usage` events name one. */
   usageByProvider: Record<string, UsageStats>;
@@ -341,6 +351,7 @@ function toRecord<V>(m: ReadonlyMap<string, V>): Record<string, V> {
 
 export function summarizeTrace(events: ReadonlyArray<TraceEvent>): TraceSummary {
   const total = { count: 0, errors: 0, totalMs: 0 };
+  let repeatedFailures = 0;
   const byTool = new Map<string, NameStats>();
   const usage = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
   const byProvider = new Map<string, UsageStats>();
@@ -366,6 +377,7 @@ export function summarizeTrace(events: ReadonlyArray<TraceEvent>): TraceSummary 
         let t = byTool.get(e.toolName);
         if (!t) byTool.set(e.toolName, (t = { count: 0, errors: 0, totalMs: 0 }));
         const failed = e.result.isError === true;
+        if (e.result.denied?.code === "repeat_refusal") repeatedFailures++;
         for (const x of [total, t]) {
           x.count++;
           x.totalMs += e.durationMs;
@@ -406,7 +418,7 @@ export function summarizeTrace(events: ReadonlyArray<TraceEvent>): TraceSummary 
   return {
     status,
     turns,
-    toolCalls: { ...total, byTool: toRecord(byTool) },
+    toolCalls: { ...total, byTool: toRecord(byTool), repeatedFailures },
     usage,
     usageByProvider: toRecord(byProvider),
     compactions,

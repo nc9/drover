@@ -45,6 +45,7 @@ export function loopDetectPlugin(opts: LoopDetectOptions = {}): HarnessPlugin {
         if (streak >= window) {
           return {
             kind: "deny",
+            code: "loop_detect",
             reason: `loop detected: same call repeated ${streak}x. Stop retrying — try a different approach, or report the obstacle and stop.`,
           };
         }

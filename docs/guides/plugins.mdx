@@ -118,10 +118,10 @@ Apply on every tool result, no matter which tool produced it. Add to
 
 `beforeToolCall` returns a `ToolDecision`:
 
-| variant | what happens |
-| --- | --- |
-| `{ kind: "allow" }` | proceed to the next plugin in the chain, then execute |
-| `{ kind: "deny", reason }` | tool returns an error result; model sees `reason` |
+| variant                           | what happens                                                                                                                                                                                                                              |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{ kind: "allow" }`               | proceed to the next plugin in the chain, then execute                                                                                                                                                                                     |
+| `{ kind: "deny", reason, code? }` | tool returns an error result; model sees `reason`. `code` is a machine-readable source (`tool_call_cap`, `loop_detect`, `repeat_refusal`, ...) that observers see as `result.denied.code` on the `tool_call_end`; the model never sees it |
 
 If a plugin's `beforeToolCall` throws or rejects, drover **fails closed**
 — treats it as a deny. Don't rely on errors in observation hooks; that's
@@ -141,10 +141,9 @@ what `onEvent` is for.
 ## Lifecycle and state
 
 <Warning>
-drover does NOT construct plugins per run. Whatever `HarnessPlugin`
-objects you put on `spec.plugins` or `options.plugins` are passed
-through to every run by reference. **State in plugin closures leaks
-across runs** unless the caller reconstructs the plugin each time.
+  drover does NOT construct plugins per run. Whatever `HarnessPlugin` objects you put on
+  `spec.plugins` or `options.plugins` are passed through to every run by reference. **State in
+  plugin closures leaks across runs** unless the caller reconstructs the plugin each time.
 </Warning>
 
 For stateful plugins (loop-detect's call counter, circuit-breaker's
@@ -162,7 +161,7 @@ for (const input of inputs) {
   const result = await runAgent(spec, input, {
     plugins: [circuitBreakerPlugin(), tracer.plugin],
   }).result;
-  console.log(tracer.steps);   // this run's events only
+  console.log(tracer.steps); // this run's events only
 }
 ```
 
@@ -223,3 +222,58 @@ Counting rules:
 - `maxCalls` and `perTool` values must be finite and `>= 0`, and `warnAt` in `(0, 1]` or `false`;
   anything else throws at construction.
 
+## Repeat-refusal guard
+
+A model that is refused often resends the same refused call on a later turn. Each resend costs a
+turn and tokens, and the run ends with the work undone. `repeatRefusalPlugin` remembers which tool
+calls failed in the run and answers a repeat without running the tool:
+
+```ts
+import { repeatRefusalPlugin, toolCallCapPlugin } from "@droveragent/plugins";
+
+const guard = repeatRefusalPlugin({
+  retryable: { fetch: 1 }, // one identical retry for a flaky tool
+  keyFor: { fetch: (a) => new URL((a as { url: string }).url).href }, // optional: what "the same call" means
+});
+runAgent(spec, input, { plugins: [toolCallCapPlugin({ maxCalls: 30 }), guard] });
+// after the run:
+guard.usage(runId); // { failed, repeated }
+```
+
+What the model sees on a repeat (a tool error):
+
+```
+This exact fetch call already failed once in this run (first at tool call 3), so it was not run
+again. Change the arguments, try a different approach, or stop and report what you have.
+```
+
+- **The same call** is the tool name plus its arguments with object keys sorted and strings
+  trimmed (a `__proto__` key counts like any other), or the tool's `keyFor` key. Changed
+  arguments run normally. The guard keeps a fixed-size digest (two 53-bit non-cryptographic
+  hashes) per failure, not the arguments; a collision could only refuse a different call, never
+  let a repeat through. A failure is recorded under both the arguments the harness validated and
+  the raw ones on the `tool_call_start` event (pi coerces plain JSON Schema arguments, e.g.
+  `"1"` to `1`, between the two), so a coerced resend still matches.
+- **Failed** is read from structured flags, never from text: a result with `isError`, or a refusal
+  by another `beforeToolCall` plugin. Refusals that are not about the call itself are ignored by
+  their deny `code`: `tool_call_cap` (a budget) and the guard's own `repeat_refusal` always, plus
+  `ignoreDenyCodes`. A later success of the same call forgets the failure.
+- **A successful change forgets everything.** Any successful call to a destructive tool
+  (`ToolDef.destructive`: the built-in `write`, `edit` and `bash`) forgets every failure of the
+  run, because it may have fixed the cause: the test that failed can run again after the edit.
+  Without a change in between, the identical rerun is still refused.
+  The guard cannot tell a fix from any other success: a successful `bash` call of any kind (even
+  `ls`) clears every remembered failure, so for an agent that works mostly through `bash` the
+  guard only catches back-to-back identical repeats. Narrow it with `include` / `exclude`, or
+  give such agents a cap (`toolCallCapPlugin`) as well.
+- **Which tools:** every tool by default. `include: [...]` guards only those, `exclude: [...]`
+  never guards those (and wins over `include`).
+- **Retryable** tools run up to `retryable[tool]` identical repeats before the guard answers.
+- **The message does not quote the tool's earlier text.** Tool output is untrusted, so it is not
+  echoed back; the message names the tool, how many times it failed and the call number.
+- **Memory** is per run id and bounded (`maxFailuresPerRun`, default 256; `maxRuns`, default 1000),
+  and is kept after a run ends, so a continuation of the run in the same process (same run id)
+  still knows its failures. It lives in memory: a resume in another process starts empty.
+- **Counting:** `usage(runId)` gives `{ failed, repeated }`. In a trace, a guarded call's
+  `tool_call_end` has `result.denied.code === "repeat_refusal"`, and `summarizeTrace` counts them
+  in `toolCalls.repeatedFailures`.

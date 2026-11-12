@@ -16,13 +16,19 @@ JSON Lines.
 ```
 
 ```ts
-import { traceToJsonl, parseTraceJsonl, readEvent, summarizeTrace, TRACE_VERSION } from "@droveragent/core";
+import {
+  traceToJsonl,
+  parseTraceJsonl,
+  readEvent,
+  summarizeTrace,
+  TRACE_VERSION,
+} from "@droveragent/core";
 
 const rows = await Effect.runPromise(storage.listEvents(runId));
-const events = rows.map((r) => readEvent(r.payload));          // typed, or { unknown: true, ... }
+const events = rows.map((r) => readEvent(r.payload)); // typed, or { unknown: true, ... }
 const text = traceToJsonl({ header: { traceVersion: TRACE_VERSION, runId }, events });
-const trace = parseTraceJsonl(text);                           // tolerant; trace.warnings says what it skipped
-const summary = summarizeTrace(trace.events);                  // numbers to list and to diff between versions
+const trace = parseTraceJsonl(text); // tolerant; trace.warnings says what it skipped
+const summary = summarizeTrace(trace.events); // numbers to list and to diff between versions
 ```
 
 ## Stability rules
@@ -40,24 +46,24 @@ const summary = summarizeTrace(trace.events);                  // numbers to lis
 
 Every event has `kind`, `runId` (string), `ts` (epoch ms). Required fields beyond those:
 
-| Kind | Required fields | Notes |
-|---|---|---|
-| `run_start` | `agentId`, `specHash` | |
-| `input_validated` | | |
-| `prompt_rendered` | `cacheablePrefixChars`, `totalChars`, `reordered`, `warnings` | |
-| `turn_start` | `turn` | |
-| `llm_call` | `turn`, `modelName` | `reasoning` optional |
-| `assistant_text`, `thinking` | `turn`, `text` | durable record of a message |
-| `assistant_delta`, `thinking_delta` | `turn`, `text` | ephemeral, opt-in (`emitDeltas`), not persisted |
-| `tool_call_start` | `turn`, `toolUseId`, `toolName` | `input` |
-| `tool_call_end` | `turn`, `toolUseId`, `toolName`, `result`, `durationMs` | `result.isError` marks a tool error; timing is `durationMs`; `trust` optional (`untrusted`) |
-| `usage` | `turn`, `usage` | per model call: tokens, `costUsd`; `provider` and `model` when the message names them |
-| `compaction` | `turn`, `trigger`, `strategy`, `beforeTokens`, `afterTokens`, `collapsedRange`, `summarized` | |
-| `subagent_start` / `subagent_end` | `childRunId`, `agentId` / `status` | child events are in the child's own trace |
-| `output_validated`, `output_retry` | `attempt`, `reason` (retry) | |
-| `memory_written`, `memory_recalled` | `entry` / `scopes`, `hits` | |
-| `error` | `tag`, `message` | |
-| `run_end` | `status` | `success`, `quota`, `cancelled`, `error`, `paused`: the final status |
+| Kind                                | Required fields                                                                              | Notes                                                                                                                                                                                                                                                    |
+| ----------------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run_start`                         | `agentId`, `specHash`                                                                        |                                                                                                                                                                                                                                                          |
+| `input_validated`                   |                                                                                              |                                                                                                                                                                                                                                                          |
+| `prompt_rendered`                   | `cacheablePrefixChars`, `totalChars`, `reordered`, `warnings`                                |                                                                                                                                                                                                                                                          |
+| `turn_start`                        | `turn`                                                                                       |                                                                                                                                                                                                                                                          |
+| `llm_call`                          | `turn`, `modelName`                                                                          | `reasoning` optional                                                                                                                                                                                                                                     |
+| `assistant_text`, `thinking`        | `turn`, `text`                                                                               | durable record of a message                                                                                                                                                                                                                              |
+| `assistant_delta`, `thinking_delta` | `turn`, `text`                                                                               | ephemeral, opt-in (`emitDeltas`), not persisted                                                                                                                                                                                                          |
+| `tool_call_start`                   | `turn`, `toolUseId`, `toolName`                                                              | `input`                                                                                                                                                                                                                                                  |
+| `tool_call_end`                     | `turn`, `toolUseId`, `toolName`, `result`, `durationMs`                                      | `result.isError` marks a tool error; `result.denied` (`plugin`, `code?`) marks a call a `beforeToolCall` plugin refused (the tool did not run; e.g. `code: "tool_call_cap"`, `"repeat_refusal"`); timing is `durationMs`; `trust` optional (`untrusted`) |
+| `usage`                             | `turn`, `usage`                                                                              | per model call: tokens, `costUsd`; `provider` and `model` when the message names them                                                                                                                                                                    |
+| `compaction`                        | `turn`, `trigger`, `strategy`, `beforeTokens`, `afterTokens`, `collapsedRange`, `summarized` |                                                                                                                                                                                                                                                          |
+| `subagent_start` / `subagent_end`   | `childRunId`, `agentId` / `status`                                                           | child events are in the child's own trace                                                                                                                                                                                                                |
+| `output_validated`, `output_retry`  | `attempt`, `reason` (retry)                                                                  |                                                                                                                                                                                                                                                          |
+| `memory_written`, `memory_recalled` | `entry` / `scopes`, `hits`                                                                   |                                                                                                                                                                                                                                                          |
+| `error`                             | `tag`, `message`                                                                             |                                                                                                                                                                                                                                                          |
+| `run_end`                           | `status`                                                                                     | `success`, `quota`, `cancelled`, `error`, `paused`: the final status                                                                                                                                                                                     |
 
 Kinds added by other changes (provider failover, budget warnings) appear as unknown kinds in this reader until
 they are added to the table; `summarizeTrace` counts them in `unknownKinds`, so nothing is lost and a viewer can
@@ -70,16 +76,16 @@ messages, memory content, recall queries. These fields are marked in `UNTRUSTED_
 top-level field or `field.key` one level into an object, so structural flags next to the text
 (`result.isError`, `entry.id`) are not marked and stay readable after redaction:
 
-| Kind | Untrusted fields |
-|---|---|
-| `assistant_text`, `thinking`, `assistant_delta`, `thinking_delta` | `text` |
-| `tool_call_start` | `input` |
-| `tool_call_end` | `result.content`, `result.data` (the event also carries `trust`, below) |
-| `output_retry` | `reason` |
-| `memory_written` | `entry.summary` |
-| `memory_recalled` | `query` |
-| `error` | `message` |
-| `prompt_rendered` | `warnings` |
+| Kind                                                              | Untrusted fields                                                        |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `assistant_text`, `thinking`, `assistant_delta`, `thinking_delta` | `text`                                                                  |
+| `tool_call_start`                                                 | `input`                                                                 |
+| `tool_call_end`                                                   | `result.content`, `result.data` (the event also carries `trust`, below) |
+| `output_retry`                                                    | `reason`                                                                |
+| `memory_written`                                                  | `entry.summary`                                                         |
+| `memory_recalled`                                                 | `query`                                                                 |
+| `error`                                                           | `message`                                                               |
+| `prompt_rendered`                                                 | `warnings`                                                              |
 
 > **Warning.** Treat these as data, never as instructions or markup. A viewer MUST HTML-escape them before
 > rendering and MUST NOT replay them into a model prompt. Tool results are stored raw (fencing, where a tool
@@ -138,6 +144,8 @@ One run: a tool call, usage, and the final status. Lines are shown as exported (
 
 ## Comparing runs across harness versions
 
-`summarizeTrace(events)` returns status, turns, tool calls (count, errors, total ms, by tool), tokens and cost
+`summarizeTrace(events)` returns status, turns, tool calls (count, errors, total ms, by tool, and
+`repeatedFailures`: calls refused because the same call had already failed, `result.denied.code ===
+"repeat_refusal"`), tokens and cost
 (total and by serving provider), compactions, subagents, errors, and the count of events it could not type. Write
 `harnessVersion` in the header and diff two summaries to see what a harness change did to the same scenario.
