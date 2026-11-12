@@ -95,10 +95,12 @@ export default {
   region a registry model keeps its own catalog URL, and a model declared in `models` is
   refused (`a declared model needs "region" or "baseUrl"`). When no region is given, the
   region named by the endpoint (the catalog URL, or a standard
-  `bedrock-runtime[-fips].<region>.amazonaws.com` base URL) is pinned too: left unpinned,
+  `bedrock-runtime.<region>.amazonaws.com` base URL) is pinned too: left unpinned,
   pi-ai would take `AWS_REGION` from the process environment, which turns off its endpoint pin
   and sends the call to that region. A custom endpoint that names no region needs `region`
-  under `useEnv: false`.
+  under `useEnv: false`. FIPS endpoints (`bedrock-runtime-fips.<region>...`) are refused
+  (`amazon-bedrock: FIPS endpoints are not supported`): pi-ai does not forward
+  `useFipsEndpoint` to the AWS SDK, which would silently call the non-FIPS endpoint.
 - Bedrock credentials: an entry's `apiKey` is a Bedrock API key, sent as the bearer token.
   Without one, the AWS SDK reads IAM credentials from its default chain (`process.env`,
   `~/.aws`, instance and container roles), so with `useEnv: false` an entry without `apiKey`

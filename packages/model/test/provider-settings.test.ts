@@ -678,7 +678,7 @@ describe("provider entries: Bedrock region from the endpoint", () => {
       {
         name: "amazon-bedrock",
         apiKey: "k",
-        baseUrl: "https://bedrock-runtime-fips.us-west-2.amazonaws.com",
+        baseUrl: "https://bedrock-runtime.us-west-2.amazonaws.com",
         useEnv: false,
       },
       "amazon.nova-lite-v1:0",
@@ -695,6 +695,25 @@ describe("provider entries: Bedrock region from the endpoint", () => {
     );
     expect(custom.r.errorMessage).toContain('amazon-bedrock: set "region"');
     expect(custom.got).toEqual([]);
+  });
+
+  test("a FIPS endpoint is refused, with or without a region, and no call is made", async () => {
+    for (const region of [undefined, "us-west-2"]) {
+      const fips = await callWith(
+        {
+          name: "amazon-bedrock",
+          apiKey: "k",
+          baseUrl: "https://bedrock-runtime-fips.us-west-2.amazonaws.com",
+          ...(region ? { region } : {}),
+        },
+        "amazon.nova-lite-v1:0",
+      );
+      expect(fips.r.stopReason).toBe("error");
+      expect(fips.r.errorMessage).toContain(
+        "amazon-bedrock: FIPS endpoints are not supported; pi-ai does not forward useFipsEndpoint",
+      );
+      expect(fips.got).toEqual([]);
+    }
   });
 
   test("pi-ai's full stream gets the pinned region, which it prefers over process.env.AWS_REGION", async () => {
