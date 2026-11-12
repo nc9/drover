@@ -54,6 +54,7 @@ export const REQUIRED_FIELDS: Readonly<Record<Kind, Readonly<Record<string, Fiel
   // `to` and `status` are nullable, so not listed; `code` is optional (allow-listed when present).
   provider_failover: { action: "string", from: "string", failureClass: "string" },
   budget_warning: { dimension: "string", limit: "number", used: "number" },
+  chain_record: { providers: "array" },
   output_validated: {},
   output_retry: { attempt: "number", reason: "string" },
   run_end: { status: "string" },

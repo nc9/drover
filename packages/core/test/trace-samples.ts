@@ -6,6 +6,28 @@ const base = { runId: "run_1", ts: 1_700_000_000_000 };
 /** One well-formed event of every kind. `Record<Kind, ...>` makes a new kind a compile error here. */
 export const SAMPLES: Record<Kind, HarnessEvent> = {
   run_start: { ...base, kind: "run_start", agentId: "a", specHash: "abc" },
+  chain_record: {
+    ...base,
+    kind: "chain_record",
+    providers: [
+      {
+        provider: "openrouter",
+        answered: 0,
+        failed: 1,
+        failures: { key_refused: 1 },
+        benchedAtTurn: 1,
+        usage: { inputTokens: 0, outputTokens: 0 },
+      },
+      {
+        provider: "cloudflare-ai-gateway",
+        answered: 2,
+        failed: 0,
+        failures: {},
+        benchedAtTurn: null,
+        usage: { inputTokens: 300, outputTokens: 30 },
+      },
+    ],
+  },
   provider_failover: {
     ...base,
     kind: "provider_failover",

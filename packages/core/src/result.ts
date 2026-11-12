@@ -42,6 +42,12 @@ export interface RunResult<TOutput = unknown> {
   };
   /** Usage of THIS invocation only. Equals `usage` for a fresh run. */
   usageDelta?: Usage;
+  /**
+   * Under a provider chain: one entry per configured provider, in chain order, including
+   * providers that only failed. Appended to by a resume or continuation of the run when
+   * storage holds the previous invocation's `chain_record` event.
+   */
+  chainRecord?: ChainRecordEntry[];
   /** Tool ids invoked during the run, in order. Duplicates preserved. */
   toolCalls: ReadonlyArray<string>;
   /** Tagged error when `status === "error"`. */
@@ -51,4 +57,25 @@ export interface RunResult<TOutput = unknown> {
     /** HTTP status of a `ProviderError`, when the provider reported one. */
     status?: number;
   };
+}
+
+/** One provider's line in a run's provider chain record (`RunResult.chainRecord`). */
+export interface ChainRecordEntry {
+  provider: string;
+  /** Model calls this provider answered (not counting failed attempts). */
+  answered: number;
+  /** Attempts on this provider that failed (each retry, failover or final failure). */
+  failed: number;
+  /** Failed attempts by failure class (`credits_exhausted`, `invalid_request`, ...). */
+  failures: Record<string, number>;
+  /**
+   * The turn at which the chain first skipped this provider for the rest of an invocation
+   * (credits, key or region by default, or an `actions` "skip"); null if it never was.
+   */
+  benchedAtTurn: number | null;
+  /**
+   * Tokens and cost of the calls this provider served. The cost is the provider-billed cost when
+   * the chain reports it (`billedCost`), pi-ai's list price otherwise.
+   */
+  usage: Usage;
 }

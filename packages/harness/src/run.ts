@@ -4,6 +4,7 @@ import {
   type AgentSpec,
   type AnyToolDef,
   CancelledError,
+  type ChainRecordEntry,
   CompactionConfigError,
   createFence,
   type HarnessError,
@@ -51,6 +52,7 @@ import {
   validateCompactionPolicy,
   type SummarizeFn,
 } from "./compaction/index.ts";
+import { createChainRecorder, lastChainRecord } from "./chain-record.ts";
 import { runLifecycleSteps } from "./lifecycle.ts";
 import {
   providerError,
@@ -423,10 +425,27 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     const preResolvedModels = deps.providers
       ? new Map([...deps.providers.preResolvedModels(), ...(deps.preResolvedModels ?? [])])
       : deps.preResolvedModels;
+    // The per-run chain record (#52): seeded from the run's previous invocation (its last
+    // stored `chain_record` event) on a resume or continuation.
+    let chainSeed: ReadonlyArray<ChainRecordEntry> | undefined;
+    if (deps.providers && isResume && storage) {
+      const stored = yield* Effect.either(storage.listEvents(ctx.runId));
+      if (stored._tag === "Right") chainSeed = lastChainRecord(stored.right);
+    }
+    const chainRecorder = deps.providers
+      ? createChainRecorder(deps.providers.providers, chainSeed)
+      : undefined;
     const runStreamFn: StreamFn | undefined = deps.providers
-      ? (deps.providers.forRun((n) =>
-          safeEmit({ kind: "provider_failover", runId: ctx.runId, ...n, ts: Date.now() }),
-        ) as StreamFn)
+      ? (deps.providers.forRun((n) => {
+          const ev = {
+            kind: "provider_failover" as const,
+            runId: ctx.runId,
+            ...n,
+            ts: Date.now(),
+          };
+          chainRecorder?.onNotice(ev, translator.currentTurn());
+          safeEmit(ev);
+        }) as StreamFn)
       : deps.streamFn;
 
     const resolved = yield* resolveModel(spec.model, {
@@ -757,6 +776,14 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           if (cost > 0) next.costUsd = cost;
           lastUsage.value = next;
           const served = (e.message as { provider?: unknown }).provider;
+          if (chainRecorder && typeof served === "string") {
+            const stop = (e.message as { stopReason?: unknown }).stopReason;
+            const one: Usage = { inputTokens: u.input ?? 0, outputTokens: u.output ?? 0 };
+            if (u.cacheRead) one.cacheReadTokens = u.cacheRead;
+            if (u.cacheWrite) one.cacheWriteTokens = u.cacheWrite;
+            if (u.cost?.total) one.costUsd = u.cost.total;
+            chainRecorder.onMessage(served, one, stop !== "error" && stop !== "aborted");
+          }
           if (typeof served === "string" && (u.input || u.output || u.cacheRead || u.cacheWrite)) {
             const prev = Object.hasOwn(usageByProvider, served)
               ? usageByProvider[served]!
@@ -1552,6 +1579,9 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         ts: endedAt,
       });
     }
+    const chainRecord = chainRecorder?.record();
+    if (chainRecord)
+      safeEmit({ kind: "chain_record", runId: ctx.runId, providers: chainRecord, ts: endedAt });
     safeEmit({ kind: "run_end", runId: ctx.runId, status, ts: endedAt });
 
     // Final persistence pass — write terminal status + output/error + cumulative
@@ -1607,6 +1637,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
           : {}),
       };
     }
+    if (chainRecord) result.chainRecord = chainRecord;
 
     // Run-level lifecycle: fire `onRunEnd` once, after the loop +
     // `postSuccess` and terminal resolution. Observation only — failures and
