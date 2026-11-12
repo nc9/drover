@@ -16,6 +16,7 @@ interface AgentSpec<ISchema = TSchema, OSchema = TSchema> {
   subagents?: SubagentConfig;
   outputRetries?: number;     // default 2
   toolExecution?: { parallel?: number }; // default: one tool call at a time
+  outputRepair?: boolean;     // default false: syntactic JSON repair before a retry
   plugins?: readonly HarnessPlugin[];
   quota?: RunQuota;           // { maxTurns?, maxDurationMs?, maxCostUsd?, maxTokens?, wrapUp? }
 }

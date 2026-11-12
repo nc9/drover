@@ -218,7 +218,13 @@ export type HarnessEvent =
       count: number;
       ts: number;
     }
-  | { kind: "output_validated"; runId: string; ts: number }
+  | {
+      kind: "output_validated";
+      runId: string;
+      /** The answer parsed only after `spec.outputRepair`'s syntactic repair (`repairJson`). */
+      repaired?: true;
+      ts: number;
+    }
   | { kind: "output_retry"; runId: string; attempt: number; reason: string; ts: number }
   | {
       kind: "run_end";

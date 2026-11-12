@@ -7,3 +7,4 @@ export * from "./compaction/index.ts";
 // path without depending on @droveragent/model directly.
 export type { PreResolvedModel } from "@droveragent/model";
 export { withProviderCost } from "./provider-cost.ts";
+export { repairJson } from "./repair-json.ts";
