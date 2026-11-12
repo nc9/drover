@@ -12,6 +12,8 @@ const addUsage = (a: Usage, b: Usage): Usage => {
   if (cr > 0) out.cacheReadTokens = cr;
   const cw = (a.cacheWriteTokens ?? 0) + (b.cacheWriteTokens ?? 0);
   if (cw > 0) out.cacheWriteTokens = cw;
+  if (a.reasoningTokens !== undefined || b.reasoningTokens !== undefined)
+    out.reasoningTokens = (a.reasoningTokens ?? 0) + (b.reasoningTokens ?? 0);
   const c = (a.costUsd ?? 0) + (b.costUsd ?? 0);
   if (c > 0) out.costUsd = c;
   return out;

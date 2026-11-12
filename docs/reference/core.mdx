@@ -94,7 +94,13 @@ interface RunResult<TOutput = unknown> {
   finalText: string;
   turns: number;
   durationMs: number;
-  usage: { inputTokens: number; outputTokens: number; costUsd?: number; ... };
+  usage: {
+    inputTokens: number;
+    outputTokens: number; // includes reasoning tokens
+    reasoningTokens?: number; // subset of outputTokens; absent when the provider reports none
+    costUsd?: number;
+    ...
+  };
   toolCalls: readonly string[];
   error?: { tag: string; message: string; status?: number; details?: ProviderErrorDetails }; // status, details: ProviderError only
 }

@@ -75,7 +75,7 @@ export const SAMPLES: Record<Kind, HarnessEvent> = {
     ...base,
     kind: "usage",
     turn: 1,
-    usage: { inputTokens: 10, outputTokens: 5, costUsd: 0.01 },
+    usage: { inputTokens: 10, outputTokens: 5, reasoningTokens: 3, costUsd: 0.01 },
   },
   compaction: {
     ...base,

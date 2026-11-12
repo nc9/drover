@@ -10,6 +10,13 @@ export interface Usage {
   outputTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /**
+   * Tokens the model spent reasoning, when the provider reports them (pi-ai `Usage.reasoning`).
+   * A SUBSET of `outputTokens`, not an addition to it: `outputTokens` still includes them. Absent,
+   * never 0, when the provider reports no split (pi-ai fills 0 for several providers that return
+   * none, so 0 and "not reported" cannot be told apart). Summed per run like the other token fields.
+   */
+  reasoningTokens?: number;
   /** USD cost for this call, computed from $/M-token rates. */
   costUsd?: number;
 }
