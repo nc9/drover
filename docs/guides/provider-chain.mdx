@@ -239,9 +239,11 @@ carry status and code only, and `includeProviderText: true` opts in to the provi
 
 Attempt tags are random UUIDs and a response is recorded only for a live attempt. The error
 body is read up to 16 KB (counted in bytes; one large chunk is sliced, so a 5 MB body costs
-16 KB). Kept header values are cut to 128 characters and must be plain (`A-Z a-z 0-9` and
-`._:,=/ -`); any other value is dropped, so a provider cannot smuggle markup or request text
-through a header into the diagnostics. `Retry-After` is read strictly (seconds or an HTTP date);
+16 KB). Each kept header value must have its header's shape, checked on the whole value (one
+over 128 characters is dropped, never cut): request ids (`x-request-id`, `cf-ray`) are
+`A-Z a-z 0-9 ._:-`, rate-limit counts are digits, rate-limit resets are digits or a duration
+such as `6m0s`, and `retry-after` is seconds or an HTTP date. Any other value is dropped, so a
+provider cannot smuggle markup, prose or request text through a header into the diagnostics. `Retry-After` is read strictly (seconds or an HTTP date);
 a value above `maxRateLimitWaitMs` or a malformed one is not waited on and the chain fails over.
 
 The tap patches `globalThis.fetch` once per process and tags an attempt only while the global is

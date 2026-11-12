@@ -51,6 +51,11 @@ export const KEPT_HEADERS: readonly string[] = [
 export interface AttemptResponse {
   status: number;
   headers: Record<string, string>;
+  /**
+   * A `Retry-After` / `retry-after-ms` header was present but not a valid value
+   * (so it is not in `headers`): the wait is treated as beyond any cap.
+   */
+  retryAfterMalformed?: true;
   /** Parsed error body fields (`error.code`, `error.type`, `limit_source`). Never the message. */
   code?: string;
   limitSource?: string;
@@ -74,12 +79,41 @@ const MAX_COST_LINE_CHARS = 64 * 1024;
 const live = new Set<string>();
 let installed = false;
 const MAX_HEADER_CHARS = 128;
+/** Seconds (or ms), optionally fractional. */
+const NUMBER_VALUE = /^\d{1,12}(\.\d{1,6})?$/;
+/** An IMF-fixdate HTTP date: `Wed, 21 Oct 2026 07:28:00 GMT`. */
+const HTTP_DATE_VALUE = /^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+/** A rate-limit count: digits only. */
+const COUNT_VALUE = /^\d{1,20}$/;
+/** A rate-limit reset: digits (seconds or an epoch), or a duration such as `1s`, `6m0s`, `20ms`. */
+const RESET_VALUE = /^(\d{1,20}|(\d{1,12}(\.\d{1,6})?(h|ms|m|s)){1,4})$/;
+/** A request id: letters, digits and `._:-` only. */
+const REQUEST_ID_VALUE = /^[A-Za-z0-9._:-]{1,128}$/;
 /**
- * A kept header value must be plain: digits, letters and `._:,=/ -`. Anything
- * else (markup, quotes, control characters, a provider echoing request text) is
- * dropped, never truncated into something that looks safe.
+ * The shape each kept header's value must have. Anything else (prose, markup,
+ * quotes, control characters, a provider echoing request text) is dropped, never
+ * cut into something that looks safe. Checked on the whole trimmed value, so a
+ * value longer than `MAX_HEADER_CHARS` is dropped, not truncated.
  */
-const SAFE_HEADER_VALUE = /^[A-Za-z0-9._:,=/ -]+$/;
+const HEADER_VALUE: Readonly<Record<string, (v: string) => boolean>> = {
+  "retry-after": (v) => NUMBER_VALUE.test(v) || HTTP_DATE_VALUE.test(v),
+  "retry-after-ms": (v) => NUMBER_VALUE.test(v),
+  "x-ratelimit-limit-requests": (v) => COUNT_VALUE.test(v),
+  "x-ratelimit-remaining-requests": (v) => COUNT_VALUE.test(v),
+  "x-ratelimit-reset-requests": (v) => RESET_VALUE.test(v),
+  "x-ratelimit-limit-tokens": (v) => COUNT_VALUE.test(v),
+  "x-ratelimit-remaining-tokens": (v) => COUNT_VALUE.test(v),
+  "x-ratelimit-reset-tokens": (v) => RESET_VALUE.test(v),
+  "x-request-id": (v) => REQUEST_ID_VALUE.test(v),
+  "cf-ray": (v) => REQUEST_ID_VALUE.test(v),
+};
+
+/** The value of kept header `name` if it has its header's shape, else undefined. */
+const keptValue = (name: string, raw: string): string | undefined => {
+  const value = raw.trim();
+  if (value.length === 0 || value.length > MAX_HEADER_CHARS) return undefined;
+  return HEADER_VALUE[name]?.(value) === true ? value : undefined;
+};
 /** The installed wrapper, to check that it is still the global. */
 let tappedFetch: typeof fetch | null = null;
 
@@ -167,13 +201,19 @@ function install(): boolean {
       });
     }
     const kept: Record<string, string> = {};
+    let retryAfterMalformed = false;
     for (const name of KEPT_HEADERS) {
       const v = res.headers.get(name);
       if (v === null) continue;
-      const value = v.trim().slice(0, MAX_HEADER_CHARS);
-      if (SAFE_HEADER_VALUE.test(value)) kept[name] = value;
+      const value = keptValue(name, v);
+      if (value !== undefined) kept[name] = value;
+      else if (name === "retry-after" || name === "retry-after-ms") retryAfterMalformed = true;
     }
-    const record: AttemptResponse = { status: res.status, headers: kept };
+    const record: AttemptResponse = {
+      status: res.status,
+      headers: kept,
+      ...(retryAfterMalformed ? { retryAfterMalformed: true as const } : {}),
+    };
     // Read a bounded COPY: the SDK still gets the original body.
     Object.assign(record, structuredFromBody(await readBounded(res.clone())));
     if (live.has(tag)) records.set(tag, record);
@@ -353,7 +393,10 @@ export function rawFromResponse(res: AttemptResponse, message: string): RawFailu
   if (res.code !== undefined) raw.code = res.code;
   if (res.limitSource !== undefined) raw.limitSource = res.limitSource;
   if (Object.keys(res.headers).length > 0) raw.headers = res.headers;
-  const wait = retryAfterFromHeaders(res.headers);
+  // A present but malformed value was dropped from `headers`; it still must not read as "no wait".
+  const wait =
+    retryAfterFromHeaders(res.headers) ??
+    (res.retryAfterMalformed ? Number.MAX_SAFE_INTEGER : undefined);
   if (wait !== undefined) raw.retryAfterMs = wait;
   return raw;
 }
