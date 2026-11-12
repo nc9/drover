@@ -299,18 +299,27 @@ such as `6m0s`, and `retry-after` is seconds or an HTTP date. Any other value is
 provider cannot smuggle markup, prose or request text through a header into the diagnostics. `Retry-After` is read strictly (seconds or an HTTP date);
 a value above `maxRateLimitWaitMs` or a malformed one is not waited on and the chain fails over.
 
-The tap patches `globalThis.fetch` once per process and tags an attempt only while the global is
-still the tap. It switches itself off (no tag header is sent; classification falls back to the
-SDK's leading status) when:
+The tap patches `globalThis.fetch` on first use. If something replaces the global afterwards
+(fetch instrumentation such as OpenTelemetry or Sentry, a test double), the next attempt wraps the
+CURRENT global again, so the host's wrapper keeps running underneath the tap and still sees every
+request (without the tap's internal tag header); if the global is one of the tap's own earlier
+wrappers again (a test spy removed), it is reused as is. Re-wraps are bounded per process (8), so
+a host that keeps replacing the global cannot build an unbounded wrapper chain. The tap switches
+itself off (no tag header is sent; classification falls back to the SDK's leading status) and
+logs one warning per process naming the cause when:
 
-- `fetch` cannot be patched: a frozen or non-writable global. On Cloudflare Workers `fetch` is
+- `fetch` cannot be replaced: a frozen or non-writable global. On Cloudflare Workers `fetch` is
   normally an ordinary writable global, so the tap works there too; the off switch covers
   runtimes or hosts that lock it down.
-- something replaces `globalThis.fetch` after the tap installed (another wrapper, a test double).
-- two copies of `@droveragent/model` are installed (for example two versions in one bundle): each
-  copy patches `fetch`, the second wraps the first, and the first copy's tap turns itself off, so
-  chains created from that copy classify from the status only. Deduplicate the package to keep
-  structured errors everywhere.
+- the global was replaced more than 8 times after install.
+- two copies of `@droveragent/model` are installed (for example two versions in one bundle) and
+  both run attempts. Each copy knows only its own wrappers (by identity, never a marker a
+  wrapper could copy), so an attempt that finds the other copy's wrapper on top wraps it again
+  and is recorded. That costs one re-wrap per switch between the copies; a copy that runs out
+  warns and stays off. Until then, an attempt that is in flight while the OTHER copy's wrapper
+  sits outside it loses its record for that attempt (both copies strip the same tag header), and
+  falls back to the SDK's status without a warning. Deduplicate the package to keep structured
+  errors everywhere.
 
 The tap needs the OpenAI SDK to resolve `globalThis.fetch` when its client is created (true for the version
 pi-ai uses); a `streams` entry (custom transport) is not tapped and supplies its own `status` / `error: { code }`
