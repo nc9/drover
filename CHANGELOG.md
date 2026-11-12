@@ -2,6 +2,62 @@
 
 All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version together.
 
+## 0.3.0-next.2
+
+Prerelease on the `next` dist-tag; all published @droveragent packages at 0.3.0-next.2. The `droveragent` umbrella stays private (unpublished).
+
+### Breaking
+
+- `ProviderChainOptions.providers` is widened to `ReadonlyArray<string | ProviderEntry>` (#54): code that reads it back as `string[]` stops compiling. `ProviderChain.providers` (the resolved names) is still `readonly string[]`.
+- `HarnessEvent` has a new kind, `chain_record` (#52); an exhaustive `switch` over `event.kind` needs a case for it. It has a row in trace format v1, so stored traces read it as a typed event.
+- `readBoundedText`, `readCost` and `attemptTapActive` (response-tap test seams) are no longer exported from `@droveragent/model` (#72, #59).
+- Behavioural: more MCP tools are refused. A tool is refused when its `enum` / `const` / `default` text (object keys inside those values included) totals over 2048 characters, or when its description plus the schema's descriptions, titles, property and `$defs` names, `required` entries and `$ref` strings total over 4096 characters (#64, #45).
+- Behavioural: `HarnessPlugin.onRunEnd` now fires exactly once on every exit, including a run that fails before the loop (an `init` step, a bad model) or is interrupted. Those runs get a synthetic result: `status: "error"` with the failure's tag, or `"cancelled"` for an interrupt (#64, #45).
+- Custom `StorageAdapter` implementations must persist the new `CheckpointRow.usageByProvider`; otherwise `usageByProvider` resets on a continuation instead of staying cumulative (#2, #21).
+
+### Added
+
+- `resumeAgent(spec, runId, { storage, appendMessages })` continues a finished (`success`) run with new user messages. Without `appendMessages` only `paused` runs resume, and spec id and hash checks still apply. `RunResult.usageDelta` is this invocation's usage; `usage` and `usageByProvider` stay cumulative (#2, #21).
+- `ResumeOptions.budget` (`InvocationBudget`: `maxTurns`, `maxTokens`, `maxCostUsd`, `maxDurationMs`): a resume or continuation's own budget, counted from where it starts. The spec quota's turns and cost stay cumulative (#2, #21).
+- `appendMessages` items can be `{ content, untrusted: true }`. The run's fencing plugins fence them (section `"appended-input"`) after `assertResumable` passes, and a throwing fence ends the call `PluginError`. Adds the `AppendedMessage` type (#66, #21).
+- `repeatRefusalPlugin` (`@droveragent/plugins`): a tool call that already failed in the run is answered without running the tool. "The same call" means the same tool and normalised arguments, or a per-tool key. The message tells the model what to do instead. It also has:
+  - `retryable` repeats per tool, and `include` / `exclude`;
+  - a rule that any successful destructive tool call (`write`, `edit`, `bash`) forgets the run's failures;
+  - bounded per-run memory that survives a same-process continuation;
+  - `usage(runId)` counters (#57, #37).
+- A `ToolDecision` deny takes an optional `code`, reported on `tool_call_end` as `result.denied` (`{ plugin, code? }`). `toolCallCapPlugin` uses `tool_call_cap` and `loopDetectPlugin` uses `loop_detect`. `summarizeTrace` counts `toolCalls.repeatedFailures` (#57, #37).
+- `HarnessPlugin.beforeModelCall` (`@droveragent/core`): admission control before every model call of a run (first, later and the `postSuccess` continuation), ahead of compaction. A refusal ends the run `error` with the plugin's tag and message. The refused call is never sent and adds no usage, turn or checkpoint. A hook that throws or dies fails open (#14, #28).
+- `balancePreflightPlugin` and `openRouterBalance` (`@droveragent/plugins`): refuse a run, or a later call every N calls, when a provider's balance is below the estimate plus a reserve. `onUnknown: "allow" | "refuse"` handles a balance or estimate that cannot be read. The message states balance, needed, estimate, spent and reserve (#14, #28).
+- `createProviderChain({ balances })` and `ProviderChain.balanceSources()` (`@droveragent/model`): an optional balance source per provider, listed in chain order; `balancePreflightPlugin({ sources: chain })` reads them. `BalanceSource` now lives in `@droveragent/core`, re-exported from plugins (#67, #49).
+- `openRouterBalance({ mode: "key" })` reads the key's remaining limit (`GET /key`). `"credits"`, the default, keeps the account balance (#67, #49).
+- `withProviderCost(base?)` and the provider chain's `billedCost: true` use OpenRouter's billed `usage.cost` as each call's cost. `Usage.costUsd`, `usageByProvider` and `quota.maxCostUsd` then run on billed cost, which replaces the list-price total rather than adding to it. OpenRouter only. `withProviderCost` is in `@droveragent/model`, re-exported by harness and facade. `RunOptions.streamFn` / `ResumeOptions.streamFn` expose the transport seam (#4, #23).
+- Provider chain `actions`: per failure class, `"stop"`, `"next"` (fail over for this call only) or `"skip"` (fail over and skip the provider for the run). Defaults are unchanged. `provider_failover` notices and events, and the final error's diagnostics, carry `benched` (skipped for the run, or this call only) (#63, #53).
+- `RunResult.wrapUp.overshoot.scope` (`"spec"` or `"budget"`) says which limit a forgiven overshoot crossed (#71, #62).
+- `HarnessPlugin.afterToolCall` receives `meta.toolUseId`; `UntrustedResultsPlugin` gains diagnostics `pendingCalls(runId)` and `liveRuns()` (#64, #45).
+- `RunResult.chainRecord` and the `chain_record` trace event: under a provider chain, one entry per configured provider in chain order, including providers that only failed (`provider`, `answered`, `failed`, `failures` by class, `benchedAtTurn`, `usage`; no provider text). The event is written once before `run_end`, and a resume or continuation appends to the stored record (#52).
+- Chain providers as settings: `createProviderChain({ providers })` takes `ProviderEntry` objects (`{ name, apiKey?, baseUrl?, vars?, headers?, models?, useEnv? }`) alongside provider names. A provider's key, base URL (with `{PLACEHOLDER}` values from `vars`), extra headers and models (by canonical id: a provider id, `null`, or a declaration for a model pi-ai does not list) are settings; the environment fills only what is absent, and `useEnv: false` turns that off for the entry. A model declared without a base URL uses `overrides`, then pi-ai's registry URL for its API, and is refused when none is known (never sent with an empty base URL, which the OpenAI SDK turns into `api.openai.com`). Placeholders are `{[A-Z0-9_]+}` with values of letters, digits, `_`, `.` and `-` (#54).
+- `droverVersions()` (`@droveragent/core`, re-exported by both facade entries): the Drover packages loaded in the process and their versions. Every package registers itself when loaded. A release build reports the plain version, a build from a working tree `<version>+local.<sha>`, and unbuilt source `source`; two copies of one package list both, comma-separated (#56, #38).
+
+### Changed
+
+- Release builds stamp each package's `dist/version.js` with its version (`DROVER_RELEASE=1` in the release workflow and `publish-all.sh`); any other build stamps `<version>+local.<sha>`. `scripts/release.ts verify` refuses a tarball whose stamp is not the plain version (#56, #38).
+- The `droveragent` umbrella is `"private": true` and not published (npm refused the unscoped name); install `@droveragent/facade` and `@droveragent/core`. Release tooling (`ci.ts pack`, `release.ts` plan / verify / publish, `publish-all.sh`) skips private packages; `release-bump.ts` still bumps them for lockstep (#68).
+- `untrustedResultsPlugin`: the in-memory nonce store never evicts a live run (`memoryNonceLimit`). The strings it lets through are kept per tool call and dropped once the call's result is finalised (#64, #45).
+- MCP input schemas:
+  - `format` is kept only when it is a known JSON Schema format name (`JSON_SCHEMA_FORMATS`); any other value is dropped;
+  - `required` keeps only names of sibling `properties`, each once, and drops other entries (an invalid entry used to refuse the tool) (#64, #45).
+- Kept provider header values must match a per-header shape: request id, count, reset duration or retry-after. The whole value is checked before the 128-character cap, and a longer value is dropped, not cut. A malformed `Retry-After` still fails over (`AttemptResponse.retryAfterMalformed`) (#72, #59).
+- `CheckpointRow.usageByProvider`: libsql and D1 store it inside the existing `usage` JSON column, with no migration. A custom `StorageAdapter` must persist it for `usageByProvider` to stay cumulative across a continuation (#2, #21).
+
+### Fixed
+
+- `quota.maxTurns` is a budget, not a tripwire, again. A final answer (no tool call) on the last allowed turn that passes the output schema ends the run `success`; since the quota refactor it ended `quota` with the answer discarded. A tool call on that turn, or an answer that fails the schema, still ends `quota`. A provider error on that turn ends `error` (`ProviderError`). `postSuccess` is skipped when the answer used the last turn (#50).
+- A successful run's latest checkpoint holds the complete history, including the final assistant message and last tool results, and `postSuccess` on a resumed run continues from it. Turn checkpoint writes are ordered and awaited before the final checkpoint and the terminal run update, so a slow adapter cannot land a stale checkpoint last (#2, #21).
+- A run that fails or is interrupted before the loop now gives its stored run row a terminal status (`error` / `cancelled`) instead of leaving it `running`. Plugins' `onRunEnd` frees per-run state on those exits too. A hook that throws synchronously cannot replace the result or stop a later plugin from running (#64, #45).
+- Under `quota.wrapUp`, a cost or token breach on a call that ends in a provider error ends the run `ProviderError`, not `quota` / `cut_off` (#71, #62).
+- Behaviour change: a per-invocation `budget` follows the answer-wins rule. A validated answer on the last allowed turn of `budget.maxTurns` is `success`. A `budget.maxTokens` / `maxCostUsd` breach by a validated final answer is forgiven once the spec's `quota.wrapUp` warning fired, and recorded as `wrapUp.overshoot` with `scope: "budget"` (#71, #62).
+- A Worker importing `@droveragent/facade/core` bundles without extra packages: `@droveragent/model` now depends on `@opentelemetry/api`. That package is the optional peer the Mistral SDK inside pi-ai imports statically, which wrangler could not resolve (#70, #69).
+
 ## 0.3.0-next.1
 
 Prerelease on the `next` dist-tag; all @droveragent packages at 0.3.0-next.1.
@@ -23,8 +79,6 @@ Every package (`@droveragent/*` and the `droveragent` umbrella) moves to 0.3.0-n
 - `quota.wrapUp` (`{ at?, message? }`), the `budget_warning` event and `RunResult.wrapUp`: once a turn, token, cost or wall-clock budget is `at` spent (default 0.8), every following model call carries an operator notice to finish now without more tools; `RunResult.wrapUp.outcome` says whether the run wrapped up in time or was cut off (#10, #26).
 - `quota.maxTokens`, a hard token budget (input, output and cache tokens, checked after each model response); a validated final answer whose own call crosses a cost or token budget wins (`success`, `RunResult.wrapUp.overshoot`) (#10, #26).
 - `HarnessDeps.now`, the clock for the wall-clock wrap-up threshold (#10, #26).
-- `HarnessPlugin.beforeModelCall` (`@droveragent/core`): admission control before every model call of a run (first, later and the `postSuccess` continuation), ahead of compaction; a refusal ends the run `error` with the plugin's tag and message, the refused call is never sent and adds no usage, turn or checkpoint, and a hook that throws or dies fails open (#14, #28).
-- `balancePreflightPlugin` and `openRouterBalance` (`@droveragent/plugins`): refuse a run, or a later call every N calls, when a provider balance is below the estimate plus a reserve; `onUnknown: "allow" | "refuse"` for an unreadable balance or estimate; the message states balance, needed, estimate, spent and reserve (#14, #28).
 - `toolCallCapPlugin({ maxCalls, perTool, message, warnAt })` (`@droveragent/plugins`): a tool call over a cap is refused with a tool error the model can act on instead of ending the run, the model is warned once at 80% of each cap, and `usage(runId)` exposes the counts, kept across pause and resume (#9, #25).
 - Trace format v1 (`@droveragent/core`): `TRACE_VERSION`, `REQUIRED_FIELDS` exhaustive over event kinds, a tolerant `readEvent`, `traceToJsonl` / `parseTraceJsonl`, `summarizeTrace`, and storage round-trip tests for every kind on both adapters; see `docs/reference/trace-format.mdx` (#13, #27).
 - `UNTRUSTED_FIELDS` marks the trace fields that hold model, tool, user or memory text; `tool_call_end.trust` is a trust hint stamped `untrusted`; `traceToJsonl` escapes HTML-unsafe characters and takes a `redact` hook (`remove` / `mask`) (#13, #27).
