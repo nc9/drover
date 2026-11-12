@@ -50,6 +50,7 @@ assumes only [the quickstart](/guides/quickstart): a Bun runtime and
       summary: Type.String({ maxLength: 200 }),
     });
     ```
+
   </Step>
 
   <Step title="Define the agent">
@@ -76,6 +77,7 @@ assumes only [the quickstart](/guides/quickstart): a Bun runtime and
       quota: { maxTurns: 2 },
     });
     ```
+
   </Step>
 
   <Step title="Run it and stream events">
@@ -103,6 +105,7 @@ assumes only [the quickstart](/guides/quickstart): a Bun runtime and
 
     const result = await handle.result;
     ```
+
   </Step>
 
   <Step title="Read the result">
@@ -135,6 +138,7 @@ assumes only [the quickstart](/guides/quickstart): a Bun runtime and
     summary: Double-charged this month; billing page returns 500. Recurring issue.
     tokens: 214/41
     ```
+
   </Step>
 </Steps>
 
@@ -142,16 +146,36 @@ assumes only [the quickstart](/guides/quickstart): a Bun runtime and
 
 drover validates on both edges of the loop:
 
-| Edge | When | On failure |
-| --- | --- | --- |
-| `inputSchema` | Before the model sees the input | Short-circuits with `InputValidationError` — `result.status` is `error`, the model never runs |
-| `outputSchema` | After the model's final text | Feeds a corrective message back and retries, up to `outputRetries` (default `2`) |
+| Edge           | When                            | On failure                                                                                    |
+| -------------- | ------------------------------- | --------------------------------------------------------------------------------------------- |
+| `inputSchema`  | Before the model sees the input | Short-circuits with `InputValidationError` — `result.status` is `error`, the model never runs |
+| `outputSchema` | After the model's final text    | Feeds a corrective message back and retries, up to `outputRetries` (default `2`)              |
 
 You can watch both in the event stream: `input_validated` fires once at the
 start; `output_retry` fires per correction attempt; `output_validated` fires
 when the decode finally passes. With `maxTurns: 2` you allow exactly one
 output-retry before the quota stops the loop. See
 [Events & streams](/concepts/events-and-streams) for the full event union.
+
+### Repairing near-miss JSON (`outputRepair`)
+
+`outputRepair: true` (off by default) gives an answer whose JSON does not parse one
+conservative, syntactic repair before it costs a retry turn. Outside strings, it removes a
+byte-order mark, `//` and `/* */` comments and trailing commas, and turns typographic quotes
+used as delimiters into `"`. It never closes a truncated answer, and never fixes single
+quotes, unquoted keys or missing commas, so a cut-off answer still spends a retry instead of
+validating as partial data. A repaired answer is still checked against the schema; when the
+repair is what made it parse, `output_validated` carries `repaired: true`. The repair is
+exported as `repairJson(text)` from `@droveragent/harness` (it returns `null` when nothing
+changed).
+
+```ts
+defineAgent({
+  // ...
+  outputSchema: Extraction,
+  outputRepair: true,
+});
+```
 
 ## Reading status, usage, and cost
 
@@ -162,13 +186,13 @@ output-retry before the quota stops the loop. See
 ```ts
 switch (result.status) {
   case "success":
-    return result.output;            // typed as the Triage record
+    return result.output; // typed as the Triage record
   case "quota":
     throw new Error("ran out of turns before a valid record");
   case "error":
     throw new Error(result.error?.message ?? "unknown");
   default:
-    return null;                     // cancelled | paused
+    return null; // cancelled | paused
 }
 ```
 
@@ -181,11 +205,11 @@ for a billing total.
 The `model` field takes a single alias string. Bump it when the cheap model
 mislabels:
 
-| Alias | Routes to | Use when |
-| --- | --- | --- |
-| `cheap` | `gemini-3.1-flash-lite-preview` | High volume, simple labels |
-| `mini` | `openai/gpt-5-mini` | Trickier categories, more nuance |
-| `haiku` | `anthropic/claude-haiku-4.5` | Sentiment subtleties matter |
+| Alias   | Routes to                       | Use when                         |
+| ------- | ------------------------------- | -------------------------------- |
+| `cheap` | `gemini-3.1-flash-lite-preview` | High volume, simple labels       |
+| `mini`  | `openai/gpt-5-mini`             | Trickier categories, more nuance |
+| `haiku` | `anthropic/claude-haiku-4.5`    | Sentiment subtleties matter      |
 
 Append a `:reasoning` suffix for a thinking budget — `"mini:high"` — or use the
 object form for full control:
@@ -195,8 +219,8 @@ model: { name: "openai/gpt-5-mini", reasoning: "medium", temperature: 0 },
 ```
 
 <Note>
-  Lower `temperature` makes classification more deterministic — useful when you
-  want the same ticket to land the same label run-to-run.
+  Lower `temperature` makes classification more deterministic — useful when you want the same ticket
+  to land the same label run-to-run.
 </Note>
 
 See [`@droveragent/model`](/reference/model) for the alias map and `withAliases`.
@@ -218,8 +242,8 @@ See [`@droveragent/model`](/reference/model) for the alias map and `withAliases`
 
 <CardGroup cols={2}>
   <Card title="Read & search a codebase" href="/howto/search-a-codebase" icon="magnifying-glass">
-    Level 2 — add read-only tools (`read`, `grep`, `find`, `ls`) and a sandbox
-    so the agent can ground its answer in real files.
+    Level 2 — add read-only tools (`read`, `grep`, `find`, `ls`) and a sandbox so the agent can
+    ground its answer in real files.
   </Card>
   <Card title="Writing an agent" href="/guides/writing-an-agent" icon="pen">
     Deeper on schemas, output retries, and system prompts.

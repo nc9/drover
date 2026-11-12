@@ -55,6 +55,7 @@ import {
 } from "./compaction/index.ts";
 import { createChainRecorder, lastChainRecord } from "./chain-record.ts";
 import { runLifecycleSteps } from "./lifecycle.ts";
+import { repairJson } from "./repair-json.ts";
 import {
   providerError,
   providerFailure,
@@ -981,7 +982,7 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       const text = lastAssistant.text;
       if (!text || text.trim().length === 0) return [];
 
-      const decode = tryDecode(spec.outputSchema, text);
+      const decode = tryDecode(spec.outputSchema, text, spec.outputRepair === true);
       if (decode.ok) return [];
 
       retriesUsed += 1;
@@ -1513,7 +1514,10 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
       const content = last?.content;
       if (!Array.isArray(content) || content.some((b) => b.type === "toolCall")) return false;
       if (!finalText || finalText.trim().length === 0) return false;
-      return isOpenSchema(spec.outputSchema) || tryDecode(spec.outputSchema, finalText).ok;
+      return (
+        isOpenSchema(spec.outputSchema) ||
+        tryDecode(spec.outputSchema, finalText, spec.outputRepair === true).ok
+      );
     };
     const finalFailure = providerFailure(
       lastAssistantMsg.value,
@@ -1606,10 +1610,15 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
         status = "error";
         errorOut = { tag: "OutputValidationError", message: "no final assistant text" };
       } else {
-        const decoded = tryDecode(spec.outputSchema, finalText);
+        const decoded = tryDecode(spec.outputSchema, finalText, spec.outputRepair === true);
         if (decoded.ok) {
           output = decoded.value as AgentOutput<S>;
-          safeEmit({ kind: "output_validated", runId: ctx.runId, ts: Date.now() });
+          safeEmit({
+            kind: "output_validated",
+            runId: ctx.runId,
+            ...(decoded.repaired ? { repaired: true as const } : {}),
+            ts: Date.now(),
+          });
         } else {
           status = "error";
           errorOut = { tag: "OutputValidationError", message: decoded.message };
@@ -2072,16 +2081,33 @@ function buildSchemaFeedback(message: string): string {
   return `Your previous output did not validate against the agent's outputSchema:\n\n${message}\n\nProduce a corrected output as JSON conforming to the schema. Reply with the JSON only (a fenced \`\`\`json block is fine).`;
 }
 
-type Decoded<T> = { ok: true; value: T } | { ok: false; message: string };
+type Decoded<T> = { ok: true; value: T; repaired?: true } | { ok: false; message: string };
 
-function tryDecode<S extends TSchema>(schema: S, text: string): Decoded<unknown> {
+/**
+ * Decode the answer against the schema. With `repair` (`spec.outputRepair`), JSON that does
+ * not parse gets one conservative syntactic repair (`repairJson`: comments, trailing commas,
+ * typographic quotes; never truncation) before it counts as a failure.
+ */
+function tryDecode<S extends TSchema>(schema: S, text: string, repair = false): Decoded<unknown> {
   const candidate = extractJson(text);
   if (candidate === null) return { ok: false, message: "no JSON object found in assistant text" };
   let parsed: unknown;
+  let repaired = false;
   try {
     parsed = JSON.parse(candidate);
   } catch (err) {
-    return { ok: false, message: `JSON.parse failed: ${(err as Error).message}` };
+    const fixed = repair ? repairJson(candidate) : null;
+    let ok = false;
+    if (fixed !== null) {
+      try {
+        parsed = JSON.parse(fixed);
+        ok = true;
+        repaired = true;
+      } catch {
+        /* still not JSON: report the original error */
+      }
+    }
+    if (!ok) return { ok: false, message: `JSON.parse failed: ${(err as Error).message}` };
   }
   if (!Value.Check(schema, parsed)) {
     const issues = collectIssues(schema, parsed);
@@ -2090,7 +2116,7 @@ function tryDecode<S extends TSchema>(schema: S, text: string): Decoded<unknown>
       message: issues.map((i) => `${i.path}: ${i.message}`).join("; ") || "schema mismatch",
     };
   }
-  return { ok: true, value: parsed };
+  return repaired ? { ok: true, value: parsed, repaired: true } : { ok: true, value: parsed };
 }
 
 function extractJson(text: string): string | null {
@@ -2165,8 +2191,9 @@ export function hashSpec(spec: AgentSpec): string {
     promptTemplate: spec.promptTemplate ?? null,
     lifecycle: spec.lifecycle ?? null,
     compaction: spec.compaction ?? null,
-    // Only when set, so specs without it keep the hash runs were stored under.
+    // Each only when set, so specs without them keep the hash runs were stored under.
     ...(spec.toolExecution !== undefined ? { toolExecution: spec.toolExecution } : {}),
+    ...(spec.outputRepair !== undefined ? { outputRepair: spec.outputRepair } : {}),
   });
   for (let i = 0; i < s.length; i++) {
     h = (h * 31 + s.charCodeAt(i)) | 0;

@@ -285,6 +285,14 @@ export interface AgentSpec<ISchema extends TSchema = TSchema, OSchema extends TS
    * one call does not cancel the others. `tool_call_end` events arrive in completion order.
    */
   toolExecution?: { parallel?: number };
+  /**
+   * Before a JSON answer that does not parse costs a retry turn, try one conservative,
+   * syntactic repair: a byte-order mark, `//` and block comments, trailing commas and
+   * typographic quotes are fixed outside strings. A truncated answer is never closed, so it
+   * still costs a retry. `output_validated` carries `repaired: true` when the repair made the
+   * answer parse. Default false (opt-in for now).
+   */
+  outputRepair?: boolean;
   /** Plugin bundles (hooks + tools + observers) attached to this agent. */
   plugins?: readonly HarnessPlugin[];
   /** Resource budget — turns, wall-clock, cost. See {@link RunQuota}. */
