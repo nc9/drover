@@ -112,7 +112,7 @@ no cost) through the harness's `streamFn` seam (`HarnessDeps.streamFn`):
 import { Effect } from "effect";
 import { runAgentEffect } from "@droveragent/harness";
 import { createRecorder, recordStream, replayStream } from "@droveragent/eval";
-import { streamSimple } from "@mariozechner/pi-ai";
+import { streamSimple } from "@earendil-works/pi-ai/compat";
 
 const rec = createRecorder();
 await Effect.runPromise(

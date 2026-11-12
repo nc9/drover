@@ -10,7 +10,7 @@ import { defineAgent, type HarnessEvent, type RunContext } from "@droveragent/co
 import { runAgentEffect } from "@droveragent/harness";
 import { createProviderChain } from "@droveragent/model";
 import { createNoneSandbox } from "@droveragent/sandbox";
-import type { StreamFn } from "@mariozechner/pi-agent-core";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
 
 import {
   FakeProviderExhaustedError,

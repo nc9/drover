@@ -18,7 +18,7 @@
  * whose `toolResult` lives in the tail — pairs are never split.
  */
 import type { CompactionPreserve } from "@droveragent/core";
-import type { Message } from "@mariozechner/pi-ai";
+import type { Message } from "@earendil-works/pi-ai/compat";
 
 export interface HeadTailSplit {
   /** Messages `[0, prefixEnd)` are the preserved opener. */

@@ -11,7 +11,7 @@ import {
   type Context,
   type Model,
   type SimpleStreamOptions,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 
 import { readApiKey, type PreResolvedModel } from "../resolve.ts";
 import {

@@ -6,7 +6,7 @@
  * logs, big file reads) is usually the biggest context consumer, so this is
  * the cheapest first rung.
  */
-import type { Message, ToolResultMessage } from "@mariozechner/pi-ai";
+import type { Message, ToolResultMessage } from "@earendil-works/pi-ai/compat";
 
 export const CLEARED_PLACEHOLDER = "[cleared to save context]";
 

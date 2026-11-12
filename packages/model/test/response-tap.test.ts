@@ -7,7 +7,7 @@ import {
   createAssistantMessageEventStream,
   type AssistantMessage,
   type Context,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 
 import {
   createProviderChain,

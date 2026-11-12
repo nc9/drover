@@ -5,7 +5,7 @@ import {
   type AssistantMessageEvent,
   type Context,
   type Model,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 
 import {
   FAILOVER,

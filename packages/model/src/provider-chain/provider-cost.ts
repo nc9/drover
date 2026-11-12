@@ -23,7 +23,7 @@ import {
   type AssistantMessageEvent,
   type AssistantMessageEventStream,
   type SimpleStreamOptions,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 
 import type { ChainStreamFn as StreamFn } from "./chain.ts";
 import { startAttemptTap, type AttemptTap } from "./response-tap.ts";

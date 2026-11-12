@@ -38,8 +38,8 @@
   },
   "dependencies": {
     "@droveragent/core": "workspace:*",
-    "@mariozechner/pi-agent-core": "^0.73.1",
-    "@mariozechner/pi-ai": "^0.73.1"
+    "@earendil-works/pi-agent-core": "1.5.2",
+    "@earendil-works/pi-ai": "1.5.2"
   },
   "devDependencies": {
     "@droveragent/harness": "workspace:*",

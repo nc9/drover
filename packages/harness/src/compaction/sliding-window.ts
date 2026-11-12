@@ -5,7 +5,7 @@
  * the cheapest; useful as a last-resort ladder rung when a summarize pass
  * itself cannot fit.
  */
-import type { Message } from "@mariozechner/pi-ai";
+import type { Message } from "@earendil-works/pi-ai/compat";
 
 export function slidingWindow(
   messages: ReadonlyArray<Message>,

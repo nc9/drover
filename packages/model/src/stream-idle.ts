@@ -13,7 +13,7 @@ import {
   type Context,
   type Model,
   type SimpleStreamOptions,
-} from "@mariozechner/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 
 /** Default idle limit: 10 minutes without a single stream event. */
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 600_000;

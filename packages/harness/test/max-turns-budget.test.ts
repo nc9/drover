@@ -9,8 +9,8 @@ import { Type, type TSchema } from "@sinclair/typebox";
 import { defineAgent, type HarnessEvent, type RunContext } from "@droveragent/core";
 import { createNoneSandbox } from "@droveragent/sandbox";
 import type { PreResolvedModel } from "@droveragent/model";
-import { createAssistantMessageEventStream, type AssistantMessage } from "@mariozechner/pi-ai";
-import type { StreamFn } from "@mariozechner/pi-agent-core";
+import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai/compat";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
 
 import { runAgentEffect } from "../src/run.ts";
 

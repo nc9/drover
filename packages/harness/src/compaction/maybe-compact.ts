@@ -20,7 +20,7 @@
  * later pass re-summarises the prior summary message + new turns).
  */
 import type { CompactionPolicy, HarnessEvent } from "@droveragent/core";
-import type { Message } from "@mariozechner/pi-ai";
+import type { Message } from "@earendil-works/pi-ai/compat";
 
 import { dropToolResults } from "./drop-tool-results.ts";
 import { estimateTokens } from "./estimate.ts";

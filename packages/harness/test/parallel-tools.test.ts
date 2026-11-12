@@ -21,8 +21,8 @@ import {
   createAssistantMessageEventStream,
   type AssistantMessage,
   type Context,
-} from "@mariozechner/pi-ai";
-import type { StreamFn } from "@mariozechner/pi-agent-core";
+} from "@earendil-works/pi-ai/compat";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
 
 // Relative imports: harness does not depend on plugins (no cycle, no new devDependency).
 import { toolCallCapPlugin } from "../../plugins/src/tool-call-cap.ts";

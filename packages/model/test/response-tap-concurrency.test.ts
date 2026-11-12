@@ -4,7 +4,7 @@
  * status, code and Retry-After, never another in-flight call's.
  */
 import { describe, expect, test } from "bun:test";
-import type { AssistantMessage, Context } from "@mariozechner/pi-ai";
+import type { AssistantMessage, Context } from "@earendil-works/pi-ai/compat";
 
 import { createProviderChain, type ProviderFailoverNotice } from "../src/index.ts";
 import { liveAttemptTaps } from "../src/provider-chain/response-tap.ts";

@@ -38,7 +38,7 @@
   },
   "dependencies": {
     "@droveragent/core": "workspace:*",
-    "@mariozechner/pi-ai": "^0.73.1",
+    "@earendil-works/pi-ai": "1.5.2",
     "@opentelemetry/api": "^1.9.0",
     "effect": "^3.10.0"
   }

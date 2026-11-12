@@ -15,8 +15,8 @@ import {
   createAssistantMessageEventStream,
   streamSimple,
   type AssistantMessage,
-} from "@mariozechner/pi-ai";
-import type { AgentMessage, StreamFn } from "@mariozechner/pi-agent-core";
+} from "@earendil-works/pi-ai/compat";
+import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 
 import { runAgentEffect } from "../src/run.ts";
 import { staticRegistry } from "../src/task-tool.ts";

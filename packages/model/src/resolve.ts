@@ -1,8 +1,8 @@
 import type { CacheRetention, ModelSpec, ReasoningLevel } from "@droveragent/core";
 import { ModelError } from "@droveragent/core";
 import { Effect } from "effect";
-import { getModel, getProviders, getModels } from "@mariozechner/pi-ai";
-import type { KnownApi, Model } from "@mariozechner/pi-ai";
+import { getModel, getProviders, getModels } from "@earendil-works/pi-ai/compat";
+import type { KnownApi, Model } from "@earendil-works/pi-ai/compat";
 
 import { DEFAULT_ALIASES, type AliasEntry } from "./aliases.ts";
 

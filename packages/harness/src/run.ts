@@ -50,7 +50,7 @@ import { skillLoadTool, skillResourceTool } from "@droveragent/skills";
 import type { CheckpointRow } from "@droveragent/storage";
 import { builtinsById, type BuiltinToolId } from "@droveragent/tools";
 import { Cause, Effect, Exit, Option } from "effect";
-import { runAgentLoop, runAgentLoopContinue, type StreamFn } from "@mariozechner/pi-agent-core";
+import { runAgentLoop, runAgentLoopContinue, type StreamFn } from "@earendil-works/pi-agent-core";
 import { taskTool, DEFAULT_MAX_DEPTH, DEFAULT_FAN_OUT } from "./task-tool.ts";
 import {
   initCompactionState,
@@ -71,9 +71,9 @@ import {
 import type { ModelCallDecision } from "@droveragent/core";
 import type { HarnessDeps } from "./deps.ts";
 import { mcpActive, memoryActive, skillsActive, subagentsActive } from "./capability-gates.ts";
-import type { AgentLoopConfig, AgentMessage } from "@mariozechner/pi-agent-core";
-import type { KnownApi, Message, Model, UserMessage } from "@mariozechner/pi-ai";
-import { createAssistantMessageEventStream, streamSimple } from "@mariozechner/pi-ai";
+import type { AgentLoopConfig, AgentMessage } from "@earendil-works/pi-agent-core";
+import type { KnownApi, Message, Model, UserMessage } from "@earendil-works/pi-ai/compat";
+import { createAssistantMessageEventStream, streamSimple } from "@earendil-works/pi-ai/compat";
 import { Value } from "@sinclair/typebox/value";
 import { Kind, type TSchema } from "@sinclair/typebox";
 import * as path from "node:path";

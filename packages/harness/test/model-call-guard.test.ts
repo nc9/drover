@@ -11,8 +11,8 @@ import {
 import { createNoneSandbox } from "@droveragent/sandbox";
 import { createMemoryStorage } from "@droveragent/storage";
 import type { PreResolvedModel } from "@droveragent/model";
-import { createAssistantMessageEventStream, type AssistantMessage } from "@mariozechner/pi-ai";
-import type { StreamFn } from "@mariozechner/pi-agent-core";
+import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai/compat";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
 
 // Relative import: harness does not depend on plugins.
 import { balancePreflightPlugin } from "../../plugins/src/balance-preflight.ts";

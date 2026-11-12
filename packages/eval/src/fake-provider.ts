@@ -16,9 +16,9 @@
  * `region_refused`, not a bare-403 `forbidden`). A thrown error outside a chain
  * fails the loop (`LoopError`), so use `structured` only under a chain.
  */
-import { createAssistantMessageEventStream } from "@mariozechner/pi-ai";
-import type { AssistantMessage, AssistantMessageEvent } from "@mariozechner/pi-ai";
-import type { StreamFn } from "@mariozechner/pi-agent-core";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/compat";
+import type { AssistantMessage, AssistantMessageEvent } from "@earendil-works/pi-ai/compat";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
 
 type StreamArgs = Parameters<StreamFn>;
 
