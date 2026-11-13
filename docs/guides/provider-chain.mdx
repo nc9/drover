@@ -122,6 +122,15 @@ export default {
   echoes the key back in its error). The exception is `includeProviderText: true`: the provider's
   own error text is then kept, and a provider that echoes the key or a header carries it along.
 
+## Breaking: Azure provider name
+
+pi-ai 1.0.3 renamed the Azure provider `azure-openai-responses` to `azure` (its API id is still
+`azure-openai-responses`). Drover now emits `azure` everywhere: failover notices, the chain
+record, `usageByProvider` and error text. The old name is still accepted as a deprecated alias in
+`providers`, `apiKeys`, `overrides`, `ids`, `balances`, `streams`, `extraModels`, in
+`"azure-openai-responses:<id>"` model specs and in `withAliases` entries, and maps to `azure`.
+Update anything that reads the provider name back.
+
 ## Providers and models are data
 
 - **Ids.** A canonical id is OpenRouter style. Per provider it defaults to the same

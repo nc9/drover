@@ -175,6 +175,14 @@ describe("classifyFailure: status first, structured fields only", () => {
     ["connection", "Connection error.", "timeout", null],
     ["400", "400 context_length_exceeded", "invalid_request", 400],
     ["free text, no status", "Unexpected token < in JSON", "other", null],
+    // pi 1.x shapes (formatProviderError): "<status>: <body>" and "<label> API error (<status>): <body>".
+    ["pi 1.x 402 body", '402: {"error":{"message":"credits"}}', "credits_exhausted", 402],
+    ["OpenAI API error", 'OpenAI API error (429): {"error":{"code":"x"}}', "rate_limited", 429],
+    ["Azure OpenAI API error", "Azure OpenAI API error (429): slow down", "rate_limited", 429],
+    ["Mistral API error", "Mistral API error (503): down", "provider_error", 503],
+    ["provider-id label", "github-copilot API error (413): too big", "invalid_request", 413],
+    ["openrouter label", "openrouter API error (402): no credits", "credits_exhausted", 402],
+    ["body digits are not a status", "Unexpected 429 in the body (500): x", "other", null],
   ];
   for (const [name, message, cls, status] of cases) {
     test(`${name} -> ${cls}`, () => {

@@ -4,6 +4,8 @@ import { Effect } from "effect";
 import { getModel, getProviders, getModels } from "@earendil-works/pi-ai/compat";
 import type { KnownApi, Model } from "@earendil-works/pi-ai/compat";
 
+import { canonicalProvider } from "./provider-names.ts";
+import { withGatewayAuth } from "./gateway-auth.ts";
 import { DEFAULT_ALIASES, type AliasEntry } from "./aliases.ts";
 
 /** Output of resolution — everything pi-agent-core needs to make a call. */
@@ -132,7 +134,10 @@ export function resolveModel(
 
     const pre = opts.preResolved?.get(norm.name);
     if (pre) {
-      const result: ResolvedModel = { model: pre.model, apiKey: pre.apiKey };
+      const result: ResolvedModel = {
+        model: withGatewayAuth(pre.model, pre.apiKey),
+        apiKey: pre.apiKey,
+      };
       if (norm.reasoning) result.reasoning = norm.reasoning;
       if (norm.temperature !== undefined) result.temperature = norm.temperature;
       if (norm.maxTokens !== undefined) result.maxTokens = norm.maxTokens;
@@ -161,6 +166,7 @@ export function resolveModel(
       );
     }
 
+    entry = { ...entry, provider: canonicalProvider(entry.provider) };
     // pi-ai's getModel is a bare Map lookup — it returns `undefined` on a
     // miss rather than throwing. Without the explicit check below, a
     // well-formed-but-unknown slug (e.g. "openrouter:openai/not-a-model")
@@ -204,7 +210,7 @@ export function resolveModel(
     }
 
     const reasoning = norm.reasoning ?? entry.reasoning;
-    const result: ResolvedModel = { model, apiKey };
+    const result: ResolvedModel = { model: withGatewayAuth(model, apiKey), apiKey };
     if (reasoning) result.reasoning = reasoning;
     if (norm.temperature !== undefined) result.temperature = norm.temperature;
     if (norm.maxTokens !== undefined) result.maxTokens = norm.maxTokens;
