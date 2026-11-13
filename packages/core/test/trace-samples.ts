@@ -85,7 +85,7 @@ export const SAMPLES: Record<Kind, HarnessEvent> = {
     strategy: "drop-tool-results",
     beforeTokens: 900,
     afterTokens: 300,
-    collapsedRange: [1, 5],
+    collapsedRange: [2, 6],
     summarized: false,
   },
   subagent_start: { ...base, kind: "subagent_start", childRunId: "run_1:1", agentId: "child" },

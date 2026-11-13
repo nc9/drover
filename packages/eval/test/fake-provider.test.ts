@@ -104,6 +104,18 @@ describe("fakeProvider: plain run (no chain)", () => {
     ["403 forbidden", faults.forbidden(), "provider error 403", 403],
     ["429 with Retry-After", faults.rateLimited(2), "provider error 429", 429],
     ["5xx", faults.serverError(503), "provider error 503", 503],
+    [
+      "labelled OpenAI error",
+      { kind: "http", status: 429, label: "OpenAI API error", message: "slow down" },
+      "provider error 429",
+      429,
+    ],
+    [
+      "labelled Azure error",
+      { kind: "http", status: 503, label: "Azure OpenAI API error" },
+      "provider error 503",
+      503,
+    ],
     ["timeout", faults.timeout(), "provider error", undefined],
     [
       "empty completion",

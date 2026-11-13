@@ -169,7 +169,14 @@ for await (const e of handle.events) {
 ```
 
 `trigger` is `"auto"` or `"manual"`; `summarized` is true only for the
-`summarize` rung; `collapsedRange` is the `[start, end)` of the replaced head.
+`summarize` rung; `collapsedRange` is the `[start, end)` of the replaced head, as indices into the message list
+the model is about to see. That list starts with the leading `system` message, so every index is
+one higher than the same range in a history without it (a first user turn at index 1 puts the
+head at `[2, ...)`).
+
+The size estimate that drives the trigger includes the system prompt and the tool
+declarations, not only the conversation. An agent with a large tool set therefore reaches a
+`context_fraction` or `input_tokens` trigger earlier than it did before pi 1.x.
 Skipped passes (below `minReclaimTokens`, in cooldown, or under budget) emit
 nothing. A summariser failure emits an `error` event tagged `CompactionError`.
 

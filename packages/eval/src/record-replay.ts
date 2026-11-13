@@ -150,13 +150,17 @@ export class ReplayExhaustedError extends Error {
 /**
  * Canonical JSON: sorted keys, wall-clock fields dropped. `timestamp` differs on every run;
  * pi 1.x also stamps `durationMs` (measured tool and call time) on tool results and replies.
+ * The fields are dropped only on message objects (those with a string `role`): a tool
+ * argument or result detail that happens to be named `timestamp` or `durationMs` is request
+ * content, and a change in it is drift.
  */
 const canonical = (v: unknown, omit: ReadonlySet<string> = TIMESTAMP_ONLY): string => {
   if (Array.isArray(v)) return `[${v.map((x) => canonical(x, omit)).join(",")}]`;
   if (v !== null && typeof v === "object") {
     const o = v as Record<string, unknown>;
+    const isMessage = typeof o["role"] === "string";
     return `{${Object.keys(o)
-      .filter((k) => !omit.has(k) && o[k] !== undefined)
+      .filter((k) => !(isMessage && omit.has(k)) && o[k] !== undefined)
       .sort()
       .map((k) => `${JSON.stringify(k)}:${canonical(o[k], omit)}`)
       .join(",")}}`;
@@ -207,9 +211,15 @@ export const threadKey = (context: StreamArgs[1]): string => {
   return hashString(canonical({ systemPrompt, first: messages[0] ?? null }));
 };
 
-/** `<status> ...` -> `provider error <status>`; anything else -> `provider error`. Same rule as the harness. */
+/**
+ * `<status> ...`, `<status>: ...` or `<Label> error (<status>): ...` -> `provider error <status>`;
+ * anything else -> `provider error`. Same rule as the harness (`statusOfErrorText`).
+ */
 const statusOnly = (text: string | undefined): string => {
-  const code = /^([45]\d\d)\b/.exec(text?.trim() ?? "")?.[1];
+  const t = text?.trim() ?? "";
+  const code =
+    /^([45]\d\d)\b/.exec(t)?.[1] ??
+    /^[A-Za-z][\w./-]*(?: [A-Za-z][\w./-]*){0,2} error \(([45]\d\d)\):/.exec(t)?.[1];
   return code ? `provider error ${code}` : "provider error";
 };
 

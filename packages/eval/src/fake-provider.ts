@@ -49,6 +49,11 @@ export type FakeStep =
        * same wait in both modes.
        */
       retryAfterMs?: number;
+      /**
+       * Provider label: the text becomes `"<label> (<status>): <text>"`, the shape pi-ai uses for
+       * OpenAI Responses, Azure and Mistral (`"OpenAI API error (429): ..."`).
+       */
+      label?: string;
       /** Throw a structured error (for a provider chain) instead of a pi-shaped error event. */
       structured?: boolean;
     }
@@ -220,7 +225,7 @@ export function fakeProvider(
           step.status === 429 && step.retryAfterMs !== undefined && !step.structured
             ? ` Retry-After: ${step.retryAfterMs / 1000}`
             : "";
-        const text = `${step.status}: ${step.message ?? "error"}${hint}`;
+        const text = `${step.label ? `${step.label} (${step.status})` : `${step.status}`}: ${step.message ?? "error"}${hint}`;
         if (step.structured) {
           throw Object.assign(new Error(text), {
             status: step.status,

@@ -21,7 +21,12 @@ import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 
 import { runAgentEffect } from "../src/run.ts";
 import { staticRegistry } from "../src/task-tool.ts";
-import { providerFailure, scrubProviderErrorText } from "../src/provider-failure.ts";
+import {
+  providerError,
+  providerFailure,
+  scrubProviderErrorText,
+  statusOfErrorText,
+} from "../src/provider-failure.ts";
 import type { HarnessDeps } from "../src/deps.ts";
 
 const MODEL_NAME = "provider-error-model";
@@ -700,4 +705,27 @@ test("usageByProvider keys are data: a provider named __proto__ is an own key", 
   expect(result.status).toBe("success");
   expect(Object.hasOwn(result.usageByProvider!, "__proto__")).toBe(true);
   expect(result.usageByProvider!["__proto__"]).toEqual({ inputTokens: 3, outputTokens: 2 });
+});
+
+describe("statusOfErrorText: every status label pi-ai produces", () => {
+  const cases: Array<[string, string | undefined]> = [
+    ['402: {"error":{"message":"credits"}}', "402"],
+    ["402 This request requires more credits", "402"],
+    ['OpenAI API error (429): {"error":{"code":"rate_limit"}}', "429"],
+    ["Azure OpenAI API error (503): upstream", "503"],
+    ["Mistral API error (503): overloaded", "503"],
+    ['github-copilot API error (413): {"message":"failed to parse request"}', "413"],
+    ["openrouter API error (500): boom", "500"],
+    // Anchored: a status quoted later in the body, or a 2xx/3xx, is not read.
+    ["the body said OpenAI API error (429): nope", undefined],
+    ["Request timed out.", undefined],
+    ["OpenAI API error (200): odd", undefined],
+  ];
+  for (const [text, want] of cases) {
+    test(`${text.slice(0, 40)} -> ${want ?? "none"}`, () => {
+      expect(statusOfErrorText(text)).toBe(want);
+      const f = providerError({ stopReason: "error", errorMessage: text }, false);
+      expect(f?.status).toBe(want === undefined ? undefined : Number(want));
+    });
+  }
 });

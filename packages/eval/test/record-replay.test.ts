@@ -229,6 +229,60 @@ describe("record / replay", () => {
     expect(threadKey(base)).toBe(threadKey(otherTools)); // tools are not part of the thread
   });
 
+  test("a tool argument named durationMs is request content: changing it is drift", () => {
+    const call = (ms: number) =>
+      normalizeContext({
+        systemPrompt: "s",
+        messages: [
+          { role: "user" as const, content: "q", timestamp: 1 },
+          {
+            role: "assistant" as const,
+            content: [
+              { type: "toolCall" as const, id: "c", name: "wait", arguments: { durationMs: ms } },
+            ],
+            api: "openai-completions",
+            provider: "p",
+            model: "m",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              totalTokens: 0,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+            },
+            stopReason: "toolUse" as const,
+            timestamp: 2,
+            durationMs: ms, // the message-level stamp is still ignored
+          },
+        ],
+      });
+    expect(hashRequest(call(5))).not.toBe(hashRequest(call(6)));
+  });
+
+  test("a failed call's labelled provider text is scrubbed to its status", async () => {
+    for (const [text, expected] of [
+      ['OpenAI API error (429): {"error":"quoted prompt"}', "provider error 429"],
+      ["Azure OpenAI API error (503): quoted", "provider error 503"],
+      ['402: {"error":"quoted"}', "provider error 402"],
+      ["quoted prompt with 500 in it", "provider error"],
+    ] as const) {
+      const rec = createRecorder();
+      const real: StreamFn = () => {
+        const s = createAssistantMessageEventStream();
+        const m = { ...base([], "stop", 0), stopReason: "error" as const, errorMessage: text };
+        s.push({ type: "error", reason: "error", error: m });
+        s.end();
+        return s;
+      };
+      await (
+        await recordStream(real, rec.sink)(fakeModel, normalizeContext({ messages: [] }))
+      ).result();
+      const stored = rec.recording().turns[0]!.events[0] as { error: { errorMessage: string } };
+      expect(stored.error.errorMessage).toBe(expected);
+    }
+  });
+
   test("wall-clock durationMs (pi 1.x) does not change the request key", () => {
     const call = (ms: number) =>
       normalizeContext({
