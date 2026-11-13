@@ -95,8 +95,8 @@ export function structuredFromBody(
  */
 export function classifyFailure(provider: string, raw: RawFailure): ProviderFailure {
   const text = raw.message ?? "";
-  const lead = /^\s*(\d{3})(?::|\s|$)/.exec(text);
-  const status = raw.status !== undefined ? raw.status : lead ? Number(lead[1]) : null;
+  const lead = /^\s*(?:(\d{3})(?::|\s|$)|[A-Za-z][\w .-]* API error \((\d{3})\):)/.exec(text);
+  const status = raw.status !== undefined ? raw.status : lead ? Number(lead[1] ?? lead[2]) : null;
   const out: ProviderFailure = {
     provider,
     failureClass: pick(text, status, raw),

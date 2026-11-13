@@ -13,6 +13,8 @@ import {
   type SimpleStreamOptions,
 } from "@earendil-works/pi-ai/compat";
 
+import { CLOUDFLARE_GATEWAY, gatewayHeaders, withGatewayAuth } from "../gateway-auth.ts";
+import { canonicalProvider } from "../provider-names.ts";
 import { readApiKey, type PreResolvedModel } from "../resolve.ts";
 import {
   FAILOVER,
@@ -314,6 +316,12 @@ function normalizeProviderNames(o: ProviderChainOptions): ProviderChainOptions {
     const r = rekey(o[k] as Record<string, unknown> | undefined);
     if (r !== undefined) (out as unknown as Record<string, unknown>)[k] = r;
   }
+  if (o.extraModels !== undefined)
+    out.extraModels = o.extraModels.map((m) =>
+      canonicalProvider(m.provider) === m.provider
+        ? m
+        : { ...m, provider: canonicalProvider(m.provider) as Model<Api>["provider"] },
+    );
   if (o.ids !== undefined)
     out.ids = Object.fromEntries(
       Object.entries(o.ids).map(([id, byProvider]) => [id, rekey(byProvider) ?? byProvider]),
@@ -321,12 +329,6 @@ function normalizeProviderNames(o: ProviderChainOptions): ProviderChainOptions {
   return out;
 }
 
-/** The pre-1.0.3 pi-ai name of the Azure provider, accepted in host configs as an alias for `azure`. */
-export const DEPRECATED_PROVIDER_ALIASES: Readonly<Record<string, string>> = {
-  "azure-openai-responses": "azure",
-};
-const canonicalProvider = (name: string): string =>
-  Object.hasOwn(DEPRECATED_PROVIDER_ALIASES, name) ? DEPRECATED_PROVIDER_ALIASES[name]! : name;
 /** Re-key a per-provider record by canonical provider name (the new name wins over the old). */
 const rekey = <V>(rec: Readonly<Record<string, V>> | undefined): Record<string, V> | undefined => {
   if (rec === undefined) return undefined;
@@ -522,19 +524,8 @@ export function createProviderChain(rawOptions: ProviderChainOptions): ProviderC
       ...own(options.overrides, provider)?.headers,
       ...entry.headers,
     };
-    if (provider === "cloudflare-ai-gateway") {
-      // pi-ai 1.x no longer derives the gateway token from `apiKey` in the adapter (only its
-      // `Models` auth layer does), so set it here as 0.x did: `cf-aig-authorization` from
-      // `apiKey` (overwriting any such header), and no upstream bearer unless an explicit
-      // `Authorization` header was given (a null header suppresses the SDK's default one).
-      const explicit = Object.entries(headers).find(([k]) => k.toLowerCase() === "authorization");
-      for (const k of Object.keys(headers))
-        if (/^(authorization|x-api-key|cf-aig-authorization)$/i.test(k) && k !== explicit?.[0])
-          delete headers[k];
-      headers["cf-aig-authorization"] = `Bearer ${apiKey}`;
-      if (!explicit) headers.Authorization = null;
-      headers["x-api-key"] = null;
-    }
+    const finalHeaders =
+      provider === CLOUDFLARE_GATEWAY ? gatewayHeaders(headers, apiKey) : headers;
     return {
       model: {
         ...found,
@@ -542,7 +533,9 @@ export function createProviderChain(rawOptions: ProviderChainOptions): ProviderC
         baseUrl,
         id,
         // null values (suppressed default headers) are legal at runtime; pi-ai's Model type is narrower.
-        ...(Object.keys(headers).length > 0 ? { headers: headers as Record<string, string> } : {}),
+        ...(Object.keys(finalHeaders).length > 0
+          ? { headers: finalHeaders as Record<string, string> }
+          : {}),
       },
       apiKey,
       ...(Object.keys(extra).length > 0 ? { extra } : {}),
@@ -573,7 +566,7 @@ export function createProviderChain(rawOptions: ProviderChainOptions): ProviderC
         return withStreamIdleTimeout(
           streamSimple,
           options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS,
-        )(canonical, context, callOptions);
+        )(withGatewayAuth(canonical, callOptions?.apiKey), context, callOptions);
       const out = createAssistantMessageEventStream();
       const signal = callOptions?.signal;
       const end = (msg: AssistantMessage): void => {
