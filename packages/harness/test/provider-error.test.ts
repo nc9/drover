@@ -716,8 +716,11 @@ describe("statusOfErrorText: every status label pi-ai produces", () => {
     ["Mistral API error (503): overloaded", "503"],
     ['github-copilot API error (413): {"message":"failed to parse request"}', "413"],
     ["openrouter API error (500): boom", "500"],
+    ["Cloudflare Workers AI error (503): down", "503"],
+    ["llama.cpp error (500): oom", "500"],
     // Anchored: a status quoted later in the body, or a 2xx/3xx, is not read.
     ["the body said OpenAI API error (429): nope", undefined],
+    ["see OpenAI API error (429): x", undefined],
     ["Request timed out.", undefined],
     ["OpenAI API error (200): odd", undefined],
   ];

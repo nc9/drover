@@ -36,6 +36,7 @@ import {
   getCurrentTools,
 } from "@earendil-works/pi-ai/compat";
 import type { AssistantMessage, AssistantMessageEvent } from "@earendil-works/pi-ai/compat";
+import { statusOfErrorText } from "@droveragent/model";
 import type { StreamFn } from "@earendil-works/pi-agent-core";
 
 /**
@@ -213,13 +214,10 @@ export const threadKey = (context: StreamArgs[1]): string => {
 
 /**
  * `<status> ...`, `<status>: ...` or `<Label> error (<status>): ...` -> `provider error <status>`;
- * anything else -> `provider error`. Same rule as the harness (`statusOfErrorText`).
+ * anything else -> `provider error`. Same rule as the harness (`statusOfErrorText` from `@droveragent/model`).
  */
 const statusOnly = (text: string | undefined): string => {
-  const t = text?.trim() ?? "";
-  const code =
-    /^([45]\d\d)\b/.exec(t)?.[1] ??
-    /^[A-Za-z][\w./-]*(?: [A-Za-z][\w./-]*){0,2} error \(([45]\d\d)\):/.exec(t)?.[1];
+  const code = statusOfErrorText(text ?? "");
   return code ? `provider error ${code}` : "provider error";
 };
 

@@ -221,4 +221,72 @@ describe("chain record", () => {
     expect(next.result.chainRecord![0]!.usage.inputTokens).toBe(10);
     expect(next.result.chainRecord![1]!.usage.inputTokens).toBe(10);
   });
+
+  test("resuming a pre-upgrade checkpoint carries the old Azure name over as `azure`", async () => {
+    const storage = createMemoryStorage();
+    const OLD = "azure-openai-responses";
+    const usage = (n: number) => ({ inputTokens: n, outputTokens: 1, costUsd: 0.5 });
+    // Hand-built pre-1.0.3 state: the record and the usage split name the provider `OLD`.
+    await Effect.runPromise(
+      storage.appendEvent({
+        runId: "rec-run",
+        seq: 1,
+        ts: 1,
+        kind: "chain_record",
+        payload: {
+          kind: "chain_record",
+          runId: "rec-run",
+          ts: 1,
+          providers: [
+            {
+              provider: OLD,
+              answered: 3,
+              failed: 2,
+              failures: { rate_limited: 2 },
+              benchedAtTurn: null,
+              usage: usage(300),
+            },
+            {
+              provider: "b",
+              answered: 0,
+              failed: 0,
+              failures: {},
+              benchedAtTurn: null,
+              usage: { inputTokens: 0, outputTokens: 0 },
+            },
+          ],
+        } as HarnessEvent,
+      }),
+    );
+    const cp = {
+      runId: "rec-run",
+      seq: 3,
+      messages: [
+        { role: "user", content: "first", timestamp: 1 },
+        { role: "user", content: "more", timestamp: 2 },
+      ],
+      usage: usage(300),
+      toolCalls: [],
+      retriesUsed: 0,
+      usageByProvider: { [OLD]: usage(300) },
+      ts: 0,
+    };
+    const { result } = await run(
+      { azure: provider("azure", ["text"]), b: provider("b", ["text"]) },
+      storage,
+      cp as never,
+    );
+    expect(result.status).toBe("success");
+    // Counts carry over under `azure`, with this invocation's answer added; no old-name row.
+    expect(result.chainRecord!.map((e) => e.provider)).toEqual(["azure", "b"]);
+    expect(result.chainRecord![0]).toMatchObject({
+      answered: 4,
+      failed: 2,
+      failures: { rate_limited: 2 },
+    });
+    expect(result.chainRecord![0]!.usage.inputTokens).toBe(310);
+    // usageByProvider is rekeyed too, never duplicated.
+    expect(Object.keys(result.usageByProvider ?? {})).toEqual(["azure"]);
+    expect(result.usageByProvider!["azure"]!.inputTokens).toBe(310);
+  });
 });

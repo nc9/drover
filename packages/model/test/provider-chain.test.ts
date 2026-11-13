@@ -182,6 +182,7 @@ describe("classifyFailure: status first, structured fields only", () => {
     ["Mistral API error", "Mistral API error (503): down", "provider_error", 503],
     ["provider-id label", "github-copilot API error (413): too big", "invalid_request", 413],
     ["openrouter label", "openrouter API error (402): no credits", "credits_exhausted", 402],
+    ["quoted label later in the text", "see OpenAI API error (429): x", "other", null],
     ["body digits are not a status", "Unexpected 429 in the body (500): x", "other", null],
   ];
   for (const [name, message, cls, status] of cases) {

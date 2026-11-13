@@ -24,6 +24,7 @@ import {
   type Usage,
 } from "@droveragent/core";
 import {
+  canonicalProvider,
   DEFAULT_STREAM_IDLE_TIMEOUT_MS,
   resolveModel,
   withStreamIdleTimeout,
@@ -60,7 +61,7 @@ import {
   validateCompactionPolicy,
   type SummarizeFn,
 } from "./compaction/index.ts";
-import { createChainRecorder, lastChainRecord } from "./chain-record.ts";
+import { addUsage, createChainRecorder, lastChainRecord } from "./chain-record.ts";
 import { runLifecycleSteps } from "./lifecycle.ts";
 import { repairJson } from "./repair-json.ts";
 import {
@@ -799,8 +800,13 @@ export function runAgentEffect<S extends AgentSpec<TSchema, TSchema>>(
     // Seeded from the checkpoint on resume, so it stays cumulative like `usage`.
     const usageByProvider: Record<string, Usage> = Object.create(null) as Record<string, Usage>;
     if (resumeFrom?.usageByProvider) {
-      for (const [k, v] of Object.entries(resumeFrom.usageByProvider))
-        usageByProvider[k] = { ...v };
+      // The pre-1.0.3 Azure name is rekeyed to `azure`; rows that collide are summed.
+      for (const [k, v] of Object.entries(resumeFrom.usageByProvider)) {
+        const key = canonicalProvider(k);
+        usageByProvider[key] = Object.hasOwn(usageByProvider, key)
+          ? addUsage(usageByProvider[key]!, v)
+          : { ...v };
+      }
     }
     /** A plain-object copy of the per-provider split, for checkpoints. */
     const providerSplit = (): Record<string, Usage> | undefined =>

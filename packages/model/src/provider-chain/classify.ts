@@ -1,5 +1,7 @@
 import type { ProviderFailureClass } from "@droveragent/core";
 
+import { statusOfErrorText } from "../error-status.ts";
+
 /** What the chain knows about one failed provider call. */
 export interface ProviderFailure {
   provider: string;
@@ -95,8 +97,8 @@ export function structuredFromBody(
  */
 export function classifyFailure(provider: string, raw: RawFailure): ProviderFailure {
   const text = raw.message ?? "";
-  const lead = /^\s*(?:(\d{3})(?::|\s|$)|[A-Za-z][\w .-]* API error \((\d{3})\):)/.exec(text);
-  const status = raw.status !== undefined ? raw.status : lead ? Number(lead[1] ?? lead[2]) : null;
+  const lead = statusOfErrorText(text);
+  const status = raw.status !== undefined ? raw.status : lead ? Number(lead) : null;
   const out: ProviderFailure = {
     provider,
     failureClass: pick(text, status, raw),
