@@ -4,7 +4,7 @@
  * not re-exported from the package index.
  */
 import type { ProviderErrorDetails } from "@droveragent/core";
-import { KNOWN_CODES } from "@droveragent/model";
+import { KNOWN_CODES, statusOfErrorText } from "@droveragent/model";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 /** The slice of pi's assistant message the provider-failure check reads. */
@@ -62,20 +62,8 @@ function detailsOf(d: Record<string, unknown>): ProviderErrorDetails | undefined
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-/**
- * The HTTP status at the head of pi's error text, or undefined. pi-ai 1.x formats it as
- * `"<status>: <body>"` (and the older `"<status> <text>"`), or with a provider label:
- * `"OpenAI API error (429): ..."`, `"Azure OpenAI API error (429): ..."`,
- * `"Mistral API error (503): ..."`, `"github-copilot API error (413): ..."`. Anchored, so a
- * status quoted later in a body is never read. Only 4xx and 5xx count.
- */
-export function statusOfErrorText(text: string): string | undefined {
-  const t = text.trim();
-  return (
-    /^([45]\d\d)\b/.exec(t)?.[1] ??
-    /^[A-Za-z][\w./-]*(?: [A-Za-z][\w./-]*){0,2} error \(([45]\d\d)\):/.exec(t)?.[1]
-  );
-}
+/** Re-exported from `@droveragent/model` (one parser for the chain, the harness and eval). */
+export { statusOfErrorText };
 
 /** A run-ending provider failure: status-only message, HTTP status and structured details when known. */
 export interface ProviderFailure {

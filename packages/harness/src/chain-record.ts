@@ -1,9 +1,10 @@
 import type { ChainRecordEntry, HarnessEvent, Usage } from "@droveragent/core";
+import { canonicalProvider } from "@droveragent/model";
 
 type Notice = Extract<HarnessEvent, { kind: "provider_failover" }>;
 
 /** Adds `b` into `a` (tokens and cost). */
-const addUsage = (a: Usage, b: Usage): Usage => {
+export const addUsage = (a: Usage, b: Usage): Usage => {
   const out: Usage = {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
@@ -41,16 +42,22 @@ export function createChainRecorder(
 ) {
   const entries = new Map<string, ChainRecordEntry>();
   for (const p of providers) entries.set(p, emptyEntry(p));
+  // A checkpoint written under the pre-1.0.3 Azure name carries it as `azure-openai-responses`:
+  // read it as `azure`. Two seed rows that map to one provider are merged, never dropped.
+  const seen = new Set<string>();
   for (const s of seed ?? []) {
     // Only providers still in the chain, in the chain's current order; counts carried over.
-    const e = entries.get(s.provider);
+    const e = entries.get(canonicalProvider(s.provider));
     if (!e) continue;
-    e.answered = s.answered;
-    e.failed = s.failed;
+    const again = seen.has(e.provider);
+    seen.add(e.provider);
+    e.answered = (again ? e.answered : 0) + s.answered;
+    e.failed = (again ? e.failed : 0) + s.failed;
     for (const [k, v] of Object.entries(s.failures ?? {}))
-      if (typeof v === "number") e.failures[k] = v;
-    e.benchedAtTurn = typeof s.benchedAtTurn === "number" ? s.benchedAtTurn : null;
-    e.usage = { ...s.usage };
+      if (typeof v === "number") e.failures[k] = (again ? (e.failures[k] ?? 0) : 0) + v;
+    const benched = typeof s.benchedAtTurn === "number" ? s.benchedAtTurn : null;
+    e.benchedAtTurn = again ? (e.benchedAtTurn ?? benched) : benched;
+    e.usage = again ? addUsage(e.usage, s.usage) : { ...s.usage };
   }
   return {
     /** A failed attempt (`retry`, `failover` or `exhausted`) of `notice.from`. */
