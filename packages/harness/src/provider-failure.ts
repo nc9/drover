@@ -62,6 +62,21 @@ function detailsOf(d: Record<string, unknown>): ProviderErrorDetails | undefined
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/**
+ * The HTTP status at the head of pi's error text, or undefined. pi-ai 1.x formats it as
+ * `"<status>: <body>"` (and the older `"<status> <text>"`), or with a provider label:
+ * `"OpenAI API error (429): ..."`, `"Azure OpenAI API error (429): ..."`,
+ * `"Mistral API error (503): ..."`, `"github-copilot API error (413): ..."`. Anchored, so a
+ * status quoted later in a body is never read. Only 4xx and 5xx count.
+ */
+export function statusOfErrorText(text: string): string | undefined {
+  const t = text.trim();
+  return (
+    /^([45]\d\d)\b/.exec(t)?.[1] ??
+    /^[A-Za-z][\w./-]*(?: [A-Za-z][\w./-]*){0,2} error \(([45]\d\d)\):/.exec(t)?.[1]
+  );
+}
+
 /** A run-ending provider failure: status-only message, HTTP status and structured details when known. */
 export interface ProviderFailure {
   message: string;
@@ -95,7 +110,7 @@ export function providerError(
       ...(chain.details ? { details: chain.details } : {}),
     };
   }
-  const code = /^([45]\d\d)\b/.exec(raw)?.[1];
+  const code = statusOfErrorText(raw);
   const head = code ? `provider error ${code}` : "provider error";
   return {
     message: includeText && raw !== "" ? `${head}: ${raw}` : head,
@@ -108,6 +123,10 @@ export function providerError(
  * responses that are not final). drover has no way to poll or resume them, so such a
  * message is never a complete answer: a failure with a clear message, whatever content
  * it carries. Null for every other stop reason.
+ *
+ * Unreachable today: pi only produces `"deferred"` when a caller sets `options.deferred`, which
+ * drover never does. (pi's loop would also run the tool calls of a deferred message before this
+ * check; that is why it matters to keep it unreachable.) The check is a guard, not a feature.
  */
 export function unsupportedStop(msg: ProviderMessage | null): ProviderFailure | null {
   const stop = msg?.stopReason;
