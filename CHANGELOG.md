@@ -2,6 +2,50 @@
 
 All workspace packages (`@droveragent/*` + the `droveragent` umbrella) version together.
 
+## 0.4.0-next.1
+
+Prerelease on the `next` dist-tag; all @droveragent packages at 0.4.0-next.1. drover now runs on pi 1.x (`@earendil-works/pi-ai` and `@earendil-works/pi-agent-core` 1.5.2, pinned exactly), replacing `@mariozechner/pi-ai` and `pi-agent-core` 0.73.1, which have had no release since May 2026 (#98).
+
+### Breaking
+
+- pi dependencies move from `@mariozechner/*` ^0.73.1 to `@earendil-works/*` 1.5.2 (exact). Hosts that import pi types (`Model`, `StreamFn`, `Context`, `AgentMessage`) must switch to the new scope. Node 22.19 or newer is required (#98).
+- Custom transports (`deps.streamFn`, chain `streams`) now receive a pi `TranscriptContext`. The system prompt and tool declarations arrive as a leading `role: "system"` message, so `context.systemPrompt` and `context.tools` are gone. A transport must return a real `AssistantMessageEventStream`. Tool call arguments and tool result `details` are JSON values only (#98).
+- The Azure provider is now named `azure` (it was `azure-openai-responses`; the api id is unchanged). The old name is still accepted, as a deprecated alias, in provider chain options, `extraModels`, `resolveModel` specs and `withAliases`, and a run paused before the upgrade resumes with its Azure counts and usage carried over. Emitted names (`usageByProvider` keys, `provider_failover`, `chain_record`) are now `azure` (#98).
+- Default aliases point at the current catalogue: `grok` is `x-ai/grok-4.3` (`x-ai/grok-4-fast` left the catalogue; about 6x the input price), `haiku` is `claude-haiku-5.5`, `sonnet` is `claude-sonnet-5.5`, and `default`, `cheap` and `flash` use the GA `gemini-3.1-flash-lite` instead of the preview. Runs that use these aliases get different models and prices (#98).
+- Tool arguments are now coerced to the schema for every tool (pi-schema), so `"5"` becomes `5` for a TypeBox tool that used to reject it. TypeBox `Refine`, `Transform` and `Format.Set` formats are no longer enforced on host tools (#98).
+- Eval recordings are version 2, keyed on the transcript's system message and tools. A version 1 recording throws with a message to re-record (#98).
+- A provider response with stop reason `pending` or `deferred` fails the run with a `ProviderError` naming it (drover handles completed responses only) (#98).
+- Provider error text (with `includeProviderErrorText`, and the eval fake provider) follows pi 1.x: `"<status>: <body>"` or `"<Label> API error (<status>): <body>"` (#98).
+- Compaction: the token estimate includes the system prompt and tool declarations, so a trigger fires earlier with a large tool set, and `collapsedRange` indices count the leading system message (#98).
+- A fresh run on a run id that already exists is now fatal: it fails with `StorageError` (`op: "createRun"`) before writing anything, where before the failure was swallowed and the run wrote over the existing one. `StorageAdapter.createRun` MUST fail on an existing id, and the memory adapter no longer replaces the row; a custom adapter that upserts must change (#101, #97).
+- `@opentelemetry/api` is no longer a dependency of `@droveragent/model` (pi 1.x dropped the Mistral SDK that needed it) (#98).
+
+### Added
+
+- `Usage.reasoningTokens`: reasoning tokens where the provider reports them (Anthropic, OpenAI Completions and Responses, OpenRouter, Google), summed per run and present in `usageDelta`, `usageByProvider`, the chain record and the trace summary. It is absent, never 0, when not reported, and `outputTokens` still includes reasoning (#98, #43).
+- A `ProviderError` from a provider chain carries `error.details` (`code`, `type`, `retryAfterMs`, when known) on `RunResult.error` and the `error` event: an allow-listed code, a plain-token type (marked untrusted in the trace format as `details.type`) and a number, never provider message text. The chain now captures the provider error body's `type` (`ProviderFailure.type`, `provider_failure` diagnostics), and `KNOWN_CODES` is exported from `@droveragent/model` (#95, #92).
+- `statusOfErrorText` is exported from `@droveragent/model`: one anchored parser for the status in pi's provider error text, used by the chain classifier, the harness and eval (#98).
+- The model reference lists every pi provider and the default aliases, generated from the pi catalogue (43 providers, 1643 models) (#98).
+
+### Fixed
+
+- The system prompt reaches the model on pi 1.x as one leading system message on every path: the main loop, continue and `appendMessages`, resume (including a checkpoint written before this release), subagents and the compaction summariser. Checkpoints never store it, and compaction never drops or duplicates it (#98).
+- Cloudflare AI Gateway: drover sets `cf-aig-authorization` from the key and clears `Authorization` and `x-api-key` on every gateway call, with or without a provider chain (pi 1.x no longer does this, and would otherwise send the gateway key as the upstream provider key). An explicit host `Authorization` header is kept (#98).
+- Subagent child run ids continue across a parent's resume and continuation (`parent:<n>` no longer restarts at 1), so a later child never reuses an earlier child's id, run row, events or fence nonce (#101, #97).
+- Runtime: every job attempt runs under its own run id (`run_<job>` first, `run_<job>_a<n>` for attempt n), so retries and reclaimed leases no longer fail on a taken id; `job.runId` names the run of the attempt that last ended, on complete and on fail (`QueueAdapter.fail` takes the attempt's `runId`, additive) (#101, #97).
+- The provider chain's response tap re-wraps a `globalThis.fetch` that a host replaced after install (OpenTelemetry, Sentry, a test double), so structured errors (status, code, `retryAfterMs`) and billed cost keep working with the host's instrumentation underneath. Re-wraps are bounded per process; when the tap has to stay off (frozen global, bound reached) it logs one warning naming the cause. Two installed copies of `@droveragent/model` each re-wrap the other and keep their records (#102, #100).
+- Billed cost (`withProviderCost`, chain `billedCost`): once the response body has ended, the billed figure is read without a 1 s settle window, so a loaded process cannot fall back to list price (#88, #78).
+
+### Security
+
+- With `untrustedResultsPlugin`, an error a `selfFenced` or `trusted` tool returns as a value (`{ isError: true, content }`) is now fenced like a thrown or failed error. Before, it reached the model unfenced, so outside text quoted in an error message (an upstream body) was not marked untrusted. An oversized error from a trusted tool is stored untrusted (with `isError` on the truncate entry) and never read back raw through `show_tool_result`, and a truncate-store entry written without a run is never trusted (#99, #96, #19).
+
+### Docs
+
+- The trace format reference lists `provider_failover` and `budget_warning` and has a sample line for every event kind (#93, #90).
+- The facade reference says a malformed `providers` option resolves `result.error` with `SpecConfigError` rather than throwing (#89).
+- Tests: storage-d1 has a trace round-trip test for every event kind (#93, #90); concurrent failing chain calls over real HTTP keep their own status, code and Retry-After, and a 403 `invalid_api_key` classifies as `key_refused` (#94, #91).
+
 ## 0.3.0-next.3
 
 Prerelease on the `next` dist-tag; all @droveragent packages at 0.3.0-next.3, including the umbrella, which publishes for the first time as `@droveragent/all`.
